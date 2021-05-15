@@ -13,19 +13,16 @@
 #ifndef __AUDACITY_EFFECT_CHANGESPEED__
 #define __AUDACITY_EFFECT_CHANGESPEED__
 
-#include <wx/choice.h>
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-
 #include "../widgets/NumericTextCtrl.h"
 
 #include "Effect.h"
 
+class wxSlider;
+class wxChoice;
+class wxTextCtrl;
 class ShuttleGui;
 
-#define CHANGESPEED_PLUGIN_SYMBOL XO("Change Speed")
+#define CHANGESPEED_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Change Speed") }
 
 class EffectChangeSpeed final : public Effect
 {
@@ -33,19 +30,21 @@ public:
    EffectChangeSpeed();
    virtual ~EffectChangeSpeed();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
    bool LoadFactoryDefaults() override;
 
    // Effect implementation
@@ -113,7 +112,7 @@ private:
    // private effect parameters
    int      mToVinyl;         // to standard vinyl speed (rpm)
    double   mToLength;        // target length of selection
-   wxString mFormat;          // time control format
+   NumericFormatSymbol mFormat;          // time control format
 
    DECLARE_EVENT_TABLE()
 };

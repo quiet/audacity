@@ -12,15 +12,12 @@
 #ifndef __AUDACITY_EFFECT_ECHO__
 #define __AUDACITY_EFFECT_ECHO__
 
-#include <wx/event.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-
 #include "Effect.h"
+#include "../SampleFormat.h"
 
 class ShuttleGui;
 
-#define ECHO_PLUGIN_SYMBOL XO("Echo")
+#define ECHO_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Echo") }
 
 class EffectEcho final : public Effect
 {
@@ -28,12 +25,13 @@ public:
    EffectEcho();
    virtual ~EffectEcho();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
@@ -44,8 +42,9 @@ public:
    bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
    bool ProcessFinalize() override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
    void PopulateOrExchange(ShuttleGui & S) override;
@@ -58,7 +57,7 @@ private:
 private:
    double delay;
    double decay;
-   float *history;
+   Floats history;
    size_t histPos;
    size_t histLen;
 };

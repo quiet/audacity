@@ -13,29 +13,26 @@
 
 #include "../MemoryX.h"
 #include <vector>
+#include <wx/setup.h> // for wxUSE_* macros
 #include <wx/defs.h>
-#include <wx/choice.h>
-#include <wx/dynarray.h>
-#include <wx/event.h>
-#include <wx/grid.h>
-#include <wx/string.h>
-#include <wx/window.h>
+#include <wx/grid.h> // to inherit wxGridCellEditor
 #include "NumericTextCtrl.h"
+#include "../Internat.h"
 
 #if wxUSE_ACCESSIBILITY
-#include <wx/access.h>
-
 class GridAx;
-
 #endif
 
+class wxArrayString;
+class wxChoice;
 class NumericTextCtrl;
 
-// ----------------------------------------------------------------------------
-// NumericEditor
-//
-// wxGridCellEditor for the NumericTextCtrl.
-// ----------------------------------------------------------------------------
+/**********************************************************************//**
+
+\class NumericEditor
+\brief wxGridCellEditor for the NumericTextCtrl.
+
+**************************************************************************/
 #define GRID_VALUE_TIME wxT("Time")
 #define GRID_VALUE_FREQUENCY wxT("Frequency")
 
@@ -44,7 +41,7 @@ class NumericEditor /* not final */ : public wxGridCellEditor
 public:
 
    NumericEditor
-      (NumericConverter::Type type, const wxString &format, double rate);
+      (NumericConverter::Type type, const NumericFormatSymbol &format, double rate);
 
    ~NumericEditor();
 
@@ -63,9 +60,9 @@ public:
 
    void Reset() override;
 
-   wxString GetFormat() const;
+   NumericFormatSymbol GetFormat() const;
    double GetRate() const;
-   void SetFormat(const wxString &format);
+   void SetFormat(const NumericFormatSymbol &format);
    void SetRate(double rate);
 
    wxGridCellEditor *Clone() const override;
@@ -76,7 +73,7 @@ public:
 
  private:
 
-   wxString mFormat;
+   NumericFormatSymbol mFormat;
    double mRate;
    NumericConverter::Type mType;
    double mOld;
@@ -84,12 +81,10 @@ public:
    wxString mValueAsString;
 };
 
-// ----------------------------------------------------------------------------
-// NumericRenderer
-//
-// wxGridCellRenderer for the NumericTextCtrl.
-// ----------------------------------------------------------------------------
-
+/**********************************************************************//**
+\class NumericRenderer
+\brief wxGridCellRenderer for the NumericTextCtrl.
+**************************************************************************/
 class NumericRenderer final : public wxGridCellRenderer
 {
  public:
@@ -116,11 +111,11 @@ private:
    NumericConverter::Type mType;
 };
 
-// ----------------------------------------------------------------------------
-// ChoiceEditor
-//
-// Modified version of wxGridChoiceEditor using wxChoice instead of wxComboBox.
-// ----------------------------------------------------------------------------
+/**********************************************************************//**
+\class ChoiceEditor
+\brief Modified version of wxGridChoiceEditor using wxChoice instead of 
+wxComboBox.
+**************************************************************************/
 #define GRID_VALUE_CHOICE wxT("Choice")
 
 class ChoiceEditor final : public wxGridCellEditor, wxEvtHandler
@@ -138,22 +133,18 @@ public:
                        wxWindowID id,
                        wxEvtHandler *evtHandler) override;
 
-   void SetSize(const wxRect &rect);
-
-   void BeginEdit(int row, int col, wxGrid *grid);
-
+   void SetSize(const wxRect &rect) override;
+   void BeginEdit(int row, int col, wxGrid *grid) override;
    bool EndEdit(int row, int col, wxGrid *grid);
-
-   bool EndEdit(int row, int col, const wxGrid *grid, const wxString &oldval, wxString *newval);
-
-   void ApplyEdit(int row, int col, wxGrid *grid);
-
-   void Reset();
+   bool EndEdit(int row, int col, const wxGrid *grid,
+                const wxString &oldval, wxString *newval) override;
+   void ApplyEdit(int row, int col, wxGrid *grid) override;
+   void Reset() override;
 
    wxGridCellEditor *Clone() const override;
 
    void SetChoices(const wxArrayString &choices);
-   wxString GetValue() const;
+   wxString GetValue() const override;
 
  protected:
 
@@ -167,13 +158,15 @@ public:
    public:
       void ConnectEvent(wxWindow *w)
       {
-         w->GetEventHandler()->Connect(wxEVT_KILL_FOCUS, wxFocusEventHandler(FocusHandler::OnKillFocus));
+         // Need to use a named function pointer, not a lambda, so that we
+         // can unbind the same later
+         w->GetEventHandler()->Bind(wxEVT_KILL_FOCUS, OnKillFocus);
       };
       void DisconnectEvent(wxWindow *w)
       {
-         w->GetEventHandler()->Disconnect(wxEVT_KILL_FOCUS, wxFocusEventHandler(FocusHandler::OnKillFocus));
+         w->GetEventHandler()->Unbind(wxEVT_KILL_FOCUS, OnKillFocus);
       };
-      void OnKillFocus(wxFocusEvent & WXUNUSED(event))
+      static void OnKillFocus(wxFocusEvent & WXUNUSED(event))
       {
          return;
       };
@@ -184,11 +177,10 @@ public:
    wxString mValueAsString;
 };
 
-// ----------------------------------------------------------------------------
-// Grid
-//
-// wxGrid with support for accessibility.
-// ----------------------------------------------------------------------------
+/**********************************************************************//**
+\class Grid
+\brief wxGrid with support for accessibility.
+**************************************************************************/
 
 class Grid final : public wxGrid
 {
@@ -226,7 +218,7 @@ class Grid final : public wxGrid
 
 #if wxUSE_ACCESSIBILITY
    GridAx *mAx;
-   std::vector<movable_ptr<GridAx>> mChildren;
+   std::vector<std::unique_ptr<GridAx>> mChildren;
    int mObjNdx;
 #endif
 
@@ -234,96 +226,6 @@ class Grid final : public wxGrid
 
    DECLARE_EVENT_TABLE()
 };
-
-#if wxUSE_ACCESSIBILITY
-// ----------------------------------------------------------------------------
-// GridAx
-//
-// wxAccessible object providing grid information for Grid.
-// ----------------------------------------------------------------------------
-
-class GridAx final : public wxWindowAccessible
-{
-
- public:
-
-   GridAx(Grid *grid);
-
-   void SetCurrentCell(int row, int col);
-   void TableUpdated();
-   bool GetRowCol(int childId, int & row, int & col);
-
-   // Retrieves the address of an IDispatch interface for the specified child.
-   // All objects must support this property.
-   wxAccStatus GetChild(int childId, wxAccessible **child) override;
-
-   // Gets the number of children.
-   wxAccStatus GetChildCount(int *childCount) override;
-
-   // Gets the default action for this object (0) or > 0 (the action for a child).
-   // Return wxACC_OK even if there is no action. actionName is the action, or the empty
-   // string if there is no action.
-   // The retrieved string describes the action that is performed on an object,
-   // not what the object does as a result. For example, a toolbar button that prints
-   // a document has a default action of "Press" rather than "Prints the current document."
-   wxAccStatus GetDefaultAction(int childId, wxString *actionName) override;
-
-   // Returns the description for this object or a child.
-   wxAccStatus GetDescription(int childId, wxString *description) override;
-
-   // Gets the window with the keyboard focus.
-   // If childId is 0 and child is NULL, no object in
-   // this subhierarchy has the focus.
-   // If this object has the focus, child should be 'this'.
-   wxAccStatus GetFocus(int *childId, wxAccessible **child) override;
-
-   // Returns help text for this object or a child, similar to tooltip text.
-   wxAccStatus GetHelpText(int childId, wxString *helpText) override;
-
-   // Returns the keyboard shortcut for this object or child.
-   // Return e.g. ALT+K
-   wxAccStatus GetKeyboardShortcut(int childId, wxString *shortcut) override;
-
-   // Returns the rectangle for this object (id = 0) or a child element (id > 0).
-   // rect is in screen coordinates.
-   wxAccStatus GetLocation(wxRect & rect, int elementId) override;
-
-   // Gets the name of the specified object.
-   wxAccStatus GetName(int childId, wxString *name) override;
-
-   // Gets the parent, or NULL.
-   wxAccStatus GetParent(wxAccessible **parent) override;
-
-   // Returns a role constant.
-   wxAccStatus GetRole(int childId, wxAccRole *role) override;
-
-   // Gets a variant representing the selected children
-   // of this object.
-   // Acceptable values:
-   // - a null variant (IsNull() returns TRUE)
-   // - a list variant (GetType() == wxT("list"))
-   // - an integer representing the selected child element,
-   //   or 0 if this object is selected (GetType() == wxT("long"))
-   // - a "void*" pointer to a wxAccessible child object
-   wxAccStatus GetSelections(wxVariant *selections) override;
-
-   // Returns a state constant.
-   wxAccStatus GetState(int childId, long* state) override;
-
-   // Returns a localized string representing the value for the object
-   // or child.
-   wxAccStatus GetValue(int childId, wxString* strValue) override;
-
-#if defined(__WXMAC__)
-   // Selects the object or child.
-   wxAccStatus Select(int childId, wxAccSelectionFlags selectFlags) override;
-#endif
-
-   Grid *mGrid;
-   int mLastId;
-
-};
-#endif
 
 #endif
 

@@ -27,22 +27,26 @@ and sample size to help you importing data of an unknown format.
 #include "Import.h"
 
 #include "../DirManager.h"
+#include "../FileException.h"
 #include "../FileFormats.h"
 #include "../Internat.h"
 #include "../Prefs.h"
 #include "../ShuttleGui.h"
+#include "../UserException.h"
 #include "../WaveTrack.h"
+#include "../prefs/QualityPrefs.h"
+#include "../widgets/ProgressDialog.h"
 
 #include <cmath>
 #include <cstdio>
 #include <stdint.h>
 #include <vector>
 
+#include <wx/crt.h>
 #include <wx/defs.h>
 #include <wx/button.h>
 #include <wx/choice.h>
 #include <wx/intl.h>
-#include <wx/msgdlg.h>
 #include <wx/panel.h>
 #include <wx/progdlg.h>
 #include <wx/sizer.h>
@@ -87,11 +91,14 @@ class ImportRawDialog final : public wxDialogWrapper {
    wxTextCtrl *mRateText;
 
    int         mNumEncodings;
-   int        *mEncodingSubtype;
+   ArrayOf<int> mEncodingSubtype;
 
    DECLARE_EVENT_TABLE()
 };
 
+// This function leaves outTracks empty as an indication of error,
+// but may also throw FileException to make use of the application's
+// user visible error reporting.
 void ImportRaw(wxWindow *parent, const wxString &fileName,
               TrackFactory *trackFactory, TrackHolders &outTracks)
 {
@@ -101,13 +108,11 @@ void ImportRaw(wxWindow *parent, const wxString &fileName,
    sf_count_t offset = 0;
    double rate = 44100.0;
    double percent = 100.0;
-   TrackHolders channels;
-   int updateResult = eProgressSuccess;
+   TrackHolders results;
+   auto updateResult = ProgressResult::Success;
 
    {
       SF_INFO sndInfo;
-      int result;
-
       unsigned numChannels = 0;
 
       try {
@@ -158,21 +163,24 @@ void ImportRaw(wxWindow *parent, const wxString &fileName,
       }
 
       if (!sndFile){
-         // TODO: Handle error
          char str[1000];
          sf_error_str((SNDFILE *)NULL, str, 1000);
-         printf("%s\n", str);
+         wxPrintf("%s\n", str);
 
-         return;
+         throw FileException{ FileException::Cause::Open, fileName };
       }
 
-      result = sf_command(sndFile.get(), SFC_SET_RAW_START_OFFSET, &offset, sizeof(offset));
-      if (result != 0) {
-         char str[1000];
-         sf_error_str(sndFile.get(), str, 1000);
-         printf("%s\n", str);
-      }
 
+      {
+         int result = sf_command(sndFile.get(), SFC_SET_RAW_START_OFFSET, &offset, sizeof(offset));
+         if (result != 0) {
+            char str[1000];
+            sf_error_str(sndFile.get(), str, 1000);
+            wxPrintf("%s\n", str);
+
+            throw FileException{ FileException::Cause::Read, fileName };
+         }
+      }
       SFCall<sf_count_t>(sf_seek, sndFile.get(), 0, SEEK_SET);
 
       auto totalFrames =
@@ -187,38 +195,23 @@ void ImportRaw(wxWindow *parent, const wxString &fileName,
       // the quality of the original file.
       //
 
-      format = (sampleFormat)
-      gPrefs->Read(wxT("/SamplingRate/DefaultProjectSampleFormat"), floatSample);
+      format = QualityPrefs::SampleFormatChoice();
 
       if (format != floatSample &&
           sf_subtype_more_than_16_bits(encoding))
          format = floatSample;
 
+      results.resize(1);
+      auto &channels = results[0];
       channels.resize(numChannels);
 
-      auto iter = channels.begin();
-      for (decltype(numChannels) c = 0; c < numChannels; ++iter, ++c) {
-         const auto channel =
-         (*iter = trackFactory->NewWaveTrack(format, rate)).get();
-
-         if (numChannels > 1)
-            switch (c) {
-               case 0:
-                  channel->SetChannel(Track::LeftChannel);
-                  break;
-               case 1:
-                  channel->SetChannel(Track::RightChannel);
-                  break;
-               default:
-                  channel->SetChannel(Track::MonoChannel);
-            }
+      {
+         // iter not used outside this scope.
+         auto iter = channels.begin();
+         for (decltype(numChannels) c = 0; c < numChannels; ++iter, ++c)
+            *iter = trackFactory->NewWaveTrack(format, rate);
       }
-
       const auto firstChannel = channels.begin()->get();
-      if (numChannels == 2) {
-         firstChannel->SetLinked(true);
-      }
-
       auto maxBlockSize = firstChannel->GetMaxBlockSize();
 
       SampleBuffer srcbuffer(maxBlockSize * numChannels, format);
@@ -232,7 +225,7 @@ void ImportRaw(wxWindow *parent, const wxString &fileName,
 
       wxString msg;
 
-      msg.Printf(_("Importing %s"), wxFileName::FileName(fileName).GetFullName().c_str());
+      msg.Printf(_("Importing %s"), wxFileName::FileName(fileName).GetFullName());
 
       /* i18n-hint: 'Raw' means 'unprocessed' here and should usually be tanslated.*/
       ProgressDialog progress(_("Import Raw"), msg);
@@ -242,21 +235,19 @@ void ImportRaw(wxWindow *parent, const wxString &fileName,
          block =
             limitSampleBufferSize( maxBlockSize, totalFrames - framescompleted );
 
-         sf_count_t result;
+         sf_count_t sf_result;
          if (format == int16Sample)
-            result = SFCall<sf_count_t>(sf_readf_short, sndFile.get(), (short *)srcbuffer.ptr(), block);
+            sf_result = SFCall<sf_count_t>(sf_readf_short, sndFile.get(), (short *)srcbuffer.ptr(), block);
          else
-            result = SFCall<sf_count_t>(sf_readf_float, sndFile.get(), (float *)srcbuffer.ptr(), block);
+            sf_result = SFCall<sf_count_t>(sf_readf_float, sndFile.get(), (float *)srcbuffer.ptr(), block);
 
-         if (result >= 0) {
-            block = result;
+         if (sf_result >= 0) {
+            block = sf_result;
          }
          else {
             // This is not supposed to happen, sndfile.h says result is always
             // a count, not an invalid value for error
-            wxASSERT(false);
-            updateResult = eProgressFailed;
-            break;
+            throw FileException{ FileException::Cause::Read, fileName };
          }
 
          if (block) {
@@ -272,30 +263,30 @@ void ImportRaw(wxWindow *parent, const wxString &fileName,
                      ((float *)buffer.ptr())[j] =
                      ((float *)srcbuffer.ptr())[numChannels*j+c];
                }
-               
-               iter->get()->Append(buffer.ptr(), format, block);
+
+               iter->get()->Append(buffer.ptr(), (format == int16Sample)?int16Sample:floatSample, block);
             }
             framescompleted += block;
          }
-         
+
          updateResult = progress.Update(
             framescompleted.as_long_long(),
             totalFrames.as_long_long()
          );
-         if (updateResult != eProgressSuccess)
+         if (updateResult != ProgressResult::Success)
             break;
          
       } while (block > 0 && framescompleted < totalFrames);
    }
 
-   if (updateResult == eProgressFailed || updateResult == eProgressCancelled) {
-      // It's a shame we can't return proper error code
-      return;
-   }
+   if (updateResult == ProgressResult::Failed || updateResult == ProgressResult::Cancelled)
+      throw UserException{};
 
-   for (const auto &channel : channels)
-      channel->Flush();
-   outTracks.swap(channels);
+   if (!results.empty() && !results[0].empty()) {
+      for (const auto &channel : results[0])
+         channel->Flush();
+      outTracks.swap(results);
+   }
 }
 
 //
@@ -330,9 +321,7 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
    SetName(GetTitle());
 
    ShuttleGui S(this, eIsCreating);
-   wxArrayString encodings;
-   wxArrayString endians;
-   wxArrayString chans;
+   wxArrayStringEx encodings;
    int num;
    int selection;
    int endian;
@@ -340,7 +329,7 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
 
    num = sf_num_encodings();
    mNumEncodings = 0;
-   mEncodingSubtype = new int[num];
+   mEncodingSubtype.reinit(static_cast<size_t>(num));
 
    selection = 0;
    for (i=0; i<num; i++) {
@@ -355,7 +344,7 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
 
       if (sf_format_check(&info)) {
          mEncodingSubtype[mNumEncodings] = subtype;
-         encodings.Add(sf_encoding_index_name(i));
+         encodings.push_back(sf_encoding_index_name(i));
 
          if ((mEncoding & SF_FORMAT_SUBMASK) == subtype)
             selection = mNumEncodings;
@@ -364,18 +353,20 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
       }
    }
 
-   /* i18n-hint: Refers to byte-order.  Don't translate "endianness" if you don't
+   wxArrayStringEx endians{
+      /* i18n-hint: Refers to byte-order.  Don't translate "endianness" if you don't
+          know the correct technical word. */
+      _("No endianness") ,
+      /* i18n-hint: Refers to byte-order.  Don't translate this if you don't
        know the correct technical word. */
-   endians.Add(_("No endianness"));
-   /* i18n-hint: Refers to byte-order.  Don't translate this if you don't
-    know the correct technical word. */
-   endians.Add(_("Little-endian"));
-   /* i18n-hint: Refers to byte-order.  Don't translate this if you don't
-      know the correct technical word. */
-   endians.Add(_("Big-endian"));
-   /* i18n-hint: Refers to byte-order.  Don't translate "endianness" if you don't
-      know the correct technical word. */
-   endians.Add(_("Default endianness"));
+      _("Little-endian") ,
+      /* i18n-hint: Refers to byte-order.  Don't translate this if you don't
+         know the correct technical word. */
+      _("Big-endian") ,
+      /* i18n-hint: Refers to byte-order.  Don't translate "endianness" if you don't
+         know the correct technical word. */
+      _("Default endianness") ,
+   };
 
    switch (mEncoding & (SF_FORMAT_ENDMASK))
    {
@@ -394,10 +385,12 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
          break;
    }
 
-   chans.Add(_("1 Channel (Mono)"));
-   chans.Add(_("2 Channels (Stereo)"));
+   wxArrayStringEx chans{
+      _("1 Channel (Mono)") ,
+      _("2 Channels (Stereo)") ,
+   };
    for (i=2; i<16; i++) {
-      chans.Add(wxString::Format(_("%d Channels"), i + 1));
+      chans.push_back(wxString::Format(_("%d Channels"), i + 1));
    }
 
    S.StartVerticalLay(false);
@@ -406,14 +399,14 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
       S.StartTwoColumn();
       {
          mEncodingChoice = S.Id(ChoiceID).AddChoice(_("Encoding:"),
-                                                    encodings[selection],
-                                                    &encodings);
+                                                    encodings,
+                                                    selection);
          mEndianChoice = S.Id(ChoiceID).AddChoice(_("Byte order:"),
-                                                  endians[endian],
-                                                  &endians);
+                                                  endians,
+                                                  endian);
          mChannelChoice = S.Id(ChoiceID).AddChoice(_("Channels:"),
-                                                   chans[mChannels-1],
-                                                   &chans);
+                                                   chans,
+                                                   mChannels - 1);
       }
       S.EndTwoColumn();
 
@@ -431,7 +424,7 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
          mPercentText = S.AddTextBox(_("Amount to import:"),
                                      wxT("100"),
                                      12);
-         S.AddUnits(wxT("%"));
+         S.AddUnits(_("%"));
 
          // Rate text
          /* i18n-hint: (noun)*/
@@ -464,7 +457,6 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent,
 
 ImportRawDialog::~ImportRawDialog()
 {
-   delete[] mEncodingSubtype;
 }
 
 void ImportRawDialog::OnOK(wxCommandEvent & WXUNUSED(event))
@@ -489,8 +481,9 @@ void ImportRawDialog::OnOK(wxCommandEvent & WXUNUSED(event))
       mPercent = 100.0;
    if (mRate < 100.0)
       mRate = 100.0;
-   if (mRate > 100000.0)
-      mRate = 100000.0;
+   // Highest preset sample rate supported in Audacity 2.3.0 is 384 kHz
+   if (mRate > 384000.0)
+      mRate = 384000.0;
 
    EndModal(true);
 }

@@ -15,39 +15,48 @@
 
 #include <wx/defs.h>
 
-#include <wx/arrstr.h>
-#include <wx/window.h>
-
 #include "PrefsPanel.h"
 
 class ShuttleGui;
+class wxArrayStringEx;
+
+#define GUI_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("GUI") }
 
 class GUIPrefs final : public PrefsPanel
 {
  public:
-   GUIPrefs(wxWindow * parent);
+   GUIPrefs(wxWindow * parent, wxWindowID winid);
    ~GUIPrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
 
-   static void GetRangeChoices(wxArrayString *pChoices, wxArrayString *pCodes);
+   bool Commit() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
+
+   static void GetRangeChoices(
+      wxArrayStringEx *pChoices, wxArrayStringEx *pCodes);
 
  private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
 
-   wxArrayString mLangCodes;
-   wxArrayString mLangNames;
+   wxArrayStringEx mLangCodes;
+   wxArrayStringEx mLangNames;
 
-   wxArrayString mHtmlHelpCodes;
-   wxArrayString mHtmlHelpChoices;
+   wxArrayStringEx mHtmlHelpCodes;
+   wxArrayStringEx mHtmlHelpChoices;
 
-   wxArrayString mRangeCodes;
-   wxArrayString mRangeChoices;
+   wxArrayStringEx mThemeCodes;
+   wxArrayStringEx mThemeChoices;
+
+   wxArrayStringEx mRangeCodes;
+   wxArrayStringEx mRangeChoices;
 };
 
+/// A PrefsPanelFactory that creates one GUIPrefs panel.
 class GUIPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif

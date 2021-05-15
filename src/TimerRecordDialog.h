@@ -16,19 +16,21 @@
 #ifndef __AUDACITY_TIMERRECORD_DIALOG__
 #define __AUDACITY_TIMERRECORD_DIALOG__
 
-#include <wx/dialog.h>
-#include <wx/textctrl.h>
-#include <wx/datectrl.h>
-#include <wx/calctrl.h>
-#include <wx/timer.h>
-#include <wx/checkbox.h>
+#include <wx/textctrl.h> // to inherit
+#include <wx/timer.h> // member variable
 #include "export/Export.h"
 
+class wxCheckBox;
+class wxChoice;
+class wxDateEvent;
+class wxDatePickerCtrl;
 class wxTimerEvent;
 
 class NumericTextCtrl;
 class ShuttleGui;
 class TimerRecordPathCtrl;
+
+class wxArrayStringEx;
 
 enum TimerRecordCompletedActions {
    TR_ACTION_NOTHING = 0x00000000,
@@ -43,7 +45,7 @@ class TimerRecordPathCtrl final : public wxTextCtrl
    // the text controls to the Tab Order.
 public:
    TimerRecordPathCtrl(wxWindow * parent, wxWindowID id, const wxString &value
-      = wxEmptyString, const wxPoint &pos = wxDefaultPosition, const wxSize &
+      = {}, const wxPoint &pos = wxDefaultPosition, const wxSize &
       size = wxDefaultSize, long  style = 0, const wxValidator &  validator =
       wxDefaultValidator, const wxString &  name = wxTextCtrlNameStr)
       :wxTextCtrl(parent, id, value, pos, size, style, validator, name) {};
@@ -78,10 +80,13 @@ private:
 
    wxString GetDisplayDate(wxDateTime & dt);
    void PopulateOrExchange(ShuttleGui& S);
-   bool TransferDataFromWindow();
+
+   bool TransferDataFromWindow() override;
+   // no TransferDataFromWindow() because ??
+
    void UpdateDuration(); // Update m_TimeSpan_Duration and ctrl based on m_DateTime_Start and m_DateTime_End.
    void UpdateEnd(); // Update m_DateTime_End and ctrls based on m_DateTime_Start and m_TimeSpan_Duration.
-   int WaitForStart();
+   ProgressResult WaitForStart();
 
    // Timer Recording Automation Control Events
    void OnAutoSavePathButton_Click(wxCommandEvent& event);
@@ -99,7 +104,7 @@ private:
    TimerRecordPathCtrl *NewPathControl(wxWindow *wParent, const int iID, const wxString &sCaption, const wxString &sValue);
 
    int ExecutePostRecordActions(bool bWasStopped);
-   int PreActionDelay(int iActionIndex, TimerRecordCompletedActions eCompletedActions);
+   ProgressResult PreActionDelay(int iActionIndex, TimerRecordCompletedActions eCompletedActions);
 
 private:
    wxDateTime m_DateTime_Start;
@@ -142,8 +147,7 @@ private:
    bool m_bProjectAlreadySaved;
 
    // Variables for After Timer Recording Option
-   wxString m_sTimerAfterCompleteOption;
-   wxArrayString m_sTimerAfterCompleteOptionsArray;
+   wxArrayStringEx m_sTimerAfterCompleteOptionsArray;
 
    DECLARE_EVENT_TABLE()
 };

@@ -16,17 +16,16 @@
 #include "../Audacity.h" // for USE_SBSMS
 
 #if USE_SBSMS
-
 #include "TimeScale.h"
 
 #include <math.h>
 
 #include <wx/intl.h>
+#include <wx/slider.h>
 
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../widgets/valnum.h"
-
-#include "sbsms.h"
 
 enum
 {
@@ -41,12 +40,12 @@ enum
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name                Type    Key                            Def   Min      Max    Scale
-Param( RatePercentStart,   double, XO("RatePercentChangeStart"),  0.0,  -90.0,   500,   1  );
-Param( RatePercentEnd,     double, XO("RatePercentChangeEnd"),    0.0,  -90.0,   500,   1  );
-Param( HalfStepsStart,     double, XO("PitchHalfStepsStart"),     0.0,  -12.0,   12.0,  1  );
-Param( HalfStepsEnd,       double, XO("PitchHalfStepsEnd"),       0.0,  -12.0,   12.0,  1  );
-Param( PitchPercentStart,  double, XO("PitchPercentChangeStart"), 0.0,  -50.0,   100.0, 1  );
-Param( PitchPercentEnd,    double, XO("PitchPercentChangeEnd"),   0.0,  -50.0,   100.0, 1  );
+Param( RatePercentStart,   double, wxT("RatePercentChangeStart"),  0.0,  -90.0,   500,   1  );
+Param( RatePercentEnd,     double, wxT("RatePercentChangeEnd"),    0.0,  -90.0,   500,   1  );
+Param( HalfStepsStart,     double, wxT("PitchHalfStepsStart"),     0.0,  -12.0,   12.0,  1  );
+Param( HalfStepsEnd,       double, wxT("PitchHalfStepsEnd"),       0.0,  -12.0,   12.0,  1  );
+Param( PitchPercentStart,  double, wxT("PitchPercentChangeStart"), 0.0,  -50.0,   100.0, 1  );
+Param( PitchPercentEnd,    double, wxT("PitchPercentChangeEnd"),   0.0,  -50.0,   100.0, 1  );
 
 //
 // EffectTimeScale
@@ -84,24 +83,24 @@ EffectTimeScale::~EffectTimeScale()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectTimeScale::GetSymbol()
+ComponentInterfaceSymbol EffectTimeScale::GetSymbol()
 {
    return TIMESCALE_PLUGIN_SYMBOL;
 }
 
-wxString EffectTimeScale::GetName()
-{
-   return XO("Sliding Time Scale/Pitch Shift");
-}
-
 wxString EffectTimeScale::GetDescription()
 {
-   return XO("Allows continuous changes to the tempo and/or pitch");
+   return _("Allows continuous changes to the tempo and/or pitch");
 }
 
-// EffectIdentInterface implementation
+wxString EffectTimeScale::ManualPage()
+{
+   return wxT("Sliding_Stretch");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectTimeScale::GetType()
 {
@@ -109,8 +108,17 @@ EffectType EffectTimeScale::GetType()
 }
 
 // EffectClientInterface implementation
+bool EffectTimeScale::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( m_RatePercentChangeStart,  RatePercentStart );
+   S.SHUTTLE_PARAM( m_RatePercentChangeEnd,    RatePercentEnd );
+   S.SHUTTLE_PARAM( m_PitchHalfStepsStart,     HalfStepsStart );
+   S.SHUTTLE_PARAM( m_PitchHalfStepsEnd,       HalfStepsEnd );
+   S.SHUTTLE_PARAM( m_PitchPercentChangeStart, PitchPercentStart );
+   S.SHUTTLE_PARAM( m_PitchPercentChangeEnd,   PitchPercentEnd );
+   return true;
+}
 
-bool EffectTimeScale::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectTimeScale::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_RatePercentStart, m_RatePercentChangeStart);
    parms.Write(KEY_RatePercentEnd, m_RatePercentChangeEnd);
@@ -122,7 +130,7 @@ bool EffectTimeScale::GetAutomationParameters(EffectAutomationParameters & parms
    return true;
 }
 
-bool EffectTimeScale::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectTimeScale::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyDouble(RatePercentStart);
    ReadAndVerifyDouble(RatePercentEnd);
@@ -154,10 +162,10 @@ double EffectTimeScale::CalcPreviewInputLength(double previewLength)
    if(inputLength == 0.0) {
       return 0.0;
    } else {
-      double rateStart = PercentChangeToRatio(m_RatePercentChangeStart);
-      double rateEnd = PercentChangeToRatio(m_RatePercentChangeEnd);
+      double rateStart1 = PercentChangeToRatio(m_RatePercentChangeStart);
+      double rateEnd1 = PercentChangeToRatio(m_RatePercentChangeEnd);
       double tOut = previewLength/inputLength;
-      double t = EffectSBSMS::getInvertedStretchedTime(rateStart,rateEnd,slideTypeRate,tOut);
+      double t = EffectSBSMS::getInvertedStretchedTime(rateStart1,rateEnd1,slideTypeRate,tOut);
       return t * inputLength;
    }
 }
@@ -165,25 +173,24 @@ double EffectTimeScale::CalcPreviewInputLength(double previewLength)
 void EffectTimeScale::Preview(bool dryOnly)
 {
    previewSelectedDuration = Effect::GetDuration();
-   bPreview = true;
+   auto cleanup = valueRestorer( bPreview, true );
    Effect::Preview(dryOnly);
-   bPreview = false;
 }
 
 bool EffectTimeScale::Process()
 {
-   double pitchStart = PercentChangeToRatio(m_PitchPercentChangeStart);
-   double pitchEnd = PercentChangeToRatio(m_PitchPercentChangeEnd);
-   double rateStart = PercentChangeToRatio(m_RatePercentChangeStart);
-   double rateEnd = PercentChangeToRatio(m_RatePercentChangeEnd);
+   double pitchStart1 = PercentChangeToRatio(m_PitchPercentChangeStart);
+   double pitchEnd1 = PercentChangeToRatio(m_PitchPercentChangeEnd);
+   double rateStart1 = PercentChangeToRatio(m_RatePercentChangeStart);
+   double rateEnd1 = PercentChangeToRatio(m_RatePercentChangeEnd);
   
    if(bPreview) {
       double t = (mT1-mT0) / previewSelectedDuration;
-      rateEnd = EffectSBSMS::getRate(rateStart,rateEnd,slideTypeRate,t);
-      pitchEnd = EffectSBSMS::getRate(pitchStart,pitchEnd,slideTypePitch,t);
+      rateEnd1 = EffectSBSMS::getRate(rateStart1,rateEnd1,slideTypeRate,t);
+      pitchEnd1 = EffectSBSMS::getRate(pitchStart1,pitchEnd1,slideTypePitch,t);
    }
    
-   EffectSBSMS::setParameters(rateStart,rateEnd,pitchStart,pitchEnd,slideTypeRate,slideTypePitch,false,false,false);
+   EffectSBSMS::setParameters(rateStart1,rateEnd1,pitchStart1,pitchEnd1,slideTypeRate,slideTypePitch,false,false,false);
    return EffectSBSMS::Process();
 }
 
@@ -200,11 +207,11 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
          S.StartMultiColumn(1, wxCENTER);
          {
             FloatingPointValidator<double>
-               vldRatePercentChangeStart(3, &m_RatePercentChangeStart, NUM_VAL_NO_TRAILING_ZEROES);
+               vldRatePercentChangeStart(3, &m_RatePercentChangeStart, NumValidatorStyle::NO_TRAILING_ZEROES);
             vldRatePercentChangeStart.SetRange(MIN_RatePercentStart, MAX_RatePercentStart);
          
             m_pTextCtrl_RatePercentChangeStart = S.Id(ID_RatePercentChangeStart)
-               .AddTextBox(wxT(""), wxT(""), 12);
+               .AddTextBox( {}, wxT(""), 12);
             m_pTextCtrl_RatePercentChangeStart->SetValidator(vldRatePercentChangeStart);
          }
          S.EndMultiColumn();
@@ -212,7 +219,7 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
          {
             S.SetStyle(wxSL_HORIZONTAL);
             m_pSlider_RatePercentChangeStart = S.Id(ID_RatePercentChangeStart)
-               .AddSlider(wxT(""), DEF_RatePercentStart, MAX_RatePercentStart, MIN_RatePercentStart);
+               .AddSlider( {}, DEF_RatePercentStart, MAX_RatePercentStart, MIN_RatePercentStart);
          }
          S.EndHorizontalLay();
       }
@@ -223,11 +230,11 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
          S.StartMultiColumn(1, wxCENTER);
          {
             FloatingPointValidator<double>
-               vldRatePercentChangeEnd(3, &m_RatePercentChangeEnd, NUM_VAL_NO_TRAILING_ZEROES);
+               vldRatePercentChangeEnd(3, &m_RatePercentChangeEnd, NumValidatorStyle::NO_TRAILING_ZEROES);
             vldRatePercentChangeEnd.SetRange(MIN_RatePercentEnd, MAX_RatePercentEnd);
          
             m_pTextCtrl_RatePercentChangeEnd = S.Id(ID_RatePercentChangeEnd)
-               .AddTextBox(wxT(""), wxT(""), 12);
+               .AddTextBox( {}, wxT(""), 12);
             m_pTextCtrl_RatePercentChangeEnd->SetValidator(vldRatePercentChangeEnd);
          }
          S.EndMultiColumn();
@@ -235,7 +242,7 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
          {
             S.SetStyle(wxSL_HORIZONTAL);
             m_pSlider_RatePercentChangeEnd = S.Id(ID_RatePercentChangeEnd)
-               .AddSlider(wxT(""), DEF_RatePercentEnd, MAX_RatePercentEnd, MIN_RatePercentEnd);
+               .AddSlider( {}, DEF_RatePercentEnd, MAX_RatePercentEnd, MIN_RatePercentEnd);
          }
          S.EndHorizontalLay();
       }
@@ -247,7 +254,7 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
          S.StartMultiColumn(2, wxCENTER);
          {
             FloatingPointValidator<double>
-               vldPitchHalfStepsStart(3, &m_PitchHalfStepsStart, NUM_VAL_NO_TRAILING_ZEROES);
+               vldPitchHalfStepsStart(3, &m_PitchHalfStepsStart, NumValidatorStyle::NO_TRAILING_ZEROES);
             vldPitchHalfStepsStart.SetRange(MIN_HalfStepsStart, MAX_HalfStepsStart);
          
             m_pTextCtrl_PitchHalfStepsStart = S.Id(ID_PitchHalfStepsStart)
@@ -255,7 +262,7 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
             m_pTextCtrl_PitchHalfStepsStart->SetValidator(vldPitchHalfStepsStart);
 
             FloatingPointValidator<double>
-               vldPitchPercentChangeStart(3, &m_PitchPercentChangeStart, NUM_VAL_NO_TRAILING_ZEROES);
+               vldPitchPercentChangeStart(3, &m_PitchPercentChangeStart, NumValidatorStyle::NO_TRAILING_ZEROES);
             vldPitchPercentChangeStart.SetRange(MIN_PitchPercentStart, MAX_PitchPercentStart);
          
             m_pTextCtrl_PitchPercentChangeStart = S.Id(ID_PitchPercentChangeStart)
@@ -272,7 +279,7 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
          S.StartMultiColumn(2, wxCENTER);
          {
             FloatingPointValidator<double>
-               vldPitchHalfStepsEnd(3, &m_PitchHalfStepsEnd, NUM_VAL_NO_TRAILING_ZEROES);
+               vldPitchHalfStepsEnd(3, &m_PitchHalfStepsEnd, NumValidatorStyle::NO_TRAILING_ZEROES);
             vldPitchHalfStepsEnd.SetRange(MIN_HalfStepsEnd, MAX_HalfStepsEnd);
          
             m_pTextCtrl_PitchHalfStepsEnd = S.Id(ID_PitchHalfStepsEnd)
@@ -280,7 +287,7 @@ void EffectTimeScale::PopulateOrExchange(ShuttleGui & S)
             m_pTextCtrl_PitchHalfStepsEnd->SetValidator(vldPitchHalfStepsEnd);
 
             FloatingPointValidator<double>
-               vldPitchPercentChangeEnd(3, &m_PitchPercentChangeEnd, NUM_VAL_NO_TRAILING_ZEROES);
+               vldPitchPercentChangeEnd(3, &m_PitchPercentChangeEnd, NumValidatorStyle::NO_TRAILING_ZEROES);
             vldPitchPercentChangeEnd.SetRange(MIN_PitchPercentStart, MAX_PitchPercentStart);
          
             m_pTextCtrl_PitchPercentChangeEnd = S.Id(ID_PitchPercentChangeEnd)

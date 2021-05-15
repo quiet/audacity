@@ -9,6 +9,7 @@ Paul Licameli
 **********************************************************************/
 
 #include "ViewInfo.h"
+
 #include "Experimental.h"
 
 #include <algorithm>
@@ -19,7 +20,8 @@ Paul Licameli
 #include "prefs/GUISettings.h"
 #include "Prefs.h"
 #include "xml/XMLWriter.h"
-#include "prefs/TracksPrefs.h"
+#include "prefs/TracksBehaviorsPrefs.h"
+#include "Snap.h"
 
 namespace {
 static const double gMaxZoom = 6000000;
@@ -87,9 +89,14 @@ bool ZoomInfo::ZoomOutAvailable() const
    return zoom > gMinZoom;
 }
 
+double ZoomInfo::GetZoom( ) const { return zoom;};
+double ZoomInfo::GetMaxZoom( ) { return gMaxZoom;};
+double ZoomInfo::GetMinZoom( ) { return gMinZoom;};
+
 void ZoomInfo::SetZoom(double pixelsPerSecond)
 {
    zoom = std::max(gMinZoom, std::min(gMaxZoom, pixelsPerSecond));
+// DA: Avoids stuck in snap-to
 #ifdef EXPERIMENTAL_DA
    // Disable snapping if user zooms in a long way.
    // Helps stop users be trapped in snap-to.
@@ -99,7 +106,7 @@ void ZoomInfo::SetZoom(double pixelsPerSecond)
    {
       AudacityProject * project = GetActiveProject();
       if( project )
-         project->OnSnapToOff();
+         project->SetSnapTo(SNAP_OFF);
    }
 #endif
 }
@@ -129,7 +136,6 @@ void ZoomInfo::FindIntervals
 ViewInfo::ViewInfo(double start, double screenDuration, double pixelsPerSecond)
    : ZoomInfo(start, pixelsPerSecond)
    , selectedRegion()
-   , track(NULL)
    , total(screenDuration)
    , sbarH(0)
    , sbarScreen(1)
@@ -147,10 +153,11 @@ void ViewInfo::UpdatePrefs()
 {
    ZoomInfo::UpdatePrefs();
 #ifdef EXPERIMENTAL_SCROLLING_LIMITS
-   gPrefs->Read(TracksPrefs::ScrollingPreferenceKey(), &bScrollBeyondZero,
-                TracksPrefs::ScrollingPreferenceDefault());
+   gPrefs->Read(TracksBehaviorsPrefs::ScrollingPreferenceKey(), &bScrollBeyondZero,
+                TracksBehaviorsPrefs::ScrollingPreferenceDefault());
 #endif
-
+   gPrefs->Read(wxT("/GUI/AdjustSelectionEdges"), &bAdjustSelectionEdges,
+      true);
 }
 
 void ViewInfo::SetBeforeScreenWidth(wxInt64 beforeWidth, wxInt64 screenWidth, double lowerBoundTime)
@@ -161,7 +168,8 @@ void ViewInfo::SetBeforeScreenWidth(wxInt64 beforeWidth, wxInt64 screenWidth, do
          beforeWidth / zoom));
 }
 
-void ViewInfo::WriteXMLAttributes(XMLWriter &xmlFile)
+void ViewInfo::WriteXMLAttributes(XMLWriter &xmlFile) const
+// may throw
 {
    selectedRegion.WriteXMLAttributes(xmlFile, wxT("sel0"), wxT("sel1"));
    xmlFile.WriteAttr(wxT("vpos"), vpos);
@@ -198,4 +206,6 @@ void ViewInfo::OnTimer(wxCommandEvent &event)
 {
    mRecentStreamTime = gAudioIO->GetStreamTime();
    event.Skip();
+   // Propagate the message to other listeners bound to this
+   this->ProcessEvent( event );
 }

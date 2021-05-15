@@ -10,19 +10,27 @@
 **********************************************************************/
 
 #include "../Audacity.h"
-
 #include "Keyboard.h"
 
-wxString KeyStringNormalize(const wxString & key)
+#include <wx/event.h>
+
+NormalizedKeyString::NormalizedKeyString(const wxString & key)
 {
 #if defined(__WXMAC__)
    wxString newkey;
    wxString temp = key;
+
+   // PRL:  This is needed to parse older preference files.
    temp.Replace(wxT("XCtrl+"), wxT("Control+"));
+
+   // PRL:  RawCtrl is the proper replacement for Control, when formatting
+   // wxMenuItem, so that wxWidgets shows ^ in the menu.  It is written into
+   // NEW preference files (2.2.0 and later).
+   temp.Replace(wxT("RawCtrl+"), wxT("Control+"));
    temp.Replace(wxT("Ctrl+"), wxT("Command+"));
 
    if (temp.Contains(wxT("Control+"))) {
-      newkey += wxT("XCtrl+");
+      newkey += wxT("RawCtrl+");
    }
 
    if (temp.Contains(wxT("Alt+")) || temp.Contains(wxT("Option+"))) {
@@ -37,28 +45,28 @@ wxString KeyStringNormalize(const wxString & key)
       newkey += wxT("Ctrl+");
    }
 
-   return newkey + temp.AfterLast(wxT('+'));
+   (wxString&)*this = newkey + temp.AfterLast(wxT('+'));
 #else
-   return key;
+   (wxString&)*this = key;
 #endif
 }
 
-wxString KeyStringDisplay(const wxString & key, bool usesSpecialChars)
+wxString NormalizedKeyString::Display(bool usesSpecialChars) const
 {
    (void)usesSpecialChars;//compiler food
-   wxString newkey = KeyStringNormalize(key);
+   wxString newkey = *this;
 #if defined(__WXMAC__)
 
    if (!usesSpecialChars) {
       // Compose user-visible keystroke names, all ASCII
-      newkey.Replace(wxT("XCtrl+"), wxT("Control+"));
+      newkey.Replace(wxT("RawCtrl+"), wxT("Control+"));
       newkey.Replace(wxT("Alt+"), wxT("Option+"));
       newkey.Replace(wxT("Ctrl+"), wxT("Command+"));
    }
    else {
-      // Compuse user-visible keystroke names, with special characters
+      // Compose user-visible keystroke names, with special characters
       newkey.Replace(wxT("Shift+"), wxT("\u21e7"));
-      newkey.Replace(wxT("XCtrl+"), wxT("Control+"));
+      newkey.Replace(wxT("RawCtrl+"), '^');
       newkey.Replace(wxT("Alt+"), wxT("\u2325"));
       newkey.Replace(wxT("Ctrl+"), wxT("\u2318"));
    }
@@ -68,9 +76,9 @@ wxString KeyStringDisplay(const wxString & key, bool usesSpecialChars)
    return newkey;
 }
 
-wxString KeyEventToKeyString(const wxKeyEvent & event)
+NormalizedKeyString KeyEventToKeyString(const wxKeyEvent & event)
 {
-   wxString newStr = wxT("");
+   wxString newStr;
 
    long key = event.GetKeyCode();
 
@@ -85,7 +93,7 @@ wxString KeyEventToKeyString(const wxKeyEvent & event)
 
 #if defined(__WXMAC__)
    if (event.RawControlDown())
-      newStr += wxT("XCtrl+");
+      newStr += wxT("RawCtrl+");
 #endif
 
    if (event.RawControlDown() && key >= 1 && key <= 26)
@@ -325,9 +333,9 @@ wxString KeyEventToKeyString(const wxKeyEvent & event)
          newStr += wxT("NUMPAD_DIVIDE");
          break;
       default:
-         return wxT(""); // Don't do anything if we don't recognize the key
+         return {}; // Don't do anything if we don't recognize the key
       }
    }
 
-   return KeyStringNormalize(newStr);
+   return NormalizedKeyString{ newStr };
 }

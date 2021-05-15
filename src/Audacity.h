@@ -26,26 +26,55 @@
 
 // If building with GNU compiler, then must be 4.9 or later.
 // TODO: This would be much nicer as a standalone test in configure.ac
-#if !defined(__APPLE__) && defined __GNUC__ && ( __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 9))
-#error insufficient compiler
+#if !defined(__APPLE__) && !defined(__clang__) && \
+    defined __GNUC__ && ( __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 9))
+
+    #error Audacity requires at least GCC 4.9
 #endif
 
 
-// We only do alpha builds and release versions.
-// Most of the time we're in development, so IS_ALPHA should be defined
-// to 1.
-#define IS_ALPHA 1
+// We only do alpha builds, beta builds, and release versions.
+// Most of the time we're in development, so AUDACITY_BUILD_LEVEL should be
+// defined to 0.
+// Its value may be more than 0 for pre-release "Beta" builds that differ only
+// in the welcome screen, and hiding of some development menu commands, but
+// still link to the alpha manual online.
+#define AUDACITY_BUILD_LEVEL 2
+
+// used #ifdef not #if for IS_ALPHA, IS_BETA, IS_RELEASE, USE_ALPHA_MANUAL
+#undef IS_ALPHA
+#undef IS_BETA
+#undef IS_RELEASE
+#undef USE_ALPHA_MANUAL
+
+#if AUDACITY_BUILD_LEVEL == 0
+   #define IS_ALPHA
+   #define USE_ALPHA_MANUAL
+#elif AUDACITY_BUILD_LEVEL == 1
+   #define IS_BETA
+   #define USE_ALPHA_MANUAL
+#else
+   #define IS_RELEASE
+#endif
+
+#define EXPERIMENTAL_DA
 
 // Increment as appropriate every time we release a NEW version.
 #define AUDACITY_VERSION   2
-#define AUDACITY_RELEASE   1
-#define AUDACITY_REVISION  3
+#define AUDACITY_RELEASE   3
+#define AUDACITY_REVISION  2
 #define AUDACITY_MODLEVEL  0
 
-#if IS_ALPHA
+#if defined(IS_BETA)
+   #define AUDACITY_SUFFIX wxT("-beta-") __TDATE__
+#elif defined(IS_ALPHA)
    #define AUDACITY_SUFFIX wxT("-alpha-") __TDATE__
 #else
+#ifndef EXPERIMENTAL_DA
    #define AUDACITY_SUFFIX    wxT("") // for a stable release
+#else
+   #define AUDACITY_SUFFIX wxT("x  ") __TDATE__
+#endif
 #endif
 
 #define AUDACITY_MAKESTR( x ) #x
@@ -57,11 +86,20 @@
                                 wxT( AUDACITY_QUOTE( AUDACITY_REVISION ) ) \
                                 AUDACITY_SUFFIX
 
+// DA: x on end of version string.
+#ifdef EXPERIMENTAL_DA
 // Version string for file info (under Windows)
 #define AUDACITY_FILE_VERSION AUDACITY_QUOTE( AUDACITY_VERSION ) "," \
                               AUDACITY_QUOTE( AUDACITY_RELEASE ) "," \
                               AUDACITY_QUOTE( AUDACITY_REVISION ) "," \
+                              AUDACITY_QUOTE( AUDACITY_MODLEVEL ) " x"
+#else
+#define AUDACITY_FILE_VERSION AUDACITY_QUOTE( AUDACITY_VERSION ) "," \
+                              AUDACITY_QUOTE( AUDACITY_RELEASE ) "," \
+                              AUDACITY_QUOTE( AUDACITY_REVISION ) "," \
                               AUDACITY_QUOTE( AUDACITY_MODLEVEL )
+#endif
+
 
 // Increment this every time the prefs need to be reset
 // the first part (before the r) indicates the version the reset took place
@@ -89,7 +127,11 @@ void QuitAudacity();
 #endif
 
 #ifdef __WXGTK__
-#include "configunix.h"
+#ifndef __CONFIG_UNIX_INCLUDED
+   #define __CONFIG_UNIX_INCLUDED
+   #include "configunix.h"
+#endif
+
 // Some systems do not restrict the path length and therefore PATH_MAX is undefined
 #ifdef PATH_MAX
 #undef PLATFORM_MAX_PATH
@@ -98,7 +140,10 @@ void QuitAudacity();
 #endif
 
 #ifdef __WXX11__
-#include "configunix.h"
+#ifndef __CONFIG_UNIX_INCLUDED
+   #define __CONFIG_UNIX_INCLUDED
+   #include "configunix.h"
+#endif
 // wxX11 should also get the platform-specific definition of PLATFORM_MAX_PATH, so do not declare here.
 #endif
 
@@ -130,7 +175,7 @@ void QuitAudacity();
 // Put extra symbol information in the release build, for the purpose of gathering
 // profiling information (as from Windows Process Monitor), when there otherwise
 // isn't a need for AUDACITY_DLL_API.
-#if IS_ALPHA
+#ifdef IS_ALPHA
    #define PROFILE_DLL_API AUDACITY_DLL_API
 #else
    #define PROFILE_DLL_API
@@ -174,10 +219,9 @@ void QuitAudacity();
 #define DB_TO_LINEAR(x) (pow(10.0, (x) / 20.0))
 #define LINEAR_TO_DB(x) (20.0 * log10(x))
 
-// Marks strings for extraction only...must use wxGetTranslation() to translate.
-#define XO(s) wxT(s)
-// Marks string for substitution only.
-#define _TS(s) wxT(s)
+#define MAX_AUDIO (1. - 1./(1<<15))
+#define JUST_BELOW_MAX_AUDIO (1.f - 1.f/(1<<14))
+
 
 // This renames a good use of this C++ keyword that we don't need to review when hunting for leaks.
 #define PROHIBITED = delete
@@ -187,5 +231,16 @@ void QuitAudacity();
 // You may use it in NEW code when the NEW expression is the constructor argument for a standard smart
 // pointer like std::unique_ptr or std::shared_ptr.
 #define safenew new
+
+// Right to left languages fail in many wx3 dialogs with missing buttons.
+// The workaround is to use LTR in those dialogs.
+#ifndef __WXMAC__
+#define RTL_WORKAROUND( pWnd ) \
+   if ( gPrefs->Read( "/GUI/RtlWorkaround", true) ) \
+       pWnd->SetLayoutDirection(wxLayout_LeftToRight); 
+#else
+   #define RTL_WORKAROUND( pWnd ) 
+#endif
+
 
 #endif // __AUDACITY_H__

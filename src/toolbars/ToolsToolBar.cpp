@@ -18,9 +18,7 @@
   This class, which is a child of Toolbar, creates the
   window containing the tool selection (ibeam, envelope,
   move, zoom). The window can be embedded within a
-  normal project window, or within a ToolbarFrame that is
-  managed by a global ToolBarStub called
-  gToolsToolBarStub.
+  normal project window, or within a ToolBarFrame.
 
   All of the controls in this window were custom-written for
   Audacity - they are not native controls on any platform -
@@ -38,6 +36,8 @@
 // For compilers that support precompilation, includes "wx/wx.h".
 #include <wx/wxprec.h>
 
+#include <wx/setup.h> // for wxUSE_* macros
+
 #ifndef WX_PRECOMP
 #include <wx/defs.h>
 #include <wx/event.h>
@@ -46,15 +46,12 @@
 #endif
 #include <wx/tooltip.h>
 
-#include "MeterToolBar.h"
-
 #include "../Prefs.h"
 #include "../AllThemeResources.h"
 #include "../ImageManipulation.h"
 #include "../Project.h"
+#include "../tracks/ui/Scrubbing.h"
 #include "../Theme.h"
-
-#include "../Experimental.h"
 
 #include "../widgets/AButton.h"
 
@@ -66,8 +63,8 @@ IMPLEMENT_CLASS(ToolsToolBar, ToolBar);
 ////////////////////////////////////////////////////////////
 
 BEGIN_EVENT_TABLE(ToolsToolBar, ToolBar)
-   EVT_COMMAND_RANGE(firstTool,
-                     lastTool,
+   EVT_COMMAND_RANGE(firstTool+FirstToolID,
+                     lastTool+FirstToolID,
                      wxEVT_COMMAND_BUTTON_CLICKED,
                      ToolsToolBar::OnTool)
 END_EVENT_TABLE()
@@ -83,20 +80,6 @@ ToolsToolBar::ToolsToolBar()
    wxASSERT( zoomTool     == zoomTool     - firstTool );
    wxASSERT( drawTool     == drawTool     - firstTool );
    wxASSERT( multiTool    == multiTool    - firstTool );
-
-   mMessageOfTool[selectTool] = _("Click and drag to select audio");
-
-   mMessageOfTool[envelopeTool] = _("Click and drag to edit the amplitude envelope");
-   mMessageOfTool[drawTool] = _("Click and drag to edit the samples");
-#if defined( __WXMAC__ )
-   mMessageOfTool[zoomTool] = _("Click to Zoom In, Shift-Click to Zoom Out");
-#elif defined( __WXMSW__ )
-   mMessageOfTool[zoomTool] = _("Drag to Zoom Into Region, Right-Click to Zoom Out");
-#elif defined( __WXGTK__ )
-   mMessageOfTool[zoomTool] = _("Left=Zoom In, Right=Zoom Out, Middle=Normal");
-#endif
-   mMessageOfTool[slideTool] = _("Click and drag to move a track in time");
-   mMessageOfTool[multiTool] = wxT(""); // multi-mode tool
 
    bool multiToolActive = false;
    gPrefs->Read(wxT("/GUI/ToolBars/Tools/MultiToolActive"), &multiToolActive);
@@ -139,7 +122,7 @@ void ToolsToolBar::RegenerateTooltips()
 
    static const struct Entry {
       int tool;
-      wxString commandName;
+      CommandID commandName;
       wxString untranslatedLabel;
    } table[] = {
       { selectTool,   wxT("SelectTool"),    XO("Selection Tool")  },
@@ -150,12 +133,10 @@ void ToolsToolBar::RegenerateTooltips()
       { multiTool,    wxT("MultiTool"),     XO("Multi Tool")      },
    };
 
-   std::vector<wxString> commands;
    for (const auto &entry : table) {
-      commands.clear();
-      commands.push_back(wxGetTranslation(entry.untranslatedLabel));
-      commands.push_back(entry.commandName);
-      ToolBar::SetButtonToolTip(*mTool[entry.tool], commands);
+      TranslatedInternalString command{
+         entry.commandName, wxGetTranslation(entry.untranslatedLabel) };
+      ToolBar::SetButtonToolTip( *mTool[entry.tool], &command, 1u );
    }
 
    #endif
@@ -167,35 +148,41 @@ void ToolsToolBar::RegenerateTooltips()
 void ToolsToolBar::UpdatePrefs()
 {
    RegenerateTooltips();
+   ToolBar::UpdatePrefs();
 }
 
-AButton * ToolsToolBar::MakeTool( teBmps eTool,
+AButton * ToolsToolBar::MakeTool(
+   ToolsToolBar *pBar, teBmps eTool,
    int id, const wxChar *label)
 {
-   AButton *button = ToolBar::MakeButton(this,
-      bmpRecoloredUpSmall, bmpRecoloredDownSmall, bmpRecoloredHiliteSmall,
+   AButton *button = ToolBar::MakeButton(pBar,
+      bmpRecoloredUpSmall, 
+      bmpRecoloredDownSmall, 
+      bmpRecoloredUpHiliteSmall, 
+      bmpRecoloredDownSmall, // Not bmpRecoloredHiliteSmall as down is inactive.
       eTool, eTool, eTool,
-      wxWindowID(id),
+      wxWindowID(id + FirstToolID),
       wxDefaultPosition, true,
       theTheme.ImageSize( bmpRecoloredUpSmall ));
    button->SetLabel( label );
-   mToolSizer->Add( button );
+   pBar->mToolSizer->Add( button );
    return button;
 }
 
 
 void ToolsToolBar::Populate()
 {
+   SetBackgroundColour( theTheme.Colour( clrMedium  ) );
    MakeButtonBackgroundsSmall();
    Add(mToolSizer = safenew wxGridSizer(2, 3, 1, 1));
 
    /* Tools */
-   mTool[ selectTool   ] = MakeTool( bmpIBeam, selectTool, _("Selection Tool") );
-   mTool[ envelopeTool ] = MakeTool( bmpEnvelope, envelopeTool, _("Envelope Tool") );
-   mTool[ drawTool     ] = MakeTool( bmpDraw, drawTool, _("Draw Tool") );
-   mTool[ zoomTool     ] = MakeTool( bmpZoom, zoomTool, _("Zoom Tool") );
-   mTool[ slideTool    ] = MakeTool( bmpTimeShift, slideTool, _("Slide Tool") );
-   mTool[ multiTool    ] = MakeTool( bmpMulti, multiTool, _("Multi Tool") );
+   mTool[ selectTool   ] = MakeTool( this, bmpIBeam, selectTool, _("Selection Tool") );
+   mTool[ envelopeTool ] = MakeTool( this, bmpEnvelope, envelopeTool, _("Envelope Tool") );
+   mTool[ drawTool     ] = MakeTool( this, bmpDraw, drawTool, _("Draw Tool") );
+   mTool[ zoomTool     ] = MakeTool( this, bmpZoom, zoomTool, _("Zoom Tool") );
+   mTool[ slideTool    ] = MakeTool( this, bmpTimeShift, slideTool, _("Slide Tool") );
+   mTool[ multiTool    ] = MakeTool( this, bmpMulti, multiTool, _("Multi Tool") );
 
    mTool[mCurrentTool]->PushDown();
 
@@ -205,31 +192,28 @@ void ToolsToolBar::Populate()
 /// Gets the currently active tool
 /// In Multi-mode this might not return the multi-tool itself
 /// since the active tool may be changed by what you hover over.
-int ToolsToolBar::GetCurrentTool()
+int ToolsToolBar::GetCurrentTool() const
 {
    return mCurrentTool;
 }
 
 /// Sets the currently active tool
 /// @param tool - The index of the tool to be used.
-/// @param show - should we update the button display?
-void ToolsToolBar::SetCurrentTool(int tool, bool show)
+void ToolsToolBar::SetCurrentTool(int tool)
 {
    //In multi-mode the current tool is shown by the
    //cursor icon.  The buttons are not updated.
 
    bool leavingMulticlipMode =
-      IsDown(multiTool) && show && tool != multiTool;
+      IsDown(multiTool) && tool != multiTool;
 
    if (leavingMulticlipMode)
       mTool[multiTool]->PopUp();
 
    if (tool != mCurrentTool || leavingMulticlipMode) {
-      if (show)
-         mTool[mCurrentTool]->PopUp();
+      mTool[mCurrentTool]->PopUp();
       mCurrentTool=tool;
-      if (show)
-         mTool[mCurrentTool]->PushDown();
+      mTool[mCurrentTool]->PushDown();
    }
    //JKC: ANSWER-ME: Why is this RedrawAllProjects() line required?
    //msmeyer: I think it isn't, we leave it out for 1.3.1 (beta), and
@@ -237,17 +221,14 @@ void ToolsToolBar::SetCurrentTool(int tool, bool show)
    // RedrawAllProjects();
 
    //msmeyer: But we instruct the projects to handle the cursor shape again
-   if (show)
-   {
-      RefreshCursorForAllProjects();
+   RefreshCursorForAllProjects();
 
-      gPrefs->Write(wxT("/GUI/ToolBars/Tools/MultiToolActive"),
-                    IsDown(multiTool));
-      gPrefs->Flush();
-   }
+   gPrefs->Write(wxT("/GUI/ToolBars/Tools/MultiToolActive"),
+                 IsDown(multiTool));
+   gPrefs->Flush();
 }
 
-bool ToolsToolBar::IsDown(int tool)
+bool ToolsToolBar::IsDown(int tool) const
 {
    return mTool[tool]->IsDown();
 }
@@ -263,18 +244,9 @@ int ToolsToolBar::GetDownTool()
    return firstTool;  // Should never happen
 }
 
-const wxChar * ToolsToolBar::GetMessageForTool( int ToolNumber )
-{
-   wxASSERT( ToolNumber >= 0 );
-   wxASSERT( ToolNumber < numTools );
-
-   return mMessageOfTool[ToolNumber];
-}
-
-
 void ToolsToolBar::OnTool(wxCommandEvent & evt)
 {
-   mCurrentTool = evt.GetId() - firstTool;
+   mCurrentTool = evt.GetId() - firstTool - FirstToolID;
    for (int i = 0; i < numTools; i++)
       if (i == mCurrentTool)
          mTool[i]->PushDown();

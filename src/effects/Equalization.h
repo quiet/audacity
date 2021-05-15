@@ -9,44 +9,50 @@
 
 ***********************************************************************/
 
+#include "../Experimental.h"
+
 #ifndef __AUDACITY_EFFECT_EQUALIZATION__
 #define __AUDACITY_EFFECT_EQUALIZATION__
 #define NUMBER_OF_BANDS 31
 #define NUM_PTS 180
 #define PANELBORDER 1   // only increase from '1' for testing purposes - MJS
 
-#include "../Experimental.h"
-
-#include <wx/button.h>
-#include <wx/panel.h>
-#include <wx/dialog.h>
-#include <wx/dynarray.h>
-#include <wx/intl.h>
-#include <wx/listctrl.h>
-#include <wx/stattext.h>
-#include <wx/slider.h>
-#include <wx/sizer.h>
-#include <wx/string.h>
-#include <wx/bitmap.h>
-#include <wx/choice.h>
-#include <wx/radiobut.h>
-#include <wx/checkbox.h>
-
-#if wxUSE_ACCESSIBILITY
-#include <wx/access.h>
-#endif
+#include <wx/setup.h> // for wxUSE_* macros
 
 #include "Effect.h"
 #include "../xml/XMLTagHandler.h"
-#include "../widgets/Grid.h"
-#include "../widgets/Ruler.h"
 #include "../RealFFTf.h"
+#include "../SampleFormat.h"
 
-#define EQUALIZATION_PLUGIN_SYMBOL XO("Equalization")
+#define EQUALIZATION_PLUGIN_SYMBOL \
+ComponentInterfaceSymbol{ XO("Equalization") }
+#define GRAPHICEQ_PLUGIN_SYMBOL \
+ComponentInterfaceSymbol{ wxT("GraphicEQ"), XO("Graphic EQ") }
+#define FILTERCURVE_PLUGIN_SYMBOL \
+ComponentInterfaceSymbol{ wxT("FilterCurve"), XO("Filter Curve") }
 
+// Flags to specialise the UI
+const int kEqOptionGraphic =1;
+const int kEqOptionCurve   =1<<1;
+// The legacy version offers both Graphic and curve on the same UI.
+const int kEqLegacy = kEqOptionGraphic + kEqOptionCurve;
 
+class wxBitmap;
+class wxBoxSizer;
+class wxButton;
+class wxCheckBox;
+class wxChoice;
+class wxListCtrl;
+class wxListEvent;
+class wxRadioButton;
+class wxSizer;
+class wxSizerItem;
+class wxSlider;
+class wxStaticText;
 class Envelope;
+class EnvelopeEditor;
 class EqualizationPanel;
+class RulerPanel;
 
 //
 // One point in a curve
@@ -55,15 +61,20 @@ class EQPoint
 {
 public:
    EQPoint( const double f, const double d ) { Freq = f; dB = d; }
+
+   bool operator < (const EQPoint &p1) const
+   {
+      return Freq < p1.Freq;
+   }
+
    double Freq;
    double dB;
 };
-WX_DECLARE_OBJARRAY( EQPoint, EQPointArray);
 
 //
 // One curve in a list
 //
-// LLL:  This "really" isn't needed as the EQPointArray could be
+// LLL:  This "really" isn't needed as the array of points could be
 //       attached as wxClientData to the wxChoice entries.  I
 //       didn't realize this until after the fact and am too
 //       lazy to change it.  (But, hollar if you want me to.)
@@ -71,12 +82,19 @@ WX_DECLARE_OBJARRAY( EQPoint, EQPointArray);
 class EQCurve
 {
 public:
-   EQCurve( const wxString & name = wxEmptyString ) { Name = name; }
+   EQCurve( const wxString & name = {} ) { Name = name; }
    EQCurve( const wxChar * name ) { Name = name; }
+
+   bool operator < (const EQCurve &that) const
+   {
+      return Name.CmpNoCase(that.Name) < 0;
+   }
+
    wxString Name;
-   EQPointArray points;
+   std::vector<EQPoint> points;
 };
-WX_DECLARE_OBJARRAY( EQCurve, EQCurveArray );
+
+using EQCurveArray = std::vector<EQCurve>;
 
 #ifdef EXPERIMENTAL_EQ_SSE_THREADED
 class EffectEqualization48x;
@@ -86,22 +104,24 @@ class EffectEqualization final : public Effect,
                            public XMLTagHandler
 {
 public:
-   EffectEqualization();
+   EffectEqualization(int Options);
    virtual ~EffectEqualization();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
    bool LoadFactoryDefaults() override;
 
    // EffectUIClientInterface implementation
@@ -122,9 +142,10 @@ public:
 
 private:
    // EffectEqualization implementation
+   wxString GetPrefsPrefix();
 
    // Number of samples in an FFT window
-   enum : size_t {windowSize=16384};   //MJS - work out the optimum for this at run time?  Have a dialog box for it?
+   static const size_t windowSize = 16384u; //MJS - work out the optimum for this at run time?  Have a dialog box for it?
 
    // Low frequency of the FFT.  20Hz is the
    // low range of human hearing
@@ -141,8 +162,8 @@ private:
    void EnvelopeUpdated(Envelope *env, bool lin);
    bool IsLinear();
 
-   void LoadCurves(const wxString &fileName = wxEmptyString, bool append = false);
-   void SaveCurves(const wxString &fileName = wxEmptyString);
+   void LoadCurves(const wxString &fileName = {}, bool append = false);
+   void SaveCurves(const wxString &fileName = {});
    // Merge NEW curves only or update all factory presets.
    void UpdateDefaultCurves( bool updateAll = false);
    void Select(int sel);
@@ -152,9 +173,9 @@ private:
    bool GetDefaultFileName(wxFileName &fileName);
    
    // XMLTagHandler callback methods for loading and saving
-   bool HandleXMLTag(const wxChar *tag, const wxChar **attrs);
-   XMLTagHandler *HandleXMLChild(const wxChar *tag);
-   void WriteXML(XMLWriter &xmlFile);
+   bool HandleXMLTag(const wxChar *tag, const wxChar **attrs) override;
+   XMLTagHandler *HandleXMLChild(const wxChar *tag) override;
+   void WriteXML(XMLWriter &xmlFile) const;
 
    void UpdateCurves();
    void UpdateDraw();
@@ -165,11 +186,10 @@ private:
    void EnvLinToLog(void);
    void ErrMin(void);
    void GraphicEQ(Envelope *env);
-   void spline(double x[], double y[], int n, double y2[]);
-   double splint(double x[], double y[], int n, double y2[], double xr);
+   void spline(double x[], double y[], size_t n, double y2[]);
+   double splint(double x[], double y[], size_t n, double y2[], double xr);
 
    void OnSize( wxSizeEvent & event );
-   void OnErase( wxEraseEvent & event );
    void OnSlider( wxCommandEvent & event );
    void OnInterp( wxCommandEvent & event );
    void OnSliderM( wxCommandEvent & event );
@@ -189,10 +209,9 @@ private:
 #endif
 
 private:
+   int mOptions;
    HFFT hFFT;
-   float *mFFTBuffer;
-   float *mFilterFuncR;
-   float *mFilterFuncI;
+   Floats mFFTBuffer, mFilterFuncR, mFilterFuncI;
    size_t mM;
    wxString mCurveName;
    bool mLin;
@@ -204,11 +223,10 @@ private:
 
    double mWhens[NUM_PTS];
    double mWhenSliders[NUMBER_OF_BANDS+1];
-   int mBandsInUse;
+   size_t mBandsInUse;
    RulerPanel *mdBRuler;
    RulerPanel *mFreqRuler;
 
-   wxArrayString mInterpolations;
    bool mDisallowCustom;
    double mLoFreq;
    double mHiFreq;
@@ -257,16 +275,6 @@ private:
    wxSlider *mdBMaxSlider;
    wxSlider *mSliders[NUMBER_OF_BANDS];
 
-   static int wxCMPFUNC_CONV SortCurvesByName (EQCurve **first, EQCurve **second)
-   {
-      return (*first)->Name.CmpNoCase((*second)->Name);
-   }
-
-   static int wxCMPFUNC_CONV SortCurvePoints (EQPoint **p0, EQPoint **p1)
-   {
-      return (*p0)->Freq > (*p1)->Freq;
-   }
-
 #ifdef EXPERIMENTAL_EQ_SSE_THREADED
    wxRadioButton *mMathProcessingType[5]; // default, sse, sse threaded, AVX, AVX threaded (note AVX is not implemented yet
    wxBoxSizer *szrM;
@@ -281,7 +289,8 @@ private:
 class EqualizationPanel final : public wxPanelWrapper
 {
 public:
-   EqualizationPanel(EffectEqualization *effect, wxWindow *parent);
+   EqualizationPanel(
+      wxWindow *parent, wxWindowID winid, EffectEqualization *effect);
    ~EqualizationPanel();
 
    // We don't need or want to accept focus.
@@ -308,6 +317,7 @@ public:
 private:
    wxWindow *mParent;
    EffectEqualization *mEffect;
+   std::unique_ptr<EnvelopeEditor> mLinEditor, mLogEditor;
 
    bool mRecalcRequired;
 
@@ -318,8 +328,7 @@ private:
 //   size_t mWindowSize;
 //   float *mFilterFuncR;
 //   float *mFilterFuncI;
-   float *mOutr;
-   float *mOuti;
+   Floats mOutr, mOuti;
 
 //   double mLoFreq;
 //   double mHiFreq;
@@ -372,79 +381,5 @@ private:
    void OnListSelectionChange( wxListEvent &event );
    DECLARE_EVENT_TABLE()
 };
-
-#if wxUSE_ACCESSIBILITY
-
-class SliderAx final : public wxWindowAccessible
-{
-public:
-   SliderAx(wxWindow * window, const wxString &fmt);
-
-   virtual ~ SliderAx();
-
-   // Retrieves the address of an IDispatch interface for the specified child.
-   // All objects must support this property.
-   wxAccStatus GetChild(int childId, wxAccessible** child) override;
-
-   // Gets the number of children.
-   wxAccStatus GetChildCount(int* childCount) override;
-
-   // Gets the default action for this object (0) or > 0 (the action for a child).
-   // Return wxACC_OK even if there is no action. actionName is the action, or the empty
-   // string if there is no action.
-   // The retrieved string describes the action that is performed on an object,
-   // not what the object does as a result. For example, a toolbar button that prints
-   // a document has a default action of "Press" rather than "Prints the current document."
-   wxAccStatus GetDefaultAction(int childId, wxString *actionName) override;
-
-   // Returns the description for this object or a child.
-   wxAccStatus GetDescription(int childId, wxString *description) override;
-
-   // Gets the window with the keyboard focus.
-   // If childId is 0 and child is NULL, no object in
-   // this subhierarchy has the focus.
-   // If this object has the focus, child should be 'this'.
-   wxAccStatus GetFocus(int *childId, wxAccessible **child) override;
-
-   // Returns help text for this object or a child, similar to tooltip text.
-   wxAccStatus GetHelpText(int childId, wxString *helpText) override;
-
-   // Returns the keyboard shortcut for this object or child.
-   // Return e.g. ALT+K
-   wxAccStatus GetKeyboardShortcut(int childId, wxString *shortcut) override;
-
-   // Returns the rectangle for this object (id = 0) or a child element (id > 0).
-   // rect is in screen coordinates.
-   wxAccStatus GetLocation(wxRect& rect, int elementId) override;
-
-   // Gets the name of the specified object.
-   wxAccStatus GetName(int childId, wxString *name) override;
-
-   // Returns a role constant.
-   wxAccStatus GetRole(int childId, wxAccRole *role) override;
-
-   // Gets a variant representing the selected children
-   // of this object.
-   // Acceptable values:
-   // - a null variant (IsNull() returns TRUE)
-   // - a list variant (GetType() == wxT("list"))
-   // - an integer representing the selected child element,
-   //   or 0 if this object is selected (GetType() == wxT("long"))
-   // - a "void*" pointer to a wxAccessible child object
-   wxAccStatus GetSelections(wxVariant *selections) override;
-
-   // Returns a state constant.
-   wxAccStatus GetState(int childId, long* state) override;
-
-   // Returns a localized string representing the value for the object
-   // or child.
-   wxAccStatus GetValue(int childId, wxString* strValue) override;
-
-private:
-   wxWindow *mParent;
-   wxString mFmt;
-};
-
-#endif // wxUSE_ACCESSIBILITY
 
 #endif

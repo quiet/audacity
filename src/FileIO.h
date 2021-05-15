@@ -12,8 +12,10 @@
 #define __AUDACITY_FILEIO__
 
 #include "MemoryX.h"
-#include <wx/object.h>
-#include <wx/wfstream.h>
+
+class wxInputStream;
+class wxOutputStream;
+class wxFFileOutputStream;
 
 class FileIO
 {
@@ -26,11 +28,13 @@ class FileIO
 
  public:
    FileIO(const wxString & name, FileIOMode mode);
+
+   // Calls Close()
    ~FileIO();
 
    bool IsOpened();
 
-   void Close();
+   bool Close();
 
    wxInputStream & Read(void *buffer, size_t size);
    wxOutputStream & Write(const void *buffer, size_t size);
@@ -39,7 +43,7 @@ class FileIO
    wxString mName;
    FileIOMode mMode;
    std::unique_ptr<wxInputStream> mInputStream;
-   std::unique_ptr<wxOutputStream> mOutputStream;
+   std::unique_ptr<wxFFileOutputStream> mOutputStream;
    bool mOpen;
 };
 

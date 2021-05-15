@@ -15,27 +15,32 @@
 
 #include <wx/defs.h>
 
-#include <wx/window.h>
-
 #include "PrefsPanel.h"
 
 class ShuttleGui;
 
+#define IMPORT_EXPORT_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("IMPORT EXPORT") }
+
 class ImportExportPrefs final : public PrefsPanel
 {
  public:
-   ImportExportPrefs(wxWindow * parent);
+   ImportExportPrefs(wxWindow * parent, wxWindowID winid);
    ~ImportExportPrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+
+   bool Commit() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
  private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
 };
 
+/// A PrefsPanelFactory that creates one ImportExportPrefs panel.
 class ImportExportPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif

@@ -12,17 +12,14 @@
 #ifndef __AUDACITY_EFFECT_REVERB__
 #define __AUDACITY_EFFECT_REVERB__
 
-#include <wx/checkbox.h>
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/spinctrl.h>
-#include <wx/string.h>
-
 #include "Effect.h"
 
+class wxCheckBox;
+class wxSlider;
+class wxSpinCtrl;
 class ShuttleGui;
 
-#define REVERB_PLUGIN_SYMBOL XO("Reverb")
+#define REVERB_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Reverb") }
 
 struct Reverb_priv_t;
 
@@ -46,12 +43,13 @@ public:
       bool mWetOnly;
    };
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
@@ -62,22 +60,23 @@ public:
    bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
    bool ProcessFinalize() override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
-   wxArrayString GetFactoryPresets() override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
+   RegistryPaths GetFactoryPresets() override;
    bool LoadFactoryPreset(int id) override;
 
    // Effect implementation
 
-   bool Startup();
-   void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool Startup() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
 private:
    // EffectReverb implementation
 
-   void SetTitle(const wxString & name = wxT(""));
+   void SetTitle(const wxString & name = {});
 
 #define SpinSliderHandlers(n) \
    void On ## n ## Slider(wxCommandEvent & evt); \

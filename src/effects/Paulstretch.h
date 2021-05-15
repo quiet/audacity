@@ -10,13 +10,11 @@
 #ifndef __AUDACITY_EFFECT_PAULSTRETCH__
 #define __AUDACITY_EFFECT_PAULSTRETCH__
 
-#include <wx/string.h>
-
 #include "Effect.h"
 
 class ShuttleGui;
 
-#define PAULSTRETCH_PLUGIN_SYMBOL XO("Paulstretch")
+#define PAULSTRETCH_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Paulstretch") }
 
 class EffectPaulstretch final : public Effect
 {
@@ -24,19 +22,21 @@ public:
    EffectPaulstretch();
    virtual ~EffectPaulstretch();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 

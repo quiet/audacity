@@ -11,22 +11,16 @@
 #ifndef __AUDACITY_EFFECT_AUTODUCK__
 #define __AUDACITY_EFFECT_AUTODUCK__
 
-#include <wx/bitmap.h>
-#include <wx/event.h>
-#include <wx/gdicmn.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-#include <wx/window.h>
-
 #include "Effect.h"
-#include "../widgets/wxPanelWrapper.h"
 
+class wxBitmap;
+class wxTextCtrl;
 class EffectAutoDuckPanel;
 class ShuttleGui;
 
 #define AUTO_DUCK_PANEL_NUM_CONTROL_POINTS 5
 
-#define AUTODUCK_PLUGIN_SYMBOL XO("Auto Duck")
+#define AUTODUCK_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Auto Duck") }
 
 class EffectAutoDuck final : public Effect
 {
@@ -34,19 +28,21 @@ public:
    EffectAutoDuck();
    virtual ~EffectAutoDuck();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 
@@ -61,7 +57,7 @@ public:
 private:
    // EffectAutoDuck implementation
 
-   bool ApplyDuckFade(int trackNumber, WaveTrack *t, double t0, double t1);
+   bool ApplyDuckFade(int trackNum, WaveTrack *t, double t0, double t1);
 
    void OnValueChanged(wxCommandEvent & evt);
 
@@ -93,7 +89,8 @@ private:
 class EffectAutoDuckPanel final : public wxPanelWrapper
 {
 public:
-   EffectAutoDuckPanel(wxWindow *parent, EffectAutoDuck *effect);
+   EffectAutoDuckPanel(
+      wxWindow *parent, wxWindowID winid, EffectAutoDuck *effect);
    virtual ~EffectAutoDuckPanel();
 
 private:

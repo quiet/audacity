@@ -8,7 +8,7 @@
 
 **********************************************************************/
 
-#include "../Audacity.h"
+#include "../Audacity.h" // for USE_* macros
 #include "ExportPCM.h"
 
 #include <wx/defs.h>
@@ -18,7 +18,6 @@
 #include <wx/filename.h>
 #include <wx/intl.h>
 #include <wx/timer.h>
-#include <wx/msgdlg.h>
 #include <wx/progdlg.h>
 #include <wx/string.h>
 #include <wx/textctrl.h>
@@ -28,6 +27,7 @@
 
 #include "../FileFormats.h"
 #include "../Internat.h"
+#include "../MemoryX.h"
 #include "../Mix.h"
 #include "../Prefs.h"
 #include "../Project.h"
@@ -35,6 +35,8 @@
 #include "../Tags.h"
 #include "../Track.h"
 #include "../ondemand/ODManager.h"
+#include "../widgets/ErrorDialog.h"
+#include "../widgets/ProgressDialog.h"
 
 #include "Export.h"
 
@@ -58,8 +60,11 @@ struct
 }
 static const kFormats[] =
 {
+#if defined(__WXMAC__)
    { SF_FORMAT_AIFF | SF_FORMAT_PCM_16,   wxT("AIFF"),   XO("AIFF (Apple) signed 16-bit PCM")    },
+#endif
    { SF_FORMAT_WAV | SF_FORMAT_PCM_16,    wxT("WAV"),    XO("WAV (Microsoft) signed 16-bit PCM") },
+   { SF_FORMAT_WAV | SF_FORMAT_PCM_24,    wxT("WAV24"),  XO("WAV (Microsoft) signed 24-bit PCM") },
    { SF_FORMAT_WAV | SF_FORMAT_FLOAT,     wxT("WAVFLT"), XO("WAV (Microsoft) 32-bit float PCM")  },
 // { SF_FORMAT_WAV | SF_FORMAT_GSM610,    wxT("GSM610"), XO("GSM 6.10 WAV (mobile)")             },
 };
@@ -100,8 +105,8 @@ public:
    virtual ~ExportPCMOptions();
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
    void OnHeaderChoice(wxCommandEvent & evt);
 
@@ -112,13 +117,13 @@ private:
 
 private:
 
-   wxArrayString mHeaderNames;
-   wxArrayString mEncodingNames;
+   wxArrayStringEx mHeaderNames;
+   wxArrayStringEx mEncodingNames;
    wxChoice *mHeaderChoice;
    wxChoice *mEncodingChoice;
    int mHeaderFromChoice;
    int mEncodingFromChoice;
-   wxArrayInt mEncodingFormats;
+   std::vector<int> mEncodingFormats;
 
    DECLARE_EVENT_TABLE()
 };
@@ -132,7 +137,7 @@ ExportPCMOptions::ExportPCMOptions(wxWindow *parent, int selformat)
 {
    int format;
 
-   if (selformat < 0 || selformat >= WXSIZEOF(kFormats))
+   if (selformat < 0 || static_cast<unsigned int>(selformat) >= WXSIZEOF(kFormats))
    {
       format = ReadExportFormatPref();
    }
@@ -143,7 +148,7 @@ ExportPCMOptions::ExportPCMOptions(wxWindow *parent, int selformat)
 
    mHeaderFromChoice = 0;
    for (int i = 0, num = sf_num_headers(); i < num; i++) {
-      mHeaderNames.Add(sf_header_index_name(i));
+      mHeaderNames.push_back(sf_header_index_name(i));
       if ((format & SF_FORMAT_TYPEMASK) == (int)sf_header_index_to_type(i))
          mHeaderFromChoice = i;
    }
@@ -155,8 +160,8 @@ ExportPCMOptions::ExportPCMOptions(wxWindow *parent, int selformat)
       bool valid = ValidatePair(fmt);
       if (valid)
       {
-         mEncodingNames.Add(sf_encoding_index_name(i));
-         mEncodingFormats.Add(enc);
+         mEncodingNames.push_back(sf_encoding_index_name(i));
+         mEncodingFormats.push_back(enc);
          if ((format & SF_FORMAT_SUBMASK) == (int)sf_encoding_index_to_subtype(i))
             mEncodingFromChoice = sel;
          else
@@ -187,12 +192,12 @@ void ExportPCMOptions::PopulateOrExchange(ShuttleGui & S)
             S.SetStretchyCol(1);
             mHeaderChoice = S.Id(ID_HEADER_CHOICE)
                .AddChoice(_("Header:"),
-                          mHeaderNames[mHeaderFromChoice],
-                          &mHeaderNames);
+                          mHeaderNames,
+                          mHeaderFromChoice);
             mEncodingChoice = S.Id(ID_ENCODING_CHOICE)
                .AddChoice(_("Encoding:"),
-                          mEncodingNames[mEncodingFromChoice],
-                          &mEncodingNames);
+                          mEncodingNames,
+                          mEncodingFromChoice);
          }
          S.EndMultiColumn();
       }
@@ -227,39 +232,43 @@ bool ExportPCMOptions::TransferDataFromWindow()
 void ExportPCMOptions::OnHeaderChoice(wxCommandEvent & WXUNUSED(evt))
 {
    int format = sf_header_index_to_type(mHeaderChoice->GetSelection());
-   mEncodingNames.Clear();
+   // Fix for Bug 1218 - AIFF with no option should default to 16 bit.
+   if( format == SF_FORMAT_AIFF )
+      format = SF_FORMAT_AIFF | SF_FORMAT_PCM_16;
+
+   mEncodingNames.clear();
    mEncodingChoice->Clear();
-   mEncodingFormats.Clear();
+   mEncodingFormats.clear();
    int sel = wxNOT_FOUND;
    int i,j;
 
    int sfnum = sf_num_simple_formats();
-   wxArrayInt sfs;
+   std::vector<int> sfs;
 
    for (i = 0; i < sfnum; i++)
    {
       SF_FORMAT_INFO *fi = sf_simple_format(i);
-      sfs.Add(fi->format);
+      sfs.push_back(fi->format);
    }
 
    int num = sf_num_encodings();
    for (i = 0; i < num; i++)
    {
-      int enc = sf_encoding_index_to_subtype(i);
-      int fmt = format | enc;
+      int encSubtype = sf_encoding_index_to_subtype(i);
+      int fmt = format | encSubtype;
       bool valid  = ValidatePair(fmt);
       if (valid)
       {
          const auto name = sf_encoding_index_name(i);
-         mEncodingNames.Add(name);
+         mEncodingNames.push_back(name);
          mEncodingChoice->Append(name);
-         mEncodingFormats.Add(enc);
+         mEncodingFormats.push_back(encSubtype);
          for (j = 0; j < sfnum; j++)
          {
             int enc = sfs[j];
             if ((sel == wxNOT_FOUND) && (fmt == enc))
             {
-               sel = mEncodingFormats.GetCount()-1;
+               sel = mEncodingFormats.size() - 1;
                break;
             }
          }
@@ -272,6 +281,14 @@ void ExportPCMOptions::OnHeaderChoice(wxCommandEvent & WXUNUSED(evt))
    ValidatePair(GetFormat());
 
    TransferDataFromWindow();
+
+   // Send the event indicating a file suffix change.
+   // We pass the entire header string, which starts with the suffix.
+   wxCommandEvent event(AUDACITY_FILE_SUFFIX_EVENT, GetId());
+   event.SetEventObject(this);
+   event.SetString(mHeaderChoice->GetString(mHeaderChoice->GetSelection()));
+   ProcessWindowEvent(event);
+
 }
 
 int ExportPCMOptions::GetFormat()
@@ -312,8 +329,9 @@ public:
 
    // Required
 
-   wxWindow *OptionsCreate(wxWindow *parent, int format);
-   int Export(AudacityProject *project,
+   wxWindow *OptionsCreate(wxWindow *parent, int format) override;
+   ProgressResult Export(AudacityProject *project,
+               std::unique_ptr<ProgressDialog> &pDialog,
                unsigned channels,
                const wxString &fName,
                bool selectedOnly,
@@ -323,14 +341,14 @@ public:
                const Tags *metadata = NULL,
                int subformat = 0) override;
    // optional
-   wxString GetExtension(int index);
+   FileExtension GetExtension(int index) override;
    bool CheckFileName(wxFileName &filename, int format) override;
 
 private:
-
-   char *AdjustString(const wxString & wxStr, int sf_format);
+   void ReportTooBigError(wxWindow * pParent);
+   ArrayOf<char> AdjustString(const wxString & wxStr, int sf_format);
    bool AddStrings(AudacityProject *project, SNDFILE *sf, const Tags *tags, int sf_format);
-   void AddID3Chunk(wxString fName, const Tags *tags, int sf_format);
+   bool AddID3Chunk(wxString fName, const Tags *tags, int sf_format);
 
 };
 
@@ -367,16 +385,46 @@ ExportPCM::ExportPCM()
    SetFormat(wxT("LIBSNDFILE"), format);
    SetCanMetaData(true, format);
    SetDescription(_("Other uncompressed files"), format);
-   wxArrayString allext = sf_get_all_extensions();
+   auto allext = sf_get_all_extensions();
    wxString wavext = sf_header_extension(SF_FORMAT_WAV);   // get WAV ext.
 #if defined(wxMSW)
    // On Windows make sure WAV is at the beginning of the list of all possible
    // extensions for this format
-   allext.Remove(wavext);
-   allext.Insert(wavext, 0);
+   allext.erase( std::find( allext.begin(), allext.end(), wavext ) );
+   allext.insert(allext.begin(), wavext);
 #endif
    SetExtensions(allext, format);
    SetMaxChannels(255, format);
+}
+
+// Bug 2057
+// This function is not yet called anywhere.
+// It is provided to get the translation strings.
+// We can hook it in properly whilst translation happens.
+void ExportPCM::ReportTooBigError(wxWindow * pParent)
+{
+   //Temporary translation hack, to say 'WAV or AIFF' rather than 'WAV'
+   wxString message = 
+      _("You have attempted to Export a WAV file which would be greater than 4GB.\n"
+      "Audacity cannot do this, the Export was abandoned.");
+   if( message == 
+      "You have attempted to Export a WAV file which would be greater than 4GB.\n"
+      "Audacity cannot do this, the Export was abandoned.")
+   {
+      message.Replace( "WAV", "WAV or AIFF");
+   }
+
+   ShowErrorDialog(pParent, _("Error Exporting"), message,
+                  wxT("Size_limits_for_WAV_and_AIFF_files"));
+
+// This alternative error dialog was to cover the possibility we could not 
+// compute the size in advance.
+#if 0
+   ShowErrorDialog(pParent, _("Error Exporting"),
+                  _("Your exported WAV file has been truncated as Audacity cannot export WAV\n"
+                    "files bigger than 4GB."),
+                  wxT("Size_limits_for_WAV_files"));
+#endif
 }
 
 /**
@@ -384,7 +432,8 @@ ExportPCM::ExportPCM()
  * @param subformat Control whether we are doing a "preset" export to a popular
  * file type, or giving the user full control over libsndfile.
  */
-int ExportPCM::Export(AudacityProject *project,
+ProgressResult ExportPCM::Export(AudacityProject *project,
+                       std::unique_ptr<ProgressDialog> &pDialog,
                        unsigned numChannels,
                        const wxString &fName,
                        bool selectionOnly,
@@ -398,7 +447,7 @@ int ExportPCM::Export(AudacityProject *project,
    const TrackList   *tracks = project->GetTracks();
    int sf_format;
 
-   if (subformat < 0 || subformat >= WXSIZEOF(kFormats))
+   if (subformat < 0 || static_cast<unsigned int>(subformat) >= WXSIZEOF(kFormats))
    {
       sf_format = ReadExportFormatPref();
    }
@@ -407,7 +456,7 @@ int ExportPCM::Export(AudacityProject *project,
       sf_format = kFormats[subformat].format;
    }
 
-   int updateResult = eProgressSuccess;
+   auto updateResult = ProgressResult::Success;
    {
       wxFile f;   // will be closed when it goes out of scope
       SFFile       sf; // wraps f
@@ -435,8 +484,8 @@ int ExportPCM::Export(AudacityProject *project,
       if (!sf_format_check(&info))
          info.format = (info.format & SF_FORMAT_TYPEMASK);
       if (!sf_format_check(&info)) {
-         wxMessageBox(_("Cannot export audio in this format."));
-         return false;
+         AudacityMessageBox(_("Cannot export audio in this format."));
+         return ProgressResult::Cancelled;
       }
 
       if (f.Open(fName, wxFile::write)) {
@@ -449,9 +498,9 @@ int ExportPCM::Export(AudacityProject *project,
       }
 
       if (!sf) {
-         wxMessageBox(wxString::Format(_("Cannot export audio to %s"),
-                                       fName.c_str()));
-         return false;
+         AudacityMessageBox(wxString::Format(_("Cannot export audio to %s"),
+                                       fName));
+         return ProgressResult::Cancelled;
       }
       // Retrieve tags if not given a set
       if (metadata == NULL)
@@ -462,7 +511,7 @@ int ExportPCM::Export(AudacityProject *project,
       if ((sf_format & SF_FORMAT_TYPEMASK) != SF_FORMAT_WAV &&
           (sf_format & SF_FORMAT_TYPEMASK) != SF_FORMAT_WAVEX) {
          if (!AddStrings(project, sf.get(), metadata, sf_format)) {
-            return false;
+            return ProgressResult::Cancelled;
          }
       }
 
@@ -472,7 +521,17 @@ int ExportPCM::Export(AudacityProject *project,
       else
          format = int16Sample;
 
-      int maxBlockLen = 44100 * 5;
+      float sampleCount = (float)(t1-t0)*rate*info.channels;
+      // floatSamples are always 4 byte, even if processor uses more.
+      float byteCount = sampleCount * ((format==int16Sample)?2:4);
+      // Test for 4 Gibibytes, rather than 4 Gigabytes
+      if( byteCount > 4.295e9)
+      {
+         ReportTooBigError( wxTheApp->GetTopWindow() );
+         return ProgressResult::Failed;
+      }
+
+      size_t maxBlockLen = 44100 * 5;
 
       const WaveTrackConstArray waveTracks =
       tracks->GetWaveTrackConstArray(selectionOnly, false);
@@ -484,16 +543,17 @@ int ExportPCM::Export(AudacityProject *project,
                                   info.channels, maxBlockLen, true,
                                   rate, format, true, mixerSpec);
 
-         ProgressDialog progress(wxFileName(fName).GetName(),
-                                 selectionOnly ?
-                                 wxString::Format(_("Exporting the selected audio as %s"),
-                                                  formatStr.c_str()) :
-                                 wxString::Format(_("Exporting the entire project as %s"),
-                                                  formatStr.c_str()));
+         InitProgress( pDialog, wxFileName(fName).GetName(),
+            selectionOnly
+               ? wxString::Format(_("Exporting the selected audio as %s"),
+                  formatStr)
+               : wxString::Format(_("Exporting the audio as %s"),
+                  formatStr) );
+         auto &progress = *pDialog;
 
-         while (updateResult == eProgressSuccess) {
+         while (updateResult == ProgressResult::Success) {
             sf_count_t samplesWritten;
-            auto numSamples = mixer->Process(maxBlockLen);
+            size_t numSamples = mixer->Process(maxBlockLen);
 
             if (numSamples == 0)
                break;
@@ -505,16 +565,17 @@ int ExportPCM::Export(AudacityProject *project,
             else
                samplesWritten = SFCall<sf_count_t>(sf_writef_float, sf.get(), (float *)mixed, numSamples);
 
-            if (samplesWritten != numSamples) {
+            if (static_cast<size_t>(samplesWritten) != numSamples) {
                char buffer2[1000];
                sf_error_str(sf.get(), buffer2, 1000);
-               wxMessageBox(wxString::Format(
+               AudacityMessageBox(wxString::Format(
                                              /* i18n-hint: %s will be the error message from libsndfile, which
                                               * is usually something unhelpful (and untranslated) like "system
                                               * error" */
                                              _("Error while writing %s file (disk full?).\nLibsndfile says \"%s\""),
-                                             formatStr.c_str(),
-                                             wxString::FromAscii(buffer2).c_str()));
+                                             formatStr,
+                                             wxString::FromAscii(buffer2)));
+               updateResult = ProgressResult::Cancelled;
                break;
             }
             
@@ -523,22 +584,39 @@ int ExportPCM::Export(AudacityProject *project,
       }
       
       // Install the WAV metata in a "LIST" chunk at the end of the file
-      if ((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_WAV ||
-          (sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_WAVEX) {
-         if (!AddStrings(project, sf.get(), metadata, sf_format)) {
-            return false;
+      if (updateResult == ProgressResult::Success ||
+          updateResult == ProgressResult::Stopped) {
+         if ((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_WAV ||
+             (sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_WAVEX) {
+            if (!AddStrings(project, sf.get(), metadata, sf_format)) {
+               // TODO: more precise message
+               AudacityMessageBox(_("Unable to export"));
+               return ProgressResult::Cancelled;
+            }
+         }
+         if (0 != sf.close()) {
+            // TODO: more precise message
+            AudacityMessageBox(_("Unable to export"));
+            return ProgressResult::Cancelled;
          }
       }
    }
 
-   if (((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_AIFF) ||
-       ((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_WAV))
-      AddID3Chunk(fName, metadata, sf_format);
+   if (updateResult == ProgressResult::Success ||
+       updateResult == ProgressResult::Stopped)
+      if (((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_AIFF) ||
+          ((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_WAV))
+         // Note: file has closed, and gets reopened and closed again here:
+         if (!AddID3Chunk(fName, metadata, sf_format) ) {
+            // TODO: more precise message
+            AudacityMessageBox(_("Unable to export"));
+            return ProgressResult::Cancelled;
+         }
 
    return updateResult;
 }
 
-char *ExportPCM::AdjustString(const wxString & wxStr, int sf_format)
+ArrayOf<char> ExportPCM::AdjustString(const wxString & wxStr, int sf_format)
 {
    bool b_aiff = false;
    if ((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_AIFF)
@@ -547,34 +625,26 @@ char *ExportPCM::AdjustString(const wxString & wxStr, int sf_format)
    // We must convert the string to 7 bit ASCII
    size_t  sz = wxStr.length();
    if(sz == 0)
-      return NULL;
-   // Size for secure malloc in case of local wide char usage
+      return {};
+   // Size for secure allocation in case of local wide char usage
    size_t  sr = (sz+4) * 2;
 
-   char *pDest = (char *)malloc(sr);
+   ArrayOf<char> pDest{ sr, true };
    if (!pDest)
-      return NULL;
-   char *pSrc = (char *)malloc(sr);
+      return {};
+   ArrayOf<char> pSrc{ sr, true };
    if (!pSrc)
-   {
-      free(pDest);
-      return NULL;
-   }
-   memset(pDest, 0, sr);
-   memset(pSrc, 0, sr);
+      return {};
 
    if(wxStr.mb_str(wxConvISO8859_1))
-      strncpy(pSrc, wxStr.mb_str(wxConvISO8859_1), sz);
+      strncpy(pSrc.get(), wxStr.mb_str(wxConvISO8859_1), sz);
    else if(wxStr.mb_str())
-      strncpy(pSrc, wxStr.mb_str(), sz);
-   else {
-      free(pDest);
-      free(pSrc);
-      return NULL;
-   }
+      strncpy(pSrc.get(), wxStr.mb_str(), sz);
+   else
+      return {};
 
-   char *pD = pDest;
-   char *pS = pSrc;
+   char *pD = pDest.get();
+   char *pS = pSrc.get();
    unsigned char c;
 
    // ISO Latin to 7 bit ascii conversion table (best approximation)
@@ -622,13 +692,11 @@ char *ExportPCM::AdjustString(const wxString & wxStr, int sf_format)
    }
    *pD = '\0';
 
-   free(pSrc);
-
    if(b_aiff) {
-      int len = (int)strlen(pDest);
+      int len = (int)strlen(pDest.get());
       if((len % 2) != 0) {
          // In case of an odd length string, add a space char
-         strcat(pDest, " ");
+         strcat(pDest.get(), " ");
       }
    }
 
@@ -638,84 +706,82 @@ char *ExportPCM::AdjustString(const wxString & wxStr, int sf_format)
 bool ExportPCM::AddStrings(AudacityProject * WXUNUSED(project), SNDFILE *sf, const Tags *tags, int sf_format)
 {
    if (tags->HasTag(TAG_TITLE)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_TITLE), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_TITLE), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_TITLE, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_TITLE, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_ALBUM)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_ALBUM), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_ALBUM), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_ALBUM, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_ALBUM, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_ARTIST)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_ARTIST), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_ARTIST), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_ARTIST, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_ARTIST, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_COMMENTS)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_COMMENTS), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_COMMENTS), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_COMMENT, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_COMMENT, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_YEAR)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_YEAR), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_YEAR), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_DATE, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_DATE, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_GENRE)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_GENRE), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_GENRE), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_GENRE, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_GENRE, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_COPYRIGHT)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_COPYRIGHT), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_COPYRIGHT), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_COPYRIGHT, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_COPYRIGHT, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_SOFTWARE)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_SOFTWARE), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_SOFTWARE), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_SOFTWARE, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_SOFTWARE, ascii7Str.get());
       }
    }
 
    if (tags->HasTag(TAG_TRACK)) {
-      char * ascii7Str = AdjustString(tags->GetTag(TAG_TRACK), sf_format);
+      auto ascii7Str = AdjustString(tags->GetTag(TAG_TRACK), sf_format);
       if (ascii7Str) {
-         sf_set_string(sf, SF_STR_TRACKNUMBER, ascii7Str);
-         free(ascii7Str);
+         sf_set_string(sf, SF_STR_TRACKNUMBER, ascii7Str.get());
       }
    }
 
    return true;
 }
 
-void ExportPCM::AddID3Chunk(wxString fName, const Tags *tags, int sf_format)
+#ifdef USE_LIBID3TAG
+struct id3_tag_deleter {
+   void operator () (id3_tag *p) const { if (p) id3_tag_delete(p); }
+};
+using id3_tag_holder = std::unique_ptr<id3_tag, id3_tag_deleter>;
+#endif
+
+bool ExportPCM::AddID3Chunk(wxString fName, const Tags *tags, int sf_format)
 {
 #ifdef USE_LIBID3TAG
-   struct id3_tag *tp = id3_tag_new();
+   id3_tag_holder tp { id3_tag_new() };
 
    for (const auto &pair : tags->GetRange()) {
       const auto &n = pair.first;
@@ -756,8 +822,8 @@ void ExportPCM::AddID3Chunk(wxString fName, const Tags *tags, int sf_format)
          id3_field_settextencoding(id3_frame_field(frame, 0), ID3_FIELD_TEXTENCODING_ISO_8859_1);
       }
 
-      id3_ucs4_t *ucs4 =
-         id3_utf8_ucs4duplicate((id3_utf8_t *) (const char *) v.mb_str(wxConvUTF8));
+      MallocString<id3_ucs4_t> ucs4{
+         id3_utf8_ucs4duplicate((id3_utf8_t *) (const char *) v.mb_str(wxConvUTF8)) };
 
       if (strcmp(name, ID3_FRAME_COMMENT) == 0) {
          // A hack to get around iTunes not recognizing the comment.  The
@@ -767,23 +833,21 @@ void ExportPCM::AddID3Chunk(wxString fName, const Tags *tags, int sf_format)
          // way of clearing the field, so do it directly.
          id3_field *f = id3_frame_field(frame, 1);
          memset(f->immediate.value, 0, sizeof(f->immediate.value));
-         id3_field_setfullstring(id3_frame_field(frame, 3), ucs4);
+         id3_field_setfullstring(id3_frame_field(frame, 3), ucs4.get());
       }
       else if (strcmp(name, "TXXX") == 0) {
-         id3_field_setstring(id3_frame_field(frame, 2), ucs4);
-         free(ucs4);
+         id3_field_setstring(id3_frame_field(frame, 2), ucs4.get());
 
-         ucs4 = id3_utf8_ucs4duplicate((id3_utf8_t *) (const char *) n.mb_str(wxConvUTF8));
+         ucs4.reset(id3_utf8_ucs4duplicate((id3_utf8_t *) (const char *) n.mb_str(wxConvUTF8)));
 
-         id3_field_setstring(id3_frame_field(frame, 1), ucs4);
+         id3_field_setstring(id3_frame_field(frame, 1), ucs4.get());
       }
       else {
-         id3_field_setstrings(id3_frame_field(frame, 1), 1, &ucs4);
+         auto addr = ucs4.get();
+         id3_field_setstrings(id3_frame_field(frame, 1), 1, &addr);
       }
 
-      free(ucs4);
-
-      id3_tag_attachframe(tp, frame);
+      id3_tag_attachframe(tp.get(), frame);
    }
 
    tp->options &= (~ID3_TAG_OPTION_COMPRESSION); // No compression
@@ -797,62 +861,69 @@ void ExportPCM::AddID3Chunk(wxString fName, const Tags *tags, int sf_format)
 
    id3_length_t len;
 
-   len = id3_tag_render(tp, 0);
-   if (len == 0) {
-      id3_tag_delete(tp);
-      return;
-   }
+   len = id3_tag_render(tp.get(), 0);
+   if (len == 0)
+      return true;
+
    if ((len % 2) != 0) len++;   // Length must be even.
-   id3_byte_t *buffer = (id3_byte_t *)malloc(len);
-   if (buffer == NULL) {
-      id3_tag_delete(tp);
-      return;
-   }
+   ArrayOf<id3_byte_t> buffer { len, true };
+   if (buffer == NULL)
+      return false;
+
    // Zero all locations, for ending odd UTF16 content
    // correctly, i.e., two '\0's at the end.
-   memset(buffer, 0, len);
 
-   id3_tag_render(tp, buffer);
-
-   id3_tag_delete(tp);
+   id3_tag_render(tp.get(), buffer.get());
 
    wxFFile f(fName, wxT("r+b"));
-   // FIXME: TRAP_ERR wxFFILE ops in Export PCM ID3 could fail.
    if (f.IsOpened()) {
       wxUint32 sz;
 
       sz = (wxUint32) len;
-      f.SeekEnd(0);
+      if (!f.SeekEnd(0))
+         return false;
       if ((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_WAV)
-         f.Write("id3 ", 4);	// Must be lower case for foobar2000.
+         {
+            if (4 != f.Write("id3 ", 4))// Must be lower case for foobar2000.
+               return false ;
+         }
       else {
-         f.Write("ID3 ", 4);
+         if (4 != f.Write("ID3 ", 4))
+            return false;
          sz = wxUINT32_SWAP_ON_LE(sz);
       }
-      f.Write(&sz, 4);
+      if (4 != f.Write(&sz, 4))
+         return false;
 
-      f.Write(buffer, len);
+      if (len != f.Write(buffer.get(), len))
+         return false;
 
       sz = (wxUint32) f.Tell() - 8;
       if ((sf_format & SF_FORMAT_TYPEMASK) == SF_FORMAT_AIFF)
          sz = wxUINT32_SWAP_ON_LE(sz);
 
-      f.Seek(4);
-      f.Write(&sz, 4);
+      if (!f.Seek(4))
+         return false;
+      if (4 != f.Write(&sz, 4))
+         return false;
 
-      f.Close();
+      if (!f.Flush())
+         return false;
+
+      if (!f.Close())
+         return false;
    }
-
-   free(buffer);
+   else
+      return false;
 #endif
-   return;
+   return true;
 }
 
 wxWindow *ExportPCM::OptionsCreate(wxWindow *parent, int format)
 {
    wxASSERT(parent); // to justify safenew
    // default, full user control
-   if (format < 0 || format >= WXSIZEOF(kFormats))
+   if (format < 0 || static_cast<unsigned int>(format) >= WXSIZEOF(kFormats))
    {
       return safenew ExportPCMOptions(parent, format);
    }
@@ -860,7 +931,7 @@ wxWindow *ExportPCM::OptionsCreate(wxWindow *parent, int format)
    return ExportPlugin::OptionsCreate(parent, format);
 }
 
-wxString ExportPCM::GetExtension(int index)
+FileExtension ExportPCM::GetExtension(int index)
 {
    if (index == WXSIZEOF(kFormats)) {
       // get extension libsndfile thinks is correct for currently selected format
@@ -890,7 +961,7 @@ bool ExportPCM::CheckFileName(wxFileName &filename, int format)
    return ExportPlugin::CheckFileName(filename, format);
 }
 
-movable_ptr<ExportPlugin> New_ExportPCM()
+std::unique_ptr<ExportPlugin> New_ExportPCM()
 {
-   return make_movable<ExportPCM>();
+   return std::make_unique<ExportPCM>();
 }

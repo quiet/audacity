@@ -9,23 +9,20 @@
 
 **********************************************************************/
 
-#include "Experimental.h"
-
 #ifndef __AUDACITY_LYRICS_WINDOW__
 #define __AUDACITY_LYRICS_WINDOW__
 
-#include <wx/frame.h>
+#include <wx/frame.h> // to inherit
 
 class AudacityProject;
-class Lyrics;
+class LyricsPanel;
 
 class LyricsWindow final : public wxFrame {
 
  public:
    LyricsWindow(AudacityProject* parent);
-   virtual ~LyricsWindow();
 
-   Lyrics *GetLyricsPanel() { return mLyricsPanel; };
+   LyricsPanel *GetLyricsPanel() { return mLyricsPanel; };
 
  private:
    void OnCloseWindow(wxCloseEvent & WXUNUSED(event));
@@ -35,7 +32,7 @@ class LyricsWindow final : public wxFrame {
    void OnTimer(wxCommandEvent &event);
 
    AudacityProject *mProject;
-   Lyrics *mLyricsPanel;
+   LyricsPanel *mLyricsPanel;
 
  public:
    DECLARE_EVENT_TABLE()

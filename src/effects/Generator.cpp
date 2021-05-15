@@ -23,6 +23,7 @@
 #include "TimeWarper.h"
 
 #include "../MemoryX.h"
+#include "../widgets/ErrorDialog.h"
 
 bool Generator::Process()
 {
@@ -31,22 +32,18 @@ bool Generator::Process()
 
 
    // Set up mOutputTracks.
-   // This effect needs Track::All for sync-lock grouping.
-   this->CopyInputTracks(Track::All);
+   // This effect needs all for sync-lock grouping.
+   this->CopyInputTracks(true);
 
    // Iterate over the tracks
    bool bGoodResult = true;
    int ntrack = 0;
-   TrackListIterator iter(mOutputTracks.get());
-   Track* t = iter.First();
 
-   while (t != NULL)
-   {
-      if (t->GetKind() == Track::Wave && t->GetSelected()) {
-         WaveTrack* track = (WaveTrack*)t;
-
-         bool editClipCanMove;
-         gPrefs->Read(wxT("/GUI/EditClipCanMove"), &editClipCanMove, true);
+   mOutputTracks->Any().VisitWhile( bGoodResult,
+      [&](WaveTrack *track, const Track::Fallthrough &fallthrough) {
+         if (!track->GetSelected())
+            return fallthrough();
+         bool editClipCanMove = gPrefs->GetEditClipsCanMove();
 
          //if we can't move clips, and we're generating into an empty space,
          //make sure there's room.
@@ -54,11 +51,13 @@ bool Generator::Process()
              track->IsEmpty(mT0, mT1+1.0/track->GetRate()) &&
              !track->IsEmpty(mT0, mT0+GetDuration()-(mT1-mT0)-1.0/track->GetRate()))
          {
-            wxMessageBox(
+            Effect::MessageBox(
                   _("There is not enough room available to generate the audio"),
-                  _("Error"), wxICON_STOP);
+                  wxICON_STOP,
+                  _("Error"));
             Failure();
-            return false;
+            bGoodResult = false;
+            return;
          }
 
          if (GetDuration() > 0.0)
@@ -78,14 +77,17 @@ bool Generator::Process()
             else {
                // Transfer the data from the temporary track to the actual one
                tmp->Flush();
-               SetTimeWarper(std::make_unique<StepTimeWarper>(mT0+GetDuration(), GetDuration()-(mT1-mT0)));
-               bGoodResult = track->ClearAndPaste(p->GetSel0(), p->GetSel1(), &*tmp, true,
-                     false, GetTimeWarper());
+               StepTimeWarper warper{
+                  mT0+GetDuration(), GetDuration()-(mT1-mT0) };
+               const auto &selectedRegion = p->GetViewInfo().selectedRegion;
+               track->ClearAndPaste(
+                  selectedRegion.t0(), selectedRegion.t1(),
+                  &*tmp, true, false, &warper);
             }
 
             if (!bGoodResult) {
                Failure();
-               return false;
+               return;
             }
          }
          else
@@ -96,21 +98,23 @@ bool Generator::Process()
          }
 
          ntrack++;
+      },
+      [&](Track *t) {
+         if (t->IsSyncLockSelected()) {
+            t->SyncLockAdjust(mT1, mT0 + GetDuration());
+         }
       }
-      else if (t->IsSyncLockSelected()) {
-         t->SyncLockAdjust(mT1, mT0 + GetDuration());
-      }
-      // Move on to the next track
-      t = iter.Next();
+   );
+
+   if (bGoodResult) {
+      Success();
+
+      this->ReplaceProcessedTracks(bGoodResult);
+
+      mT1 = mT0 + GetDuration(); // Update selection.
    }
 
-   Success();
-
-   this->ReplaceProcessedTracks(bGoodResult);
-
-   mT1 = mT0 + GetDuration(); // Update selection.
-
-   return true;
+   return bGoodResult;
 }
 
 bool BlockGenerator::GenerateTrack(WaveTrack *tmp,
@@ -120,16 +124,16 @@ bool BlockGenerator::GenerateTrack(WaveTrack *tmp,
    bool bGoodResult = true;
    numSamples = track.TimeToLongSamples(GetDuration());
    decltype(numSamples) i = 0;
-   float *data = new float[tmp->GetMaxBlockSize()];
+   Floats data{ tmp->GetMaxBlockSize() };
 
    while ((i < numSamples) && bGoodResult) {
       const auto block =
          limitSampleBufferSize( tmp->GetBestBlockSize(i), numSamples - i );
 
-      GenerateBlock(data, track, block);
+      GenerateBlock(data.get(), track, block);
 
       // Add the generated data to the temporary track
-      tmp->Append((samplePtr)data, floatSample, block);
+      tmp->Append((samplePtr)data.get(), floatSample, block);
       i += block;
 
       // Update the progress meter
@@ -138,6 +142,5 @@ bool BlockGenerator::GenerateTrack(WaveTrack *tmp,
                         numSamples.as_double()))
          bGoodResult = false;
    }
-   delete[] data;
    return bGoodResult;
 }

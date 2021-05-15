@@ -16,7 +16,19 @@ Describes shared object that is used to access FFmpeg libraries.
 #if !defined(__AUDACITY_FFMPEG__)
 #define __AUDACITY_FFMPEG__
 
+#include "Audacity.h" // for USE_* macros
+
 #include "MemoryX.h"
+
+#include "Internat.h"
+
+#include "widgets/wxPanelWrapper.h" // to inherit
+
+#if defined(__WXMSW__)
+#include <wx/msw/registry.h> // for wxRegKey
+#endif
+
+class wxCheckBox;
 
 // TODO: Determine whether the libav* headers come from the FFmpeg or libav
 // project and set IS_FFMPEG_PROJECT depending on it.
@@ -126,27 +138,30 @@ extern "C" {
       }
       #endif
    #endif
+
+   #if LIBAVCODEC_VERSION_MAJOR < 58
+      #ifndef AV_CODEC_FLAG_QSCALE
+         #define AV_CODEC_FLAG_QSCALE CODEC_FLAG_QSCALE
+      #endif
+      #ifndef AV_CODEC_FLAG_GLOBAL_HEADER
+         #define AV_CODEC_FLAG_GLOBAL_HEADER CODEC_FLAG_GLOBAL_HEADER
+      #endif
+      #ifndef AV_CODEC_CAP_SMALL_LAST_FRAME
+         #define AV_CODEC_CAP_SMALL_LAST_FRAME CODEC_CAP_SMALL_LAST_FRAME
+      #endif
+   #endif
+
 }
 #endif
 
-#include "Audacity.h"
-#include "Experimental.h"
-
 /* rather earlier than normal, but pulls in config*.h and other program stuff
  * we need for the next bit */
-#include <wx/string.h>
-#include <wx/dynlib.h>
-#include <wx/log.h>      // for wxLogNull
-#include <wx/msgdlg.h>   // for wxMessageBox
-#include <wx/utils.h>
-#include "widgets/LinkingHtmlWindow.h"
-#include "FileDialog.h"
 #include "ShuttleGui.h"
 #include "Prefs.h"
-#include <wx/checkbox.h>
-#include <wx/textctrl.h>
 
 #include "audacity/Types.h"
+
+class wxDynamicLibrary;
 
 // if you needed them, any other audacity header files would go here
 
@@ -176,53 +191,11 @@ class FFmpegNotFoundDialog final : public wxDialogWrapper
 {
 public:
 
-   FFmpegNotFoundDialog(wxWindow *parent)
-      :  wxDialogWrapper(parent, wxID_ANY, wxString(_("FFmpeg not found")))
-   {
-      SetName(GetTitle());
-      ShuttleGui S(this, eIsCreating);
-      PopulateOrExchange(S);
-   }
+   FFmpegNotFoundDialog(wxWindow *parent);
 
-   void PopulateOrExchange(ShuttleGui & S)
-   {
-      wxString text;
+   void PopulateOrExchange(ShuttleGui & S);
 
-      S.SetBorder(10);
-      S.StartVerticalLay(true);
-      {
-         S.AddFixedText(_(
-"Audacity attempted to use FFmpeg to import an audio file,\n\
-but the libraries were not found.\n\n\
-To use FFmpeg import, go to Preferences > Libraries\n\
-to download or locate the FFmpeg libraries."
-         ));
-
-         int dontShowDlg = 0;
-         gPrefs->Read(wxT("/FFmpeg/NotFoundDontShow"),&dontShowDlg,0);
-         mDontShow = S.AddCheckBox(_("Do not show this warning again"),dontShowDlg ? wxT("true") : wxT("false"));
-
-         S.AddStandardButtons(eOkButton);
-      }
-      S.EndVerticalLay();
-
-      Layout();
-      Fit();
-      SetMinSize(GetSize());
-      Center();
-
-      return;
-   }
-
-   void OnOk(wxCommandEvent & WXUNUSED(event))
-   {
-      if (mDontShow->GetValue())
-      {
-         gPrefs->Write(wxT("/FFmpeg/NotFoundDontShow"),1);
-         gPrefs->Flush();
-      }
-      this->EndModal(0);
-   }
+   void OnOk(wxCommandEvent & WXUNUSED(event));
 
 private:
 
@@ -267,7 +240,7 @@ public:
    ///\return libavformat library version or empty string?
    wxString GetLibraryVersion()
    {
-      return wxString::Format(wxT("F(%s),C(%s),U(%s)"),mAVFormatVersion.c_str(),mAVCodecVersion.c_str(),mAVUtilVersion.c_str());
+      return wxString::Format(wxT("F(%s),C(%s),U(%s)"),mAVFormatVersion,mAVCodecVersion,mAVUtilVersion);
    }
 
 #if defined(__WXMSW__)
@@ -319,16 +292,22 @@ public:
 
    wxString GetLibAVFormatName()
    {
+      if (sizeof(void*) == 8)
+         return (wxT("ffmpeg.") wxT(AV_STRINGIFY(LIBAVFORMAT_VERSION_MAJOR)) wxT(".64bit.dylib"));
       return (wxT("libavformat.") wxT(AV_STRINGIFY(LIBAVFORMAT_VERSION_MAJOR)) wxT(".dylib"));
    }
 
    wxString GetLibAVCodecName()
    {
+      if (sizeof(void*) == 8)
+         return (wxT("ffmpeg_codecs.") wxT(AV_STRINGIFY(LIBAVCODEC_VERSION_MAJOR)) wxT(".64bit.dylib"));
       return (wxT("libavcodec.") wxT(AV_STRINGIFY(LIBAVCODEC_VERSION_MAJOR)) wxT(".dylib"));
    }
 
    wxString GetLibAVUtilName()
    {
+      if (sizeof(void*) == 8)
+         return (wxT("ffmpeg_utils.") wxT(AV_STRINGIFY(LIBAVUTIL_VERSION_MAJOR)) wxT(".64bit.dylib"));
       return (wxT("libavutil.") wxT(AV_STRINGIFY(LIBAVUTIL_VERSION_MAJOR)) wxT(".dylib"));
    }
 #else
@@ -401,8 +380,8 @@ struct FFmpegContext {
    AVFormatContext *ic_ptr{};
 };
 
-int ufile_fopen(AVIOContext **s, const wxString & name, int flags);
-int ufile_fopen_input(std::unique_ptr<FFmpegContext> &context_ptr, wxString & name);
+int ufile_fopen(AVIOContext **s, const FilePath & name, int flags);
+int ufile_fopen_input(std::unique_ptr<FFmpegContext> &context_ptr, FilePath & name);
 int ufile_close(AVIOContext *pb);
 
 struct streamContext;
@@ -535,6 +514,12 @@ extern "C" {
       (void *ptr),
       (ptr)
    );
+   FFMPEG_FUNCTION_WITH_RETURN(
+      int64_t,
+      av_get_default_channel_layout,
+      (int nb_channels),
+      (nb_channels)
+   );
 
    //
    // libavcodec
@@ -560,6 +545,12 @@ extern "C" {
    FFMPEG_FUNCTION_WITH_RETURN(
       AVCodec*,
       avcodec_find_decoder,
+      (enum AVCodecID id),
+      (id)
+   );
+   FFMPEG_FUNCTION_WITH_RETURN(
+      const char*,
+      avcodec_get_name,
       (enum AVCodecID id),
       (id)
    );
@@ -927,7 +918,22 @@ private:
 // utilites for RAII:
 
 // Deleter adaptor for functions like av_free that take a pointer
+
+/// \brief AV_Deleter is part of FFmpeg support.  It's used with the RAII
+/// idiom.
 template<typename T, typename R, R(*Fn)(T*)> struct AV_Deleter {
+   inline R operator() (T* p) const
+   {
+      R result{};
+      if (p)
+         result = Fn(p);
+      return result;
+   }
+};
+
+// Specialization of previous for void return
+template<typename T, void(*Fn)(T*)>
+struct AV_Deleter<T, void, Fn> {
    inline void operator() (T* p) const
    {
       if (p)
@@ -959,9 +965,29 @@ using AVCodecContextHolder = std::unique_ptr<
 using AVDictionaryCleanup = std::unique_ptr<
    AVDictionary*, AV_Deleter<AVDictionary*, void, av_dict_free>
 >;
-using UFileHolder = std::unique_ptr<
-   AVIOContext, AV_Deleter<AVIOContext, int, ufile_close>
->;
+
+/// \brief FFmpeg structure to hold a file pointer and provide a return 
+/// value when closing the file.
+struct UFileHolder : public std::unique_ptr<
+   AVIOContext, ::AV_Deleter<AVIOContext, int, ufile_close>
+>
+{
+   UFileHolder() = default;
+   UFileHolder( UFileHolder &&that )
+   : std::unique_ptr< AVIOContext, ::AV_Deleter<AVIOContext, int, ufile_close> >(
+        std::move(that) )
+   {
+   }
+
+   // Close explicitly, not ignoring return values.
+   int close()
+   {
+      auto result = get_deleter() ( get() );
+      release();
+      return result;
+   }
+};
+
 template<typename T> using AVMallocHolder = std::unique_ptr<
    T, AV_Deleter<void, void, av_free>
 >;
@@ -982,13 +1008,13 @@ struct streamContext
    int                  m_frameValid{};                    // is m_decodedVideoFrame/m_decodedAudioSamples valid?
    AVMallocHolder<uint8_t> m_decodedAudioSamples;           // decoded audio samples stored here
    unsigned int         m_decodedAudioSamplesSiz{};        // current size of m_decodedAudioSamples
-   int                  m_decodedAudioSamplesValidSiz{};   // # valid bytes in m_decodedAudioSamples
+   size_t               m_decodedAudioSamplesValidSiz{};   // # valid bytes in m_decodedAudioSamples
    int                  m_initialchannels{};               // number of channels allocated when we begin the importing. Assumes that number of channels doesn't change on the fly.
 
-   int                  m_samplesize{};                    // input sample size in bytes
+   size_t               m_samplesize{};                    // input sample size in bytes
    AVSampleFormat       m_samplefmt{ AV_SAMPLE_FMT_NONE  }; // input sample format
 
-   int                  m_osamplesize{};                   // output sample size in bytes
+   size_t               m_osamplesize{};                   // output sample size in bytes
    sampleFormat         m_osamplefmt{ floatSample };                    // output sample format
 
    streamContext() { memset(this, 0, sizeof(*this)); }

@@ -7,39 +7,34 @@
   Audacity(R) is copyright (c) 1999-2008 Audacity Team.
   License: GPL v2.  See License.txt.
 
-******************************************************************//**
-
-\class EffectManager
-\brief EffectManager is the class that handles effects and effect categories.
-
-It maintains a graph of effect categories and subcategories,
-registers and unregisters effects and can return filtered lists of
-effects.
-
-*//*******************************************************************/
+**********************************************************************/
 
 #ifndef __AUDACITY_EFFECTMANAGER__
 #define __AUDACITY_EFFECTMANAGER__
 
 #include "../Experimental.h"
 
-#include <wx/choice.h>
-#include <wx/dialog.h>
-#include <wx/event.h>
-#include <wx/listbox.h>
-#include <wx/string.h>
+#include <vector>
 
 #include "audacity/EffectInterface.h"
-#include "../PluginManager.h"
 #include "Effect.h"
 
-WX_DEFINE_USER_EXPORTED_ARRAY(Effect *, EffectArray, class AUDACITY_DLL_API);
-WX_DECLARE_STRING_HASH_MAP_WITH_DECL(Effect *, EffectMap, class AUDACITY_DLL_API);
-WX_DECLARE_STRING_HASH_MAP_WITH_DECL(std::shared_ptr<Effect>, EffectOwnerMap, class AUDACITY_DLL_API);
+#include <unordered_map>
+
+class AudacityCommand;
+class CommandContext;
+class CommandMessageTarget;
+
+using EffectArray = std::vector <Effect*> ;
+using EffectMap = std::unordered_map<wxString, Effect *>;
+using AudacityCommandMap = std::unordered_map<wxString, AudacityCommand *>;
+using EffectOwnerMap = std::unordered_map< wxString, std::shared_ptr<Effect> >;
 
 #if defined(EXPERIMENTAL_EFFECTS_RACK)
 class EffectRack;
 #endif
+class AudacityCommand;
+
 
 class AUDACITY_DLL_API EffectManager
 {
@@ -77,9 +72,25 @@ public:
                  SelectedRegion *selectedRegion,
                  bool shouldPrompt = true);
 
-   wxString GetEffectName(const PluginID & ID);
-   wxString GetEffectIdentifier(const PluginID & ID);
-   wxString GetEffectDescription(const PluginID & ID);
+   wxString GetEffectFamilyName(const PluginID & ID);
+   wxString GetVendorName(const PluginID & ID);
+
+   /** Run a command given the plugin ID */
+   // Returns true on success. 
+   bool DoAudacityCommand(const PluginID & ID,
+                         const CommandContext &,
+                         wxWindow *parent,
+                         bool shouldPrompt  = true );
+
+   // Renamed from 'Effect' to 'Command' prior to moving out of this class.
+   ComponentInterfaceSymbol GetCommandSymbol(const PluginID & ID);
+   wxString GetCommandName(const PluginID & ID); // translated
+   CommandID GetCommandIdentifier(const PluginID & ID);
+   wxString GetCommandDescription(const PluginID & ID);
+   wxString GetCommandUrl(const PluginID & ID);
+   wxString GetCommandTip(const PluginID & ID);
+   // flags control which commands are included.
+   void GetCommandDefinition(const PluginID & ID, const CommandContext & context, int flags);
    bool IsHidden(const PluginID & ID);
 
    /** Support for batch commands */
@@ -90,7 +101,22 @@ public:
    bool HasPresets(const PluginID & ID);
    wxString GetPreset(const PluginID & ID, const wxString & params, wxWindow * parent);
    wxString GetDefaultPreset(const PluginID & ID);
+
+private:
    void SetBatchProcessing(const PluginID & ID, bool start);
+   struct UnsetBatchProcessing {
+      PluginID mID;
+      void operator () (EffectManager *p) const
+         { if(p) p->SetBatchProcessing(mID, false); }
+   };
+   using BatchProcessingScope =
+      std::unique_ptr< EffectManager, UnsetBatchProcessing >;
+public:
+   // RAII for the function above
+   BatchProcessingScope SetBatchProcessing(const PluginID &ID)
+   {
+      SetBatchProcessing(ID, true); return BatchProcessingScope{ this, {ID} };
+   }
 
    /** Allow effects to disable saving the state at run time */
    void SetSkipStateFlag(bool flag);
@@ -102,7 +128,7 @@ public:
    void RealtimeAddEffect(Effect *effect);
    void RealtimeRemoveEffect(Effect *effect);
    void RealtimeSetEffects(const EffectArray & mActive);
-   void RealtimeInitialize();
+   void RealtimeInitialize(double rate);
    void RealtimeAddProcessor(int group, unsigned chans, float rate);
    void RealtimeFinalize();
    void RealtimeSuspend();
@@ -116,11 +142,12 @@ public:
    void ShowRack();
 #endif
 
-   const PluginID & GetEffectByIdentifier(const wxString & strTarget);
+   const PluginID & GetEffectByIdentifier(const CommandID & strTarget);
 
 private:
    /** Return an effect by its ID. */
    Effect *GetEffect(const PluginID & ID);
+   AudacityCommand *GetAudacityCommand(const PluginID & ID);
 
 #if defined(EXPERIMENTAL_EFFECTS_RACK)
    EffectRack *GetRack();
@@ -128,6 +155,7 @@ private:
 
 private:
    EffectMap mEffects;
+   AudacityCommandMap mCommands;
    EffectOwnerMap mHostEffects;
 
    int mNumEffects;
@@ -138,7 +166,7 @@ private:
    bool mRealtimeSuspended;
    bool mRealtimeActive;
    std::vector<unsigned> mRealtimeChans;
-   wxArrayDouble mRealtimeRates;
+   std::vector<double> mRealtimeRates;
 
    // Set true if we want to skip pushing state 
    // after processing at effect run time.

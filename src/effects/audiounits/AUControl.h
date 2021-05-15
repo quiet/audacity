@@ -6,8 +6,15 @@
 
   Leland Lucius
 
-**********************************************************************/
+********************************************************************//**
 
+\class AUControl
+\brief a wxControl with Cocoa/Carbon support
+
+\class AUControlImpl
+\brief a wxWidgetCocoaImpl 
+
+*//********************************************************************/
 #ifndef AUDACITY_AUCONTROL_H
 #define AUDACITY_AUCONTROL_H
 
@@ -15,10 +22,11 @@
 #include <Carbon/Carbon.h>
 #endif
 
-#include <wx/osx/private.h>
-#include <wx/control.h>
+#include <wx/osx/private.h> // to inherit wxWidgetCocoaImpl
+#include <wx/control.h> // to inherit
 
 #include <AudioUnit/AudioComponent.h>
+#include <AudioUnit/AudioUnit.h>
 
 class AUControlImpl final : public wxWidgetCocoaImpl
 {
@@ -32,6 +40,8 @@ class AUControl final : public wxControl
 public:
    AUControl();
    ~AUControl();
+
+   void Close();
 
    bool Create(wxWindow *parent, AudioComponent comp, AudioUnit unit, bool custom);
    void CreateCocoa();

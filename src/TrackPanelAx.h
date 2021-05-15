@@ -11,18 +11,23 @@
 #ifndef __AUDACITY_TRACK_PANEL_ACCESSIBILITY__
 #define __AUDACITY_TRACK_PANEL_ACCESSIBILITY__
 
-#include <wx/window.h>
-#include <wx/panel.h>
+#include <memory>
+
+#include <wx/setup.h> // for wxUSE_* macros
+
+#include <wx/string.h> // member variable
 
 #if wxUSE_ACCESSIBILITY
-#include <wx/access.h>
+#include "widgets/WindowAccessible.h" // to inherit
 #endif
 
-#include "TrackPanel.h"
+
+class Track;
+class TrackPanel;
 
 class TrackPanelAx final
 #if wxUSE_ACCESSIBILITY
-   : public wxWindowAccessible
+   : public WindowAccessible
 #endif
 {
 public:
@@ -30,13 +35,15 @@ public:
    virtual ~ TrackPanelAx();
 
    // Returns currently focused track or first one if none focused
-   Track *GetFocus();
+   std::shared_ptr<Track> GetFocus();
 
    // Changes focus to a specified track
-   void SetFocus( Track *track );
+   // Return is the actual focused track, which may be different from
+   // the argument when that is null
+   std::shared_ptr<Track> SetFocus( std::shared_ptr<Track> track = {} );
 
    // Returns TRUE if passed track has the focus
-   bool IsFocused( Track *track );
+   bool IsFocused( const Track *track );
 
    // Called to signal changes to a track
    void Updated();
@@ -101,15 +108,23 @@ public:
    // Returns a localized string representing the value for the object
    // or child.
    wxAccStatus GetValue(int childId, wxString* strValue) override;
+
+   // Navigates from fromId to toId/toObject
+   wxAccStatus Navigate(wxNavDir navDir, int fromId, int* toId, wxAccessible** toObject) override;
+
+   // Modify focus or selection
+   wxAccStatus Select(int childId, wxAccSelectionFlags selectFlags) override;
 #endif
 
 private:
 
-   int TrackNum( Track *track );
-   Track *FindTrack( int num );
+   int TrackNum( const std::shared_ptr<Track> &track );
+   std::shared_ptr<Track> FindTrack( int num );
 
    TrackPanel *mTrackPanel;
-   Track *mFocusedTrack;
+
+   std::weak_ptr<Track> mFocusedTrack;
+   int mNumFocusedTrack;
 
    wxString mMessage;
    bool mTrackName;

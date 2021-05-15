@@ -11,7 +11,7 @@ Paul Licameli
 #ifndef __AUDACITY_WAVEFORM_SETTINGS__
 #define __AUDACITY_WAVEFORM_SETTINGS__
 
-class wxArrayString;
+class wxArrayStringEx;
 
 class WaveformSettings
 {
@@ -50,14 +50,15 @@ public:
    void NextLowerDBRange();
    void NextHigherDBRange();
 
-   enum ScaleType {
+   typedef int ScaleType;
+   enum ScaleTypeValues : int {
       stLinear,
       stLogarithmic,
 
       stNumScaleTypes,
    };
 
-   static const wxArrayString &GetScaleNames();
+   static const wxArrayStringEx &GetScaleNames();
 
    ScaleType scaleType;
    int dBRange;

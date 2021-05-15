@@ -8,7 +8,7 @@
 
 **********************************************************************/
 
-#include "Audacity.h"
+#include "Audacity.h" // for USE_* macros
 #include "Snap.h"
 
 #include <algorithm>
@@ -16,10 +16,9 @@
 
 #include "Project.h"
 #include "LabelTrack.h"
-#include "TrackPanel.h"
+#include "NoteTrack.h"
+#include "WaveClip.h"
 #include "WaveTrack.h"
-
-#include <wx/arrimpl.cpp>
 
 inline bool operator < (SnapPoint s1, SnapPoint s2)
 {
@@ -33,18 +32,12 @@ TrackClip::TrackClip(Track *t, WaveClip *c)
    clip = c;
 }
 
-#ifndef __AUDACITY_OLD_STD__
-TrackClip::TrackClip(TrackClip&& tc)
-   : track{tc.track}, origTrack{tc.origTrack}, dstTrack{tc.dstTrack},
-   clip{tc.clip}, holder{std::move(tc.holder)} {}
-#endif
-
 TrackClip::~TrackClip()
 {
 
 }
 
-SnapManager::SnapManager(TrackList *tracks,
+SnapManager::SnapManager(const TrackList *tracks,
                          const ZoomInfo *zoomInfo,
                          const TrackClipArray *clipExclusions,
                          const TrackArray *trackExclusions,
@@ -64,7 +57,7 @@ SnapManager::SnapManager(TrackList *tracks,
 
    mSnapTo = 0;
    mRate = 0.0;
-   mFormat.Empty();
+   mFormat = {};
 
    // Two time points closer than this are considered the same
    mEpsilon = 1 / 44100.0;
@@ -80,7 +73,7 @@ void SnapManager::Reinit()
 {
    int snapTo = mProject->GetSnapTo();
    double rate = mProject->GetRate();
-   wxString format = mProject->GetSelectionFormat();
+   auto format = mProject->GetSelectionFormat();
 
    // No need to reinit if these are still the same
    if (snapTo == mSnapTo && rate == mRate && format == mFormat)
@@ -109,19 +102,14 @@ void SnapManager::Reinit()
    // Add a SnapPoint at t=0
    mSnapPoints.push_back(SnapPoint{});
 
-   TrackListIterator iter(mTracks);
-   for (Track *track = iter.First();  track; track = iter.Next())
-   {
-      if (mTrackExclusions &&
-          mTrackExclusions->end() !=
-          std::find(mTrackExclusions->begin(), mTrackExclusions->end(), track))
-      {
-         continue;
-      }
-
-      if (track->GetKind() == Track::Label)
-      {
-         LabelTrack *labelTrack = (LabelTrack *)track;
+   auto trackRange =
+      mTracks->Any()
+         - [&](const Track *pTrack){
+            return mTrackExclusions &&
+               make_iterator_range( *mTrackExclusions ).contains( pTrack );
+         };
+   trackRange.Visit(
+      [&](const LabelTrack *labelTrack) {
          for (int i = 0, cnt = labelTrack->GetNumLabels(); i < cnt; ++i)
          {
             const LabelStruct *label = labelTrack->GetLabel(i);
@@ -133,10 +121,8 @@ void SnapManager::Reinit()
                CondListAdd(t1, labelTrack);
             }
          }
-      }
-      else if (track->GetKind() == Track::Wave)
-      {
-         auto waveTrack = static_cast<const WaveTrack *>(track);
+      },
+      [&](const WaveTrack *waveTrack) {
          for (const auto &clip: waveTrack->GetClips())
          {
             if (mClipExclusions)
@@ -153,9 +139,7 @@ void SnapManager::Reinit()
                }
 
                if (skip)
-               {
                   continue;
-               }
             }
 
             CondListAdd(clip->GetStartTime(), waveTrack);
@@ -163,13 +147,13 @@ void SnapManager::Reinit()
          }
       }
 #ifdef USE_MIDI
-      else if (track->GetKind() == Track::Note)
-      {
+      ,
+      [&](const NoteTrack *track) {
          CondListAdd(track->GetStartTime(), track);
          CondListAdd(track->GetEndTime(), track);
       }
 #endif
-   }
+   );
 
    // Sort all by time
    std::sort(mSnapPoints.begin(), mSnapPoints.end());
@@ -291,10 +275,7 @@ bool SnapManager::SnapToPoints(Track *currentTrack,
       return true;
    }
 
-   // indexInThisTrack is ONLY used if count > 0
-   // and is initialised then, so we can 'initialise' it
-   // to anything to keep compiler quiet.
-   size_t indexInThisTrack = left;
+   size_t indexInThisTrack = 0;
    size_t countInThisTrack = 0;
    for (i = left; i <= right; ++i)
    {
@@ -330,85 +311,67 @@ bool SnapManager::SnapToPoints(Track *currentTrack,
    return false;
 }
 
-bool SnapManager::Snap(Track *currentTrack,
-                       double t,
-                       bool rightEdge,
-                       double *outT,
-                       bool *snappedPoint,
-                       bool *snappedTime)
+SnapResults SnapManager::Snap
+(Track *currentTrack, double t, bool rightEdge)
 {
+
+   SnapResults results;
    // Check to see if we need to reinitialize
    Reinit();
 
-   // First snap to points in mSnapPoints
-   *outT = t;
-   *snappedPoint = SnapToPoints(currentTrack, t, rightEdge, outT);
+   results.timeSnappedTime = results.outTime = t;
+   results.outCoord = mZoomInfo->TimeToPosition(t);
 
-   // Now snap to the time grid
-   *snappedTime = false;
+   // First snap to points in mSnapPoints
+   results.snappedPoint =
+      SnapToPoints(currentTrack, t, rightEdge, &results.outTime);
+
+   if (mSnapToTime) {
+      // Find where it would snap time to the grid
+      mConverter.ValueToControls(t, GetActiveProject()->GetSnapTo() == SNAP_NEAREST);
+      mConverter.ControlsToValue();
+      results.timeSnappedTime = mConverter.GetValue();
+   }
+
+   results.snappedTime = false;
    if (mSnapToTime)
    {
-      if (*snappedPoint)
+      if (results.snappedPoint)
       {
          // Since mSnapPoints only contains points on the grid, we're done
-         *snappedTime = true;
+         results.snappedTime = true;
       }
       else
       {
-         // Snap time to the grid
-         mConverter.ValueToControls(t, GetActiveProject()->GetSnapTo() == SNAP_NEAREST);
-         mConverter.ControlsToValue();
-         *outT = mConverter.GetValue();
-         *snappedTime = true;
+         results.outTime = results.timeSnappedTime;
+         results.snappedTime = true;
       }
    }
 
-   return *snappedPoint || *snappedTime;
+   if (results.Snapped())
+      results.outCoord = mZoomInfo->TimeToPosition(results.outTime);
+
+   return results;
 }
 
-/* static */ wxArrayString SnapManager::GetSnapLabels()
+/* static */ wxArrayStringEx SnapManager::GetSnapLabels()
 {
-   wxArrayString labels;
-
-   labels.Add(_("Off"));
-   labels.Add(_("Nearest"));
-   labels.Add(_("Prior"));
-
-   return labels;
+   return wxArrayStringEx{
+      _("Off") ,
+      _("Nearest") ,
+      _("Prior") ,
+   };
 }
 
-/* static */ wxArrayString SnapManager::GetSnapValues()
+#include "AColor.h"
+
+void SnapManager::Draw( wxDC *dc, wxInt64 snap0, wxInt64 snap1 )
 {
-   wxArrayString values;
-
-   values.Add(wxT("Off"));
-   values.Add(wxT("Nearest"));
-   values.Add(wxT("Prior"));
-
-   return values;
-}
-
-/* static */ const wxString & SnapManager::GetSnapValue(int index)
-{
-   wxArrayString values = SnapManager::GetSnapValues();
-
-   if (index >= 0 && index < (int) values.GetCount())
-   {
-      return values[index];
+   AColor::SnapGuidePen(dc);
+   if ( snap0 >= 0 ) {
+      AColor::Line(*dc, (int)snap0, 0, (int)snap0, 30000);
    }
-
-   return values[SNAP_OFF];
-}
-
-/* static */ int SnapManager::GetSnapIndex(const wxString & value)
-{
-   wxArrayString values = SnapManager::GetSnapValues();
-   int index = values.Index(value);
-
-   if (index != wxNOT_FOUND)
-   {
-      return index;
+   if ( snap1 >= 0 ) {
+      AColor::Line(*dc, (int)snap1, 0, (int)snap1, 30000);
    }
-
-   return SNAP_OFF;
 }

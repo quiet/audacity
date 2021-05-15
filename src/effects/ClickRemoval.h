@@ -16,17 +16,14 @@
 #ifndef __AUDACITY_EFFECT_CLICK_REMOVAL__
 #define __AUDACITY_EFFECT_CLICK_REMOVAL__
 
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-
 #include "Effect.h"
 
+class wxSlider;
+class wxTextCtrl;
 class Envelope;
 class ShuttleGui;
 
-#define CLICKREMOVAL_PLUGIN_SYMBOL XO("Click Removal")
+#define CLICKREMOVAL_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Click Removal") }
 
 class EffectClickRemoval final : public Effect
 {
@@ -34,19 +31,21 @@ public:
    EffectClickRemoval();
    virtual ~EffectClickRemoval();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 
@@ -61,7 +60,7 @@ private:
    bool ProcessOne(int count, WaveTrack * track,
                    sampleCount start, sampleCount len);
 
-   bool RemoveClicks(int len, float *buffer);
+   bool RemoveClicks(size_t len, float *buffer);
 
    void OnWidthText(wxCommandEvent & evt);
    void OnThreshText(wxCommandEvent & evt);

@@ -25,7 +25,7 @@ public:
    bool Process() override;
 
 protected:
-   // EffectTwoPassSimpleMono implemetation
+   // EffectTwoPassSimpleMono implementation
 
    // Override these methods if you need to initialize something
    // before each pass. Return None if processing should stop.
@@ -78,7 +78,7 @@ protected:
 private:
    bool ProcessOne(WaveTrack * t,
                    sampleCount start, sampleCount end);
-   bool ProcessPass();
+   bool ProcessPass() override;
 };
 
 #endif

@@ -34,7 +34,7 @@ dnl Require autoconf >= 2.59
 AC_PREREQ([2.59])
 
 dnl Init autoconf
-AC_INIT([audacity], [2.1.3])
+AC_INIT([audacity], [2.3.0])
 dnl Check for existence of Audacity.h
 AC_CONFIG_SRCDIR([src/Audacity.h])
 AC_CONFIG_AUX_DIR([autotools])
@@ -186,7 +186,7 @@ AC_ARG_ENABLE(dynamic-loading,
 
 AC_ARG_WITH(wx-version,
            [AS_HELP_STRING([--with-wx-version],
-                           [select wxWidgets version (if both installed) [3.0,]])],
+                           [select wxWidgets version (if both installed) [3.1,]])],
            wx_preference="--version=$withval",
            wx_preference="")
 
@@ -202,6 +202,14 @@ if test x$enable_universal_binary = xyes; then
      *)
 	;;
    esac
+fi
+
+dnl Check if $CXX is clang by evaluating the version string because
+dnl $ax_cv_cxx_compiler_vendor seems not to work (it is either "gnu" or just empty).
+dnl If $CXX is clang (string is found), grep returns 0 and the if is executed.
+dnl Use /dev/null to suppress grep output to shell.
+if ($CXX --version | grep 'clang version' > /dev/null); then
+    LDFLAGS="${LDFLAGS} -latomic"
 fi
 
 if test x$enable_sse = xyes; then
@@ -237,7 +245,7 @@ AC_CHECK_HEADERS_ONCE(alloca.h)
 
 
 dnl Enable C++ 11 support. Use gnu++11 on GCC since wxWidgets uses extensions
-if test "${ax_cv_c_compiler_vendor}" = "gnu"; then
+if "${CXX}" -v 2>&1 | grep -q '^gcc version'; then
 
     dnl GCC < 4.9 has known bugs (#1397) and can't be used
     AX_GCC_VERSION_ATLEAST(4,9,0,[gcc_ok=yes], [gcc_ok=no])
@@ -288,7 +296,7 @@ dnl there isn't a way to turn them off.
 dnl-------------------------------------------------------------
 
 dnl wxWidgets -- we assume that if wx-config is found, wxWidgets is successfully installed.
-AC_PATH_PROGS(WX_CONFIG, $WX_CONFIG wx-config wx-config-3.0, no, $PATH:/usr/local/bin )
+AC_PATH_PROGS(WX_CONFIG, $WX_CONFIG wx-config wx-config-3.1, no, $PATH:/usr/local/bin )
 if [[ "$WX_CONFIG" = "no" ]] ; then
    AC_MSG_ERROR([Could not find wx-config: is wxWidgets installed? is wx-config in your path?])
 fi
@@ -305,15 +313,16 @@ dnl more things we always pass to wx-config
 wxconfigargs="$static_wx_preference $unicode_preference $wxconfigargs $wx_preference"
 wx_version=`${WX_CONFIG} $wxconfigargs --version`
 
-AC_MSG_NOTICE([Checking that the chosen version of wxWidgets is 3.0.x])
+AC_MSG_NOTICE([Checking that the chosen version of wxWidgets is 3.1.x (or 3.0.x)])
 
 case "${wx_version}" in
-  3.0.*)
+  3.1.* | 3.0.*)
     echo "Great, you're using wxWidgets ${wx_version}!"
     ;;
   *)
   wx_list=`${WX_CONFIG} --list`
-  AC_MSG_ERROR([Unable to locate a suitable configuration of wxWidgets v3.0.x or higher.
+  AC_MSG_ERROR([Unable to locate a suitable configuration of wxWidgets v3.1.x 
+or higher (or even of 3.0.x).  We recommend building with 3.1.x.
 The currently available configurations are listed below.  If necessary, either
 install the package for your distribution or download the latest version of
 wxWidgets
@@ -339,8 +348,8 @@ ac_configure_args="$ac_configure_args --enable-static=yes --enable-shared=no"
 dnl Include "external" headers
 CXXFLAGS="$CXXFLAGS -I\$(top_srcdir)/include"
 
-dnl Include FileDialog
-AC_CONFIG_SUBDIRS([lib-src/FileDialog lib-src/mod-nyq-bench])
+dnl Include FileDialog, mod-nyq-bench, mod-script-pipe and mod-null
+AC_CONFIG_SUBDIRS([lib-src/FileDialog lib-src/mod-nyq-bench lib-src/mod-script-pipe lib-src/mod-null])
 CXXFLAGS="$CXXFLAGS -I\$(top_srcdir)/lib-src/FileDialog"
 FILEDIALOG_LIBS='$(top_builddir)/lib-src/FileDialog/libFileDialog.la'
 AC_SUBST([FILEDIALOG_LIBS])
@@ -350,7 +359,7 @@ dnl Optional library support. Lots of things we could use, but
 dnl can do without if they aren't available.
 dnl-------------------------------------------------------------
 dnl GSTREAMER removed for 2.0.6 release
-LIBRARIES="EXPAT FFMPEG LAME LIBFLAC LIBID3TAG LIBMAD LIBNYQUIST LIBSBSMS LIBSNDFILE LIBSOUNDTOUCH LIBSOXR LIBTWOLAME LIBVAMP LIBVORBIS LV2 PORTAUDIO PORTSMF WIDGETEXTRA"
+LIBRARIES="EXPAT FFMPEG LAME LIBFLAC LIBID3TAG LIBMAD LIBNYQUIST LIBSBSMS LIBSNDFILE LIBSOUNDTOUCH LIBSOXR LIBTWOLAME LIBVAMP LIBVORBIS LV2 PORTAUDIO PORTSMF PORTMIDI WIDGETEXTRA"
 
 AC_MSG_NOTICE([Determining what libraries are available in this tree and on the system])
 
@@ -372,10 +381,8 @@ AUDACITY_CHECKLIB_LIBVORBIS
 AUDACITY_CHECKLIB_LV2
 AUDACITY_CHECKLIB_PORTAUDIO
 AUDACITY_CHECKLIB_PORTSMF
+AUDACITY_CHECKLIB_PORTMIDI
 AUDACITY_CHECKLIB_WIDGETEXTRA
-
-FFMPEG_ARGUMENT=local
-LIBFLAC_ARGUMENT=local
 
 dnl Decide what libraries to build with, and whether to use system or local libraries
 dnl Set variables based on choices.
@@ -503,6 +510,7 @@ AUDACITY_CONFIG_LIBVORBIS
 AUDACITY_CONFIG_LV2
 AUDACITY_CONFIG_PORTAUDIO
 AUDACITY_CONFIG_PORTSMF
+AUDACITY_CONFIG_PORTMIDI
 AUDACITY_CONFIG_WIDGETEXTRA
 
 dnl--------------------------------------------------------------------------
@@ -542,7 +550,23 @@ AC_ARG_WITH(portmixer,
   use_portmixer=$withval,
   use_portmixer="yes")
 
+dnl optional plug-in modules, so only options are off and local.
+  
+AC_ARG_WITH(mod-script-pipe,
+  [AS_HELP_STRING([--with-mod-script-pipe],
+     [compile with mod-script-pipe [default=no]])],
+  use_mod_script_pipe=$withval,
+  use_mod_script_pipe="no")  
+  
+AC_ARG_WITH(mod-nyq-bench,
+  [AS_HELP_STRING([--with-mod-nyq-bench],
+     [compile with mod-nyq-bench [default=no]])],
+  use_mod_nyq_bench=$withval,
+  use_mod_nyq_bench="no")  
+  
 
+  
+  
 AC_CANONICAL_HOST
 
 dnl OS-specific configuration
@@ -709,6 +733,7 @@ AC_CONFIG_FILES([
    images/Makefile
    lib-src/Makefile
    po/Makefile.in
+   nyq-po/Makefile.in
    src/audacity.desktop
    src/Makefile
    tests/Makefile
@@ -755,6 +780,19 @@ for lib in $LIBRARIES ; do
       echo "$lib: disabled"
    fi
 done
+
+if [[ "$use_mod_script_pipe" = "yes" ]] ; then
+   echo "build module mod-script-pipe: enabled"
+else
+   echo "build module mod-script-pipe: disabled"
+fi
+
+if [[ "$use_mod_nyq_bench" = "yes" ]] ; then
+   echo "build module mod-nyq-bench: enabled"
+else
+   echo "build module mod-nyq-bench: disabled"
+fi
+
 
 if [[ "$use_ladspa" = "yes" ]] ; then
    echo "ladspa plugin support: enabled"

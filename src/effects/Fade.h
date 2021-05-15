@@ -11,12 +11,10 @@
 #ifndef __AUDACITY_EFFECT_FADE__
 #define __AUDACITY_EFFECT_FADE__
 
-#include <wx/string.h>
-
 #include "Effect.h"
 
-#define FADEIN_PLUGIN_SYMBOL XO("Fade In")
-#define FADEOUT_PLUGIN_SYMBOL XO("Fade Out")
+#define FADEIN_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Fade In") }
+#define FADEOUT_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Fade Out") }
 
 class EffectFade final : public Effect
 {
@@ -24,12 +22,12 @@ public:
    EffectFade(bool fadeIn = false);
    virtual ~EffectFade();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
    bool IsInteractive() override;

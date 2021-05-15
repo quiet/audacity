@@ -15,26 +15,24 @@
 #define __AUDACITY_APP__
 
 #include "Audacity.h"
+#include "audacity/Types.h"
 
-#include "MemoryX.h"
-#include <wx/app.h>
-#include <wx/cmdline.h>
-#include <wx/dir.h>
-#include <wx/event.h>
-#include <wx/docview.h>
-#include <wx/intl.h>
-#include <wx/snglinst.h>
-#include <wx/log.h>
-#include <wx/socket.h>
-#include <wx/timer.h>
-
-#include "widgets/FileHistory.h"
-#include "ondemand/ODTaskThread.h"
 #include "Experimental.h"
 
+#include "MemoryX.h"
+#include <wx/app.h> // to inherit
+#include <wx/dir.h> // for wxDIR_FILES
+#include <wx/timer.h> // member variable
+
+#include "ondemand/ODTaskThread.h"
+
 #if defined(EXPERIMENTAL_CRASH_REPORT)
-#include <wx/debugrpt.h>
+#include <wx/debugrpt.h> // for wxDebugReport::Context
 #endif
+
+class wxSingleInstanceChecker;
+class wxSocketEvent;
+class wxSocketServer;
 
 class IPCServ;
 class Importer;
@@ -42,6 +40,7 @@ class CommandHandler;
 class AppCommandEvent;
 class AudacityLogger;
 class AudacityProject;
+class FileHistory;
 
 void SaveWindowSize();
 
@@ -50,135 +49,13 @@ void QuitAudacity();
 
 extern bool gIsQuitting;
 
+// An event emitted by the application whenever the global clipboard's
+// contents change.
+wxDECLARE_EXPORTED_EVENT( AUDACITY_DLL_API,
+                          EVT_CLIPBOARD_CHANGE, wxCommandEvent);
+
 // Asynchronous open
 DECLARE_EXPORTED_EVENT_TYPE(AUDACITY_DLL_API, EVT_OPEN_AUDIO_FILE, -1);
-
-// Flags used in command handling.
-
-// These flags represent the majority of the states that affect
-// whether or not items in menus are enabled or disabled.
-enum CommandFlag : unsigned long long
-{
-   AlwaysEnabledFlag      = 0x00000000,
-
-   AudioIONotBusyFlag     = 0x00000001,
-   TimeSelectedFlag       = 0x00000002, // This is equivalent to check if there is a valid selection, so it's used for Zoom to Selection too
-   TracksSelectedFlag     = 0x00000004,
-   TracksExistFlag        = 0x00000008,
-   LabelTracksExistFlag   = 0x00000010,
-   WaveTracksSelectedFlag = 0x00000020,
-   ClipboardFlag          = 0x00000040,
-   TextClipFlag           = 0x00000040, // Same as Clipboard flag for now.
-   UnsavedChangesFlag     = 0x00000080,
-   HasLastEffectFlag      = 0x00000100,
-   UndoAvailableFlag      = 0x00000200,
-   RedoAvailableFlag      = 0x00000400,
-   ZoomInAvailableFlag    = 0x00000800,
-   ZoomOutAvailableFlag   = 0x00001000,
-   StereoRequiredFlag     = 0x00002000,  //lda
-   TopDockHasFocus        = 0x00004000,  //lll
-   TrackPanelHasFocus     = 0x00008000,  //lll
-   BotDockHasFocus        = 0x00010000,  //lll
-   LabelsSelectedFlag     = 0x00020000,
-   AudioIOBusyFlag        = 0x00040000,  //lll
-   PlayRegionLockedFlag   = 0x00080000,  //msmeyer
-   PlayRegionNotLockedFlag= 0x00100000,  //msmeyer
-   CutCopyAvailableFlag   = 0x00200000,
-   WaveTracksExistFlag    = 0x00400000,
-   NoteTracksExistFlag    = 0x00800000,  //gsw
-   NoteTracksSelectedFlag = 0x01000000,  //gsw
-   HaveRecentFiles        = 0x02000000,
-   IsNotSyncLockedFlag    = 0x04000000,  //awd
-   IsSyncLockedFlag       = 0x08000000,  //awd
-   IsRealtimeNotActiveFlag= 0x10000000,  //lll
-   CaptureNotBusyFlag     = 0x20000000,
-   CanStopAudioStreamFlag = 0x40000000,
-   RulerHasFocus          = 0x80000000ULL, // prl
-   NotMinimizedFlag      = 0x100000000ULL, // prl
-   PausedFlag            = 0x200000000ULL, // jkc
-   NotPausedFlag         = 0x400000000ULL, // jkc
-   HasWaveDataFlag       = 0x800000000ULL, // jkc
-
-   NoFlagsSpecifed        = ~0ULL
-};
-
-// Prevent accidental misuse with narrower types
-
-bool operator == (CommandFlag, unsigned long) PROHIBITED;
-bool operator == (CommandFlag, long) PROHIBITED;
-bool operator == (unsigned long, CommandFlag) PROHIBITED;
-bool operator == (long, CommandFlag) PROHIBITED;
-
-bool operator != (CommandFlag, unsigned long) PROHIBITED;
-bool operator != (CommandFlag, long) PROHIBITED;
-bool operator != (unsigned long, CommandFlag) PROHIBITED;
-bool operator != (long, CommandFlag) PROHIBITED;
-
-CommandFlag operator & (CommandFlag, unsigned long) PROHIBITED;
-CommandFlag operator & (CommandFlag, long) PROHIBITED;
-CommandFlag operator & (unsigned long, CommandFlag) PROHIBITED;
-CommandFlag operator & (long, CommandFlag) PROHIBITED;
-
-CommandFlag operator | (CommandFlag, unsigned long) PROHIBITED;
-CommandFlag operator | (CommandFlag, long) PROHIBITED;
-CommandFlag operator | (unsigned long, CommandFlag) PROHIBITED;
-CommandFlag operator | (long, CommandFlag) PROHIBITED;
-
-CommandFlag operator ^ (CommandFlag, unsigned long) PROHIBITED;
-CommandFlag operator ^ (CommandFlag, long) PROHIBITED;
-CommandFlag operator ^ (unsigned long, CommandFlag) PROHIBITED;
-CommandFlag operator ^ (long, CommandFlag) PROHIBITED;
-
-bool operator == (CommandFlag, unsigned int) PROHIBITED;
-bool operator == (CommandFlag, int) PROHIBITED;
-bool operator == (unsigned int, CommandFlag) PROHIBITED;
-bool operator == (int, CommandFlag) PROHIBITED;
-
-bool operator != (CommandFlag, unsigned int) PROHIBITED;
-bool operator != (CommandFlag, int) PROHIBITED;
-bool operator != (unsigned int, CommandFlag) PROHIBITED;
-bool operator != (int, CommandFlag) PROHIBITED;
-
-CommandFlag operator & (CommandFlag, unsigned int) PROHIBITED;
-CommandFlag operator & (CommandFlag, int) PROHIBITED;
-CommandFlag operator & (unsigned int, CommandFlag) PROHIBITED;
-CommandFlag operator & (int, CommandFlag) PROHIBITED;
-
-CommandFlag operator | (CommandFlag, unsigned int) PROHIBITED;
-CommandFlag operator | (CommandFlag, int) PROHIBITED;
-CommandFlag operator | (unsigned int, CommandFlag) PROHIBITED;
-CommandFlag operator | (int, CommandFlag) PROHIBITED;
-
-CommandFlag operator ^ (CommandFlag, unsigned int) PROHIBITED;
-CommandFlag operator ^ (CommandFlag, int) PROHIBITED;
-CommandFlag operator ^ (unsigned int, CommandFlag) PROHIBITED;
-CommandFlag operator ^ (int, CommandFlag) PROHIBITED;
-
-// Supply the bitwise operations
-
-inline CommandFlag operator ~ (CommandFlag flag)
-{
-   return static_cast<CommandFlag>( ~ static_cast<unsigned long long> (flag) );
-}
-inline CommandFlag operator & (CommandFlag lhs, CommandFlag rhs)
-{
-   return static_cast<CommandFlag> (
-      static_cast<unsigned long long>(lhs) & static_cast<unsigned long long>(rhs)
-   );
-}
-inline CommandFlag operator | (CommandFlag lhs, CommandFlag rhs)
-{
-   return static_cast<CommandFlag> (
-      static_cast<unsigned long long>(lhs) | static_cast<unsigned long long>(rhs)
-   );
-}
-inline CommandFlag & operator |= (CommandFlag &lhs, CommandFlag rhs)
-{
-   lhs = lhs | rhs;
-   return lhs;
-}
-
-using CommandMask = CommandFlag;
 
 class BlockFile;
 class AliasBlockFile;
@@ -190,11 +67,21 @@ class AudacityApp final : public wxApp {
    bool OnInit(void) override;
    int OnExit(void) override;
    void OnFatalException() override;
+   bool OnExceptionInMainLoop() override;
 
-   int FilterEvent(wxEvent & event);
+   int FilterEvent(wxEvent & event) override;
 
+   // If no input language given, defaults first to choice in preferences, then
+   // to system language.
    // Returns the language actually used which is not lang if lang cannot be found.
-   wxString InitLang( const wxString & lang );
+   wxString InitLang( wxString lang = {} );
+
+   // If no input language given, defaults to system language.
+   // Returns the language actually used which is not lang if lang cannot be found.
+   wxString SetLang( const wxString & lang );
+
+   // Returns the last language code that was set
+   wxString GetLang() const;
 
    // These are currently only used on Mac OS, where it's
    // possible to have a menu bar but no windows open.  It doesn't
@@ -212,7 +99,9 @@ class AudacityApp final : public wxApp {
    void OnMRUClear(wxCommandEvent &event);
    void OnMRUFile(wxCommandEvent &event);
    // Backend for above - returns true for success, false for failure
-   bool MRUOpen(const wxString &fileName);
+   bool MRUOpen(const FilePath &fileName);
+   // A wrapper of the above that does not throw
+   bool SafeMRUOpen(const wxString &fileName);
 
    void OnReceiveCommand(AppCommandEvent &event);
 
@@ -259,24 +148,24 @@ class AudacityApp final : public wxApp {
     * directories can be specified using the AUDACITY_PATH environment
     * variable.  On Windows or Mac OS, this will include the directory
     * which contains the Audacity program. */
-   wxArrayString audacityPathList;
+   FilePaths audacityPathList;
 
    /** \brief Default temp directory */
    wxString defaultTempDir;
 
    // Useful functions for working with search paths
-   static void AddUniquePathToPathList(const wxString &path,
-                                       wxArrayString &pathList);
+   static void AddUniquePathToPathList(const FilePath &path,
+                                       FilePaths &pathList);
    static void AddMultiPathsToPathList(const wxString &multiPathString,
-                                       wxArrayString &pathList);
+                                       FilePaths &pathList);
    static void FindFilesInPathList(const wxString & pattern,
-                                   const wxArrayString & pathList,
-                                   wxArrayString &results,
+                                   const FilePaths & pathList,
+                                   FilePaths &results,
                                    int flags = wxDIR_FILES);
    static bool IsTempDirectoryNameOK( const wxString & Name );
 
    FileHistory *GetRecentFiles() {return mRecentFiles.get();}
-   void AddFileToHistory(const wxString & name);
+   void AddFileToHistory(const FilePath & name);
    bool GetWindowRectAlreadySaved()const {return mWindowRectAlreadySaved;}
    void SetWindowRectAlreadySaved(bool alreadySaved) {mWindowRectAlreadySaved = alreadySaved;}
 
@@ -288,14 +177,16 @@ class AudacityApp final : public wxApp {
 
 #ifdef __WXMAC__
 
-   #if ! defined(__WXDEBUG__)
-   #define FIX_BUG1567
-   #endif
-
    void MacActivateApp();
-   static bool IsSierraOrLater();
 
 #endif
+
+   // Set and Get values of the version major/minor/micro keys in audacity.cfg when Audacity first opens
+   void SetVersionKeysInit( int major, int minor, int micro)
+      { mVersionMajorKeyInit = major; mVersionMinorKeyInit = minor; mVersionMicroKeyInit = micro;}
+   void GetVersionKeysInit( int& major, int& minor, int& micro) const
+      { major = mVersionMajorKeyInit; minor = mVersionMinorKeyInit; micro = mVersionMicroKeyInit;}
+
 
  private:
    std::unique_ptr<CommandHandler> mCmdHandler;
@@ -328,6 +219,11 @@ class AudacityApp final : public wxApp {
    std::unique_ptr<wxSocketServer> mIPCServ;
 #endif
 
+   // values of the version major/minor/micro keys in audacity.cfg when Audacity first opens
+   int mVersionMajorKeyInit{};
+   int mVersionMinorKeyInit{};
+   int mVersionMicroKeyInit{};
+
  public:
     DECLARE_EVENT_TABLE()
 };
@@ -335,6 +231,3 @@ class AudacityApp final : public wxApp {
 extern AudacityApp & wxGetApp();
 
 #endif
-
-#define MAX_AUDIO (1. - 1./(1<<15))
-#define JUST_BELOW_MAX_AUDIO (1. - 1./(1<<14))

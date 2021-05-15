@@ -14,29 +14,35 @@
 
 #include <wx/defs.h>
 
-#include <wx/window.h>
-
 #include "PrefsPanel.h"
 
 class ShuttleGui;
 
+#define BATCH_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Batch") }
+
 class BatchPrefs final : public PrefsPanel
 {
 public:
-   BatchPrefs(wxWindow * parent);
+   BatchPrefs(wxWindow * parent, wxWindowID winid);
    ~BatchPrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+   wxString HelpPageName() override;
+
+   bool Commit() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
 private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
 
    DECLARE_EVENT_TABLE()
 };
 
+
+/// A PrefsPanelFactory that creates one BatchPrefs panel.
 class BatchPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif

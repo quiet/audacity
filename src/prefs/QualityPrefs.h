@@ -12,39 +12,45 @@
 #ifndef __AUDACITY_QUALITY_PREFS__
 #define __AUDACITY_QUALITY_PREFS__
 
+#include <vector>
 #include <wx/defs.h>
-
-#include <wx/arrstr.h>
-#include <wx/choice.h>
-#include <wx/dynarray.h>
-#include <wx/textctrl.h>
 
 #include "PrefsPanel.h"
 
+class wxChoice;
+class wxTextCtrl;
 class ShuttleGui;
+enum sampleFormat : unsigned;
+enum DitherType : unsigned;
+
+class wxArrayStringEx;
+
+#define QUALITY_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Quality") }
 
 class QualityPrefs final : public PrefsPanel
 {
  public:
-   QualityPrefs(wxWindow * parent);
+   QualityPrefs(wxWindow * parent, wxWindowID winid);
    virtual ~QualityPrefs();
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
 
-   bool Apply() override;
+   bool Commit() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
+
+   static sampleFormat SampleFormatChoice();
+
+   static DitherType FastDitherChoice();
+   static DitherType BestDitherChoice();
 
  private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
    void GetNamesAndLabels();
    void OnSampleRateChoice(wxCommandEvent & e);
 
-   wxArrayString mDitherNames;
-   wxArrayInt    mDitherLabels;
-   wxArrayString mSampleRateNames;
-   wxArrayInt    mSampleRateLabels;
-   wxArrayString mSampleFormatNames;
-   wxArrayInt    mSampleFormatLabels;
-   wxArrayString mConverterNames;
-   wxArrayInt    mConverterLabels;
+   wxArrayStringEx mSampleRateNames;
+   std::vector<int> mSampleRateLabels;
 
    wxChoice *mSampleRates;
    wxTextCtrl *mOtherSampleRate;
@@ -53,9 +59,10 @@ class QualityPrefs final : public PrefsPanel
    DECLARE_EVENT_TABLE()
 };
 
+/// A PrefsPanelFactory that creates one QualityPrefs panel.
 class QualityPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif

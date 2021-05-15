@@ -6,23 +6,24 @@
 
   Dominic Mazzoni
   Vaughan Johnson (Preview)
+  Max Maisel (Loudness)
 
 **********************************************************************/
 
 #ifndef __AUDACITY_EFFECT_NORMALIZE__
 #define __AUDACITY_EFFECT_NORMALIZE__
 
-#include <wx/checkbox.h>
-#include <wx/event.h>
-#include <wx/stattext.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
+#include "../Experimental.h"
 
 #include "Effect.h"
+#include "Biquad.h"
 
+class wxCheckBox;
+class wxStaticText;
+class wxTextCtrl;
 class ShuttleGui;
 
-#define NORMALIZE_PLUGIN_SYMBOL XO("Normalize")
+#define NORMALIZE_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Normalize") }
 
 class EffectNormalize final : public Effect
 {
@@ -30,19 +31,21 @@ public:
    EffectNormalize();
    virtual ~EffectNormalize();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 
@@ -56,29 +59,50 @@ public:
 private:
    // EffectNormalize implementation
 
-   bool ProcessOne(WaveTrack * t, const wxString &msg);
-   void AnalyseTrack(WaveTrack * track, const wxString &msg);
-   void AnalyzeData(float *buffer, size_t len);
-   bool AnalyseDC(WaveTrack * track, const wxString &msg);
-   void ProcessData(float *buffer, size_t len);
+   enum AnalyseOperation
+   {
+      ANALYSE_DC, ANALYSE_LOUDNESS, ANALYSE_LOUDNESS_DC
+   };
+
+   bool ProcessOne(
+      WaveTrack * t, const wxString &msg, double& progress, float offset);
+   bool AnalyseTrack(const WaveTrack * track, const wxString &msg,
+                     double &progress, float &offset, float &extent);
+   bool AnalyseTrackData(const WaveTrack * track, const wxString &msg, double &progress,
+                     AnalyseOperation op, float &offset);
+   void AnalyseDataDC(float *buffer, size_t len);
+#ifdef EXPERIMENTAL_R128_NORM
+   void AnalyseDataLoudness(float *buffer, size_t len);
+   void AnalyseDataLoudnessDC(float *buffer, size_t len);
+#endif
+   void ProcessData(float *buffer, size_t len, float offset);
+
+#ifdef EXPERIMENTAL_R128_NORM
+   void CalcEBUR128HPF(float fs);
+   void CalcEBUR128HSF(float fs);
+#endif
 
    void OnUpdateUI(wxCommandEvent & evt);
    void UpdateUI();
 
 private:
-   double mLevel;
+   double mPeakLevel;
    bool   mGain;
    bool   mDC;
    bool   mStereoInd;
+#ifdef EXPERIMENTAL_R128_NORM
+   double mLUFSLevel;
+   bool   mUseLoudness;
+   bool   mGUIUseLoudness;
+#endif
 
-   int    mCurTrackNum;
    double mCurT0;
    double mCurT1;
    float  mMult;
-   float  mOffset;
-   float  mMin;
-   float  mMax;
    double mSum;
+#ifdef EXPERIMENTAL_R128_NORM
+   double mSqSum;
+#endif
    sampleCount    mCount;
 
    wxCheckBox *mGainCheckBox;
@@ -87,8 +111,14 @@ private:
    wxStaticText *mLeveldB;
    wxStaticText *mWarning;
    wxCheckBox *mStereoIndCheckBox;
+#ifdef EXPERIMENTAL_R128_NORM
+   wxCheckBox *mUseLoudnessCheckBox;
 
+   Biquad mR128HSF;
+   Biquad mR128HPF;
+#endif
    bool mCreating;
+
 
    DECLARE_EVENT_TABLE()
 };

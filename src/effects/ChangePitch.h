@@ -15,6 +15,7 @@ the pitch without changing the tempo.
 
 *//*******************************************************************/
 
+#include "../Audacity.h" // for USE_* macros
 #if USE_SOUNDTOUCH
 
 #ifndef __AUDACITY_EFFECT_CHANGEPITCH__
@@ -22,21 +23,18 @@ the pitch without changing the tempo.
 
 #if USE_SBSMS
 #include "SBSMSEffect.h"
-#include <wx/checkbox.h>
 #endif
-
-#include <wx/choice.h>
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/spinctrl.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
 
 #include "SoundTouchEffect.h"
 
+class wxSlider;
+class wxChoice;
+class wxCheckBox;
+class wxTextCtrl;
+class wxSpinCtrl;
 class ShuttleGui;
 
-#define CHANGEPITCH_PLUGIN_SYMBOL XO("Change Pitch")
+#define CHANGEPITCH_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Change Pitch") }
 
 class EffectChangePitch final : public EffectSoundTouch
 {
@@ -44,19 +42,21 @@ public:
    EffectChangePitch();
    virtual ~EffectChangePitch();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
    bool LoadFactoryDefaults() override;
 
    // Effect implementation

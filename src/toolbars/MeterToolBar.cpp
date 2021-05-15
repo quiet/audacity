@@ -18,9 +18,12 @@
 
 
 #include "../Audacity.h"
+#include "MeterToolBar.h"
 
 // For compilers that support precompilation, includes "wx/wx.h".
 #include <wx/wxprec.h>
+
+#include <wx/setup.h> // for wxUSE_* macros
 
 #ifndef WX_PRECOMP
 #include <wx/event.h>
@@ -30,8 +33,7 @@
 
 #include <wx/gbsizer.h>
 
-#include "MeterToolBar.h"
-
+#include "../AllThemeResources.h"
 #include "../AudioIO.h"
 #include "../Project.h"
 #include "../widgets/Meter.h"
@@ -83,43 +85,42 @@ void MeterToolBar::Create(wxWindow * parent)
 
 void MeterToolBar::ReCreateButtons()
 {
-   void *playState = NULL;
-   void *recordState = NULL;
+   MeterPanel::State playState{ false }, recordState{ false };
 
    if (mPlayMeter && mProject->GetPlaybackMeter() == mPlayMeter)
    {
-      mProject->SetPlaybackMeter( NULL );
       playState = mPlayMeter->SaveState();
+      mProject->SetPlaybackMeter( NULL );
    }
 
    if (mRecordMeter && mProject->GetCaptureMeter() == mRecordMeter)
    {
-      mProject->SetCaptureMeter( NULL );
       recordState = mRecordMeter->SaveState();
+      mProject->SetCaptureMeter( NULL );
    }
 
    ToolBar::ReCreateButtons();
 
-   if (playState)
-   {
-      mPlayMeter->RestoreState(playState);
+   mPlayMeter->RestoreState(playState);
+   if( playState.mSaved  ){
+      mProject->SetPlaybackMeter( mPlayMeter );
    }
-
-   if (recordState)
-   {
-      mRecordMeter->RestoreState(recordState);
+   mRecordMeter->RestoreState(recordState);
+   if( recordState.mSaved ){
+      mProject->SetCaptureMeter( mRecordMeter );
    }
 }
 
 void MeterToolBar::Populate()
 {
+   SetBackgroundColour( theTheme.Colour( clrMedium  ) );
    wxASSERT(mProject); // to justify safenew
    Add((mSizer = safenew wxGridBagSizer()), 1, wxEXPAND);
 
    if( mWhichMeters & kWithRecordMeter ){
       //JKC: Record on left, playback on right.  Left to right flow
       //(maybe we should do it differently for Arabic language :-)  )
-      mRecordMeter = safenew Meter( mProject,
+      mRecordMeter = safenew MeterPanel( mProject,
                                 this,
                                 wxID_ANY,
                                 true,
@@ -135,7 +136,7 @@ void MeterToolBar::Populate()
    }
 
    if( mWhichMeters & kWithPlayMeter ){
-      mPlayMeter = safenew Meter( mProject,
+      mPlayMeter = safenew MeterPanel( mProject,
                               this,
                               wxID_ANY,
                               false,
@@ -174,6 +175,8 @@ void MeterToolBar::UpdatePrefs()
 
    // Give base class a chance
    ToolBar::UpdatePrefs();
+
+
 }
 
 void MeterToolBar::RegenerateTooltips()
@@ -227,12 +230,13 @@ void MeterToolBar::OnSize( wxSizeEvent & event) //WXUNUSED(event) )
       mRecordMeter->SetMinSize( wxSize( width, height ));
    }
    if( mPlayMeter ) {
-      mPlayMeter->SetMinSize( wxSize( width, height ));
+      mPlayMeter->SetMinSize( wxSize( width, height));
       mSizer->SetItemPosition( mPlayMeter, pos );
    }
 
    // And make it happen
    Layout();
+   Fit();
 }
 
 bool MeterToolBar::Expose( bool show )
@@ -271,5 +275,13 @@ wxSize MeterToolBar::GetDockedSize()
    else 
       sz.y = 2 * tbs -1;
    return sz;
+}
+
+// The meter's sizing code does not take account of the resizer
+// Hence after docking we need to enlarge the bar (using fit)
+// so that the resizer can be reached.
+void MeterToolBar::SetDocked(ToolDock *dock, bool pushed) {
+   ToolBar::SetDocked(dock, pushed);
+   Fit();
 }
 

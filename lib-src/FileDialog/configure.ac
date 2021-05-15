@@ -38,7 +38,7 @@ AC_ARG_ENABLE(debug,
             debug_preference="no")
 
 AC_ARG_WITH(wx-version,
-            [AS_HELP_STRING([--with-wx-version],[override default wxWidgets version [2.6,2.8]])],
+            [AS_HELP_STRING([--with-wx-version],[override default wxWidgets version [3.1,3.0]])],
             wx_preference="--version=$withval",
             wx_preference="")
 
@@ -48,7 +48,7 @@ AC_ARG_WITH(wx-config,
             wx_config="")
 
 dnl wxWidgets -- we assume that if wx-config is found, wxWidgets is successfully installed.
-AC_PATH_PROGS(WX_CONFIG, wx-config wx-config-3.0, no, $PATH:/usr/local/bin )
+AC_PATH_PROGS(WX_CONFIG, wx-config wx-config-3.1, no, $PATH:/usr/local/bin )
 if [[ "$WX_CONFIG" = "no" ]] ; then
    AC_MSG_ERROR("Could not find wx-config: is wxWidgets installed? is wx-config in your path?")
 fi
@@ -58,6 +58,13 @@ dnl Gather wx arguments
 wxconfigargs="$wx_preference"
 WX_CXXFLAGS=$($WX_CONFIG $wxconfigargs --cxxflags)
 WX_LIBS=""
+
+dnl Enable C++ 11 support. Use gnu++11 on GCC since wxWidgets uses extensions
+if "${CXX}" -v 2>&1 | grep -q '^gcc version'; then
+    WX_CXXFLAGS="${WX_CXXFLAGS} --std=gnu++11"
+else
+    WX_CXXFLAGS="${WX_CXXFLAGS} --std=c++11"
+fi
 AC_SUBST([WX_CXXFLAGS])
 AC_SUBST([WX_LIBS])
 
@@ -87,6 +94,7 @@ else
    gtk_version=gtk+-2.0
    AC_MSG_RESULT([no])
 fi
+
 
 AC_SUBST(HAVE_GTK)
 PKG_CHECK_MODULES(GTK, $gtk_version, have_gtk="yes", have_gtk="no")

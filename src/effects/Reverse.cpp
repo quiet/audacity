@@ -22,6 +22,7 @@
 #include <wx/intl.h>
 
 #include "../LabelTrack.h"
+#include "../WaveClip.h"
 #include "../WaveTrack.h"
 
 //
@@ -36,19 +37,19 @@ EffectReverse::~EffectReverse()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectReverse::GetSymbol()
+ComponentInterfaceSymbol EffectReverse::GetSymbol()
 {
    return REVERSE_PLUGIN_SYMBOL;
 }
 
 wxString EffectReverse::GetDescription()
 {
-   return XO("Reverses the selected audio");
+   return _("Reverses the selected audio");
 }
 
-// EffectIdentInterface implementation
+// EffectDefinitionInterface implementation
 
 EffectType EffectReverse::GetType()
 {
@@ -64,40 +65,30 @@ bool EffectReverse::IsInteractive()
 
 bool EffectReverse::Process()
 {
-   //Track::All is needed because Reverse should move the labels too
-   this->CopyInputTracks(Track::All); // Set up mOutputTracks.
+   //all needed because Reverse should move the labels too
+   this->CopyInputTracks(true); // Set up mOutputTracks.
    bool bGoodResult = true;
-
-   TrackListIterator iter(mOutputTracks.get());
-   Track *t = iter.First();
    int count = 0;
-   while (t) {
-      if (t->GetKind() == Track::Wave &&
-            (t->GetSelected() || t->IsSyncLockSelected()))
-      {
-         WaveTrack *track = (WaveTrack*)t;
 
+   auto trackRange =
+      mOutputTracks->Any() + &Track::IsSelectedOrSyncLockSelected;
+   trackRange.VisitWhile( bGoodResult,
+      [&](WaveTrack * track) {
          if (mT1 > mT0) {
             auto start = track->TimeToLongSamples(mT0);
             auto end = track->TimeToLongSamples(mT1);
             auto len = end - start;
 
             if (!ProcessOneWave(count, track, start, len))
-            {
                bGoodResult = false;
-               break;
-            }
          }
-      }
-      else if (t->GetKind() == Track::Label &&
-            (t->GetSelected() || t->IsSyncLockSelected()))
-      {
-         LabelTrack *track = (LabelTrack*)t;
+         count++;
+      },
+      [&](LabelTrack * track) {
          track->ChangeLabelsOnReverse(mT0, mT1);
+         count++;
       }
-      t = iter.Next();
-      count++;
-   }
+   );
 
    this->ReplaceProcessedTracks(bGoodResult);
    return bGoodResult;
@@ -114,7 +105,7 @@ bool EffectReverse::ProcessOneWave(int count, WaveTrack * track, sampleCount sta
    // perform a split at the start and/or end of the reverse selection
    const auto &clips = track->GetClips();
    // Beware, the array grows as we loop over it.  Use integer subscripts, not iterators.
-   for (int ii = 0; ii < clips.size(); ++ii) {
+   for (size_t ii = 0; ii < clips.size(); ++ii) {
       const auto &clip = clips[ii].get();
       auto clipStart = clip->GetStartSample();
       auto clipEnd = clip->GetEndSample();
@@ -203,8 +194,10 @@ bool EffectReverse::ProcessOneWave(int count, WaveTrack * track, sampleCount sta
    // the last clip of revClips is appended to the track first
    // PRL:  I don't think that matters, the sequence of storage of clips in the track
    // is not elsewhere assumed to be by time
-   for (auto it = revClips.rbegin(), end = revClips.rend(); it != end; ++it)
-      track->AddClip(std::move(*it));
+   {
+      for (auto it = revClips.rbegin(), revEnd = revClips.rend(); it != revEnd; ++it)
+         track->AddClip(std::move(*it));
+   }
 
    for (auto &clip : otherClips)
       track->AddClip(std::move(clip));
@@ -222,8 +215,8 @@ bool EffectReverse::ProcessOneClip(int count, WaveTrack *track,
 
    auto blockSize = track->GetMaxBlockSize();
    float tmp;
-   float *buffer1 = new float[blockSize];
-   float *buffer2 = new float[blockSize];
+   Floats buffer1{ blockSize };
+   Floats buffer2{ blockSize };
 
    auto originalLen = originalEnd - originalStart;
 
@@ -232,15 +225,15 @@ bool EffectReverse::ProcessOneClip(int count, WaveTrack *track,
          limitSampleBufferSize( track->GetBestBlockSize(first), len / 2 );
       auto second = first + (len - block);
 
-      track->Get((samplePtr)buffer1, floatSample, first, block);
-      track->Get((samplePtr)buffer2, floatSample, second, block);
+      track->Get((samplePtr)buffer1.get(), floatSample, first, block);
+      track->Get((samplePtr)buffer2.get(), floatSample, second, block);
       for (decltype(block) i = 0; i < block; i++) {
          tmp = buffer1[i];
          buffer1[i] = buffer2[block-i-1];
          buffer2[block-i-1] = tmp;
       }
-      track->Set((samplePtr)buffer1, floatSample, first, block);
-      track->Set((samplePtr)buffer2, floatSample, second, block);
+      track->Set((samplePtr)buffer1.get(), floatSample, first, block);
+      track->Set((samplePtr)buffer2.get(), floatSample, second, block);
 
       len -= 2 * block;
       first += block;
@@ -251,9 +244,6 @@ bool EffectReverse::ProcessOneClip(int count, WaveTrack *track,
          break;
       }
    }
-
-   delete[] buffer1;
-   delete[] buffer2;
 
    return rc;
 }

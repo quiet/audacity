@@ -34,45 +34,24 @@ FormatClassifier::FormatClassifier(const char* filename) :
    mReader(filename),
    mMeter(cSiglen)
 {
-   FormatClassT fClass;
-
-   // Build buffers
-   mSigBuffer = new float[cSiglen];
-   mAuxBuffer = new float[cSiglen];   
-   mRawBuffer = new uint8_t[cSiglen * 8];
-
    // Define the classification classes
-   fClass.endian = MachineEndianness::Little;
-   fClass.format = MultiFormatReader::Int8;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Int16;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Int32;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Uint8;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Float;
-   mClasses.push_back(fClass);   
-   fClass.format = MultiFormatReader::Double;
-   mClasses.push_back(fClass);
-
-   fClass.endian = MachineEndianness::Big;
-   fClass.format = MultiFormatReader::Int8;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Int16;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Int32;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Uint8;
-   mClasses.push_back(fClass);
-   fClass.format = MultiFormatReader::Float;
-   mClasses.push_back(fClass);   
-   fClass.format = MultiFormatReader::Double;
-   mClasses.push_back(fClass);
+   for ( auto endianness : {
+      MachineEndianness::Little,
+      MachineEndianness::Big,
+   } )
+      for ( auto format : {
+         MultiFormatReader::Int8,
+         MultiFormatReader::Int16,
+         MultiFormatReader::Int32,
+         MultiFormatReader::Uint8,
+         MultiFormatReader::Float,
+         MultiFormatReader::Double,
+      } )
+         mClasses.push_back( { format, endianness } );
 
    // Build feature vectors
-   mMonoFeat = new float[mClasses.size()];
-   mStereoFeat = new float[mClasses.size()];
+   mMonoFeat = Floats{ mClasses.size() };
+   mStereoFeat = Floats{ mClasses.size() };
    
 #ifdef FORMATCLASSIFIER_SIGNAL_DEBUG
    // Build a debug writer
@@ -87,7 +66,7 @@ FormatClassifier::FormatClassifier(const char* filename) :
 #ifdef FORMATCLASSIFIER_SIGNAL_DEBUG
    for (unsigned int n = 0; n < mClasses.size(); n++)
    {
-      printf("Class [%i] Machine [%i]: Mono: %3.7f Stereo: %3.7f\n", mClasses[n].format, mClasses[n].endian, mMonoFeat[n], mStereoFeat[n]);
+      wxPrintf("Class [%i] Machine [%i]: Mono: %3.7f Stereo: %3.7f\n", mClasses[n].format, mClasses[n].endian, mMonoFeat[n], mStereoFeat[n]);
    }
 #endif
 
@@ -95,12 +74,6 @@ FormatClassifier::FormatClassifier(const char* filename) :
 
 FormatClassifier::~FormatClassifier()
 {
-   delete[] mSigBuffer;
-   delete[] mAuxBuffer;
-   delete[] mRawBuffer;
-
-   delete[] mMonoFeat;
-   delete[] mStereoFeat;
 }
 
 FormatClassifier::FormatClassT FormatClassifier::GetResultFormat()
@@ -168,17 +141,17 @@ void FormatClassifier::Run()
 
       // Do some simple preprocessing
       // Remove DC offset
-      float smean = Mean(mSigBuffer, cSiglen);
-      Sub(mSigBuffer, smean, cSiglen);
+      float smean = Mean(mSigBuffer.get(), cSiglen);
+      Sub(mSigBuffer.get(), smean, cSiglen);
       // Normalize to +- 1.0
-      Abs(mSigBuffer, mAuxBuffer, cSiglen);
-      float smax = Max(mAuxBuffer, cSiglen);
-      Div(mSigBuffer, smax, cSiglen);
+      Abs(mSigBuffer.get(), mAuxBuffer.get(), cSiglen);
+      float smax = Max(mAuxBuffer.get(), cSiglen);
+      Div(mSigBuffer.get(), smax, cSiglen);
 
       // Now actually fill the feature vector
       // Low to high band power ratio
-      float pLo = mMeter.CalcPower(mSigBuffer, 0.15f, 0.3f);
-      float pHi = mMeter.CalcPower(mSigBuffer, 0.45f, 0.1f); 
+      float pLo = mMeter.CalcPower(mSigBuffer.get(), 0.15f, 0.3f);
+      float pHi = mMeter.CalcPower(mSigBuffer.get(), 0.45f, 0.1f);
       mMonoFeat[n] = pLo / pHi;
    }
 
@@ -193,24 +166,24 @@ void FormatClassifier::Run()
 
       // Do some simple preprocessing
       // Remove DC offset
-      float smean = Mean(mSigBuffer, cSiglen);
-      Sub(mSigBuffer, smean, cSiglen);
+      float smean = Mean(mSigBuffer.get(), cSiglen);
+      Sub(mSigBuffer.get(), smean, cSiglen);
       // Normalize to +- 1.0
-      Abs(mSigBuffer, mAuxBuffer, cSiglen);
-      float smax = Max(mAuxBuffer, cSiglen);
-      Div(mSigBuffer, smax, cSiglen);
+      Abs(mSigBuffer.get(), mAuxBuffer.get(), cSiglen);
+      float smax = Max(mAuxBuffer.get(), cSiglen);
+      Div(mSigBuffer.get(), smax, cSiglen);
 
       // Now actually fill the feature vector
       // Low to high band power ratio
-      float pLo = mMeter.CalcPower(mSigBuffer, 0.15f, 0.3f);
-      float pHi = mMeter.CalcPower(mSigBuffer, 0.45f, 0.1f); 
+      float pLo = mMeter.CalcPower(mSigBuffer.get(), 0.15f, 0.3f);
+      float pHi = mMeter.CalcPower(mSigBuffer.get(), 0.45f, 0.1f);
       mStereoFeat[n] = pLo / pHi;
    }
 
    // Get the results
    size_t midx, sidx;
-   float monoMax = Max(mMonoFeat, mClasses.size(), &midx);
-   float stereoMax = Max(mStereoFeat, mClasses.size(), &sidx);
+   float monoMax = Max(mMonoFeat.get(), mClasses.size(), &midx);
+   float stereoMax = Max(mStereoFeat.get(), mClasses.size(), &sidx);
 
    if (monoMax > stereoMax)
    {
@@ -233,27 +206,27 @@ void FormatClassifier::ReadSignal(FormatClassT format, size_t stride)
    mReader.Reset();
 
    // Do a dummy read of 1024 bytes to skip potential header information
-   mReader.ReadSamples(mRawBuffer, 1024, MultiFormatReader::Uint8, MachineEndianness::Little);
+   mReader.ReadSamples(mRawBuffer.get(), 1024, MultiFormatReader::Uint8, MachineEndianness::Little);
 
    do
    {
-      actRead = mReader.ReadSamples(mRawBuffer, cSiglen, stride, format.format, format.endian);
+      actRead = mReader.ReadSamples(mRawBuffer.get(), cSiglen, stride, format.format, format.endian);
 
       if (n == 0)
       {
-         ConvertSamples(mRawBuffer, mSigBuffer, format);
+         ConvertSamples(mRawBuffer.get(), mSigBuffer.get(), format);
       }
       else
       {
          if (actRead == cSiglen)
          {
-            ConvertSamples(mRawBuffer, mAuxBuffer, format);
+            ConvertSamples(mRawBuffer.get(), mAuxBuffer.get(), format);
 
             // Integrate signals
-            Add(mSigBuffer, mAuxBuffer, cSiglen);
+            Add(mSigBuffer.get(), mAuxBuffer.get(), cSiglen);
 
             // Do some dummy reads to break signal coherence
-            mReader.ReadSamples(mRawBuffer, n + 1, stride, format.format, format.endian);
+            mReader.ReadSamples(mRawBuffer.get(), n + 1, stride, format.format, format.endian);
          }
       }
 

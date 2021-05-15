@@ -13,12 +13,15 @@ Paul Licameli
 
 #include "../Experimental.h"
 
+#include "../SampleFormat.h"
+#include "../RealFFTf.h"
+
 #undef SPECTRAL_SELECTION_GLOBAL_SWITCH
 
 struct FFTParam;
 class NumberScale;
 class SpectrumPrefs;
-class wxArrayString;
+class wxArrayStringEx;
 
 class SpectrogramSettings
 {
@@ -51,7 +54,8 @@ public:
    // Do not assume that this enumeration will remain the
    // same as NumberScaleType in future.  That enum may become
    // more general purpose.
-   enum ScaleType {
+   typedef int ScaleType;
+   enum ScaleTypeValues : int {
       stLinear,
       stLogarithmic,
       stMel,
@@ -62,8 +66,8 @@ public:
       stNumScaleTypes,
    };
 
-   static const wxArrayString &GetScaleNames();
-   static const wxArrayString &GetAlgorithmNames();
+   static const wxArrayStringEx &GetScaleNames();
+   static const wxArrayStringEx &GetAlgorithmNames();
 
    static SpectrogramSettings &defaults();
    SpectrogramSettings();
@@ -85,9 +89,12 @@ public:
    void ConvertToEnumeratedWindowSizes();
    void ConvertToActualWindowSizes();
 
+   // Need to be told what the bin unit is, as this structure does not know
+   // the rate
+   float findBin( float frequency, float binUnit ) const;
+
    // If "bins" is false, units are Hz
-   NumberScale GetScale
-      (float minFreq, float maxFreq, double rate, bool bins) const;
+   NumberScale GetScale( float minFreq, float maxFreq ) const;
 
    int minFreq;
    int maxFreq;
@@ -110,10 +117,13 @@ public:
 private:
    int zeroPaddingFactor;
 public:
-   size_t ZeroPaddingFactor() const { return zeroPaddingFactor; }
+   size_t ZeroPaddingFactor() const {
+      return algorithm == algPitchEAC ? 1 : zeroPaddingFactor;
+   }
 #endif
 
    size_t GetFFTLength() const; // window size (times zero padding, if STFT)
+   size_t NBins() const;
 
    bool isGrayscale;
 
@@ -123,7 +133,8 @@ public:
    bool spectralSelection; // But should this vary per track? -- PRL
 #endif
 
-   enum Algorithm {
+   typedef int Algorithm;
+   enum AlgorithmValues : int {
       algSTFT = 0,
       algReassignment,
       algPitchEAC,
@@ -138,19 +149,19 @@ public:
 
 #ifdef EXPERIMENTAL_FIND_NOTES
    bool fftFindNotes;
-   bool findNotesMinA;
-   bool numberOfMaxima;
+   double findNotesMinA;
+   int numberOfMaxima;
    bool findNotesQuantize;
 #endif //EXPERIMENTAL_FIND_NOTES
 
    // Following fields are derived from preferences.
 
    // Variables used for computing the spectrum
-   mutable FFTParam      *hFFT{};
-   mutable float         *window{};
+   mutable HFFT           hFFT;
+   mutable Floats         window;
 
    // Two other windows for computing reassigned spectrogram
-   mutable float         *tWindow{}; // Window times time parameter
-   mutable float         *dWindow{}; // Derivative of window
+   mutable Floats         tWindow; // Window times time parameter
+   mutable Floats         dWindow; // Derivative of window
 };
 #endif

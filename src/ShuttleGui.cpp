@@ -96,23 +96,36 @@ for registering for changes.
 #include "Audacity.h"
 #include "ShuttleGui.h"
 
+#include "Experimental.h"
+
+#include "Prefs.h"
+#include "Shuttle.h"
+
 #include "MemoryX.h"
+#include <wx/setup.h> // for wxUSE_* macros
 #include <wx/wx.h>
 #include <wx/wxprec.h>
+#include <wx/grid.h>
 #include <wx/listctrl.h>
 #include <wx/notebook.h>
 #include <wx/treectrl.h>
 #include <wx/spinctrl.h>
+#include <wx/stattext.h>
+#include <wx/bmpbuttn.h>
+#include "../include/audacity/ComponentInterface.h"
 #include "Internat.h"
-#include "Experimental.h"
-#include "Shuttle.h"
 #include "WrappedType.h"
 #include "widgets/wxPanelWrapper.h"
+#include "AllThemeResources.h"
+
+#if wxUSE_ACCESSIBILITY
+#include "widgets/WindowAccessible.h"
+#endif
 
 ShuttleGuiBase::ShuttleGuiBase(wxWindow * pParent, teShuttleMode ShuttleMode )
 {
    wxASSERT( (pParent != NULL ) || ( ShuttleMode != eIsCreating));
-
+   mpbOptionalFlag = nullptr;
    mpParent = pParent;
    mShuttleMode = ShuttleMode;
    mpDlg = pParent;
@@ -140,9 +153,7 @@ void ShuttleGuiBase::Init()
    miSizerProp=0;
    mSizerDepth=-1;
 
-   miIdSetByUser = -1;
-   miId = -1;
-   miIdNext = 3000;
+   ResetId();
 
    miNoMatchSelector = 0;
 
@@ -168,6 +179,13 @@ void ShuttleGuiBase::Init()
    }
    PushSizer();
    mpSizer->SetMinSize(250,100);
+}
+
+void ShuttleGuiBase::ResetId()
+{
+   miIdSetByUser = -1;
+   miId = -1;
+   miIdNext = 3000;
 }
 
 void ShuttleGuiBase::EnableCtrl( bool bEnable )
@@ -209,12 +227,32 @@ void ShuttleGuiBase::SetStretchyRow( int i )
 
 //---- Add Functions.
 
+void ShuttleGuiBase::HandleOptionality(const wxString &Prompt)
+{
+   // If creating, will be handled by an AddPrompt.
+   if( mShuttleMode == eIsCreating )
+      return;
+   //wxLogDebug( "Optionality: [%s] Id:%i (%i)", Prompt.c_str(), miId, miIdSetByUser ) ;
+   if( mpbOptionalFlag ){
+      bool * pVar = mpbOptionalFlag;
+      mpbOptionalFlag = nullptr;
+      TieCheckBox( Prompt, *pVar);
+   }
+}
+
 /// Right aligned text string.
 void ShuttleGuiBase::AddPrompt(const wxString &Prompt)
 {
-   if( Prompt.IsEmpty() )
-      return;
    if( mShuttleMode != eIsCreating )
+      return;
+   //wxLogDebug( "Prompt: [%s] Id:%i (%i)", Prompt.c_str(), miId, miIdSetByUser ) ;
+   if( mpbOptionalFlag ){
+      bool * pVar = mpbOptionalFlag;
+      mpbOptionalFlag = nullptr;
+      TieCheckBox( "", *pVar);
+      //return;
+   }
+   if( Prompt.empty() )
       return;
    miProp=1;
    mpWind = safenew wxStaticText(GetParent(), -1, Prompt, wxDefaultPosition, wxDefaultSize,
@@ -226,7 +264,7 @@ void ShuttleGuiBase::AddPrompt(const wxString &Prompt)
 /// Left aligned text string.
 void ShuttleGuiBase::AddUnits(const wxString &Prompt)
 {
-   if( Prompt.IsEmpty() )
+   if( Prompt.empty() )
       return;
    if( mShuttleMode != eIsCreating )
       return;
@@ -240,7 +278,7 @@ void ShuttleGuiBase::AddUnits(const wxString &Prompt)
 /// Centred text string.
 void ShuttleGuiBase::AddTitle(const wxString &Prompt)
 {
-   if( Prompt.IsEmpty() )
+   if( Prompt.empty() )
       return;
    if( mShuttleMode != eIsCreating )
       return;
@@ -262,17 +300,33 @@ wxWindow * ShuttleGuiBase::AddWindow(wxWindow * pWindow, int Flags )
    return pWindow;
 }
 
-wxCheckBox * ShuttleGuiBase::AddCheckBox( const wxString &Prompt, const wxString &Selected)
+wxCheckBox * ShuttleGuiBase::AddCheckBox( const wxString &Prompt, bool Selected)
 {
+   HandleOptionality( Prompt );
+   wxString realPrompt = Prompt;
+   if( mpbOptionalFlag )
+   {
+      AddPrompt( "");
+      //realPrompt = wxT("");
+   }
+
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxCheckBox);
    wxCheckBox * pCheckBox;
    miProp=0;
-   mpWind = pCheckBox = safenew wxCheckBox(GetParent(), miId, Prompt, wxDefaultPosition, wxDefaultSize,
+   mpWind = pCheckBox = safenew wxCheckBox(GetParent(), miId, realPrompt, wxDefaultPosition, wxDefaultSize,
       Style( 0 ));
-   pCheckBox->SetValue(Selected == wxT("true"));
-   pCheckBox->SetName(wxStripMenuCodes(Prompt));
+   pCheckBox->SetValue(Selected);
+   if (realPrompt.empty()) {
+      // NVDA 2018.3 does not read controls which are buttons, check boxes or radio buttons which have
+      // an accessibility name which is empty. Bug 1980.
+#if wxUSE_ACCESSIBILITY
+      // so that name can be set on a standard control
+      pCheckBox->SetAccessible(safenew WindowAccessible(pCheckBox));
+#endif
+      pCheckBox->SetName(wxT("\a"));      // non-empty string which screen readers do not read
+   }
    UpdateSizers();
    return pCheckBox;
 }
@@ -280,17 +334,18 @@ wxCheckBox * ShuttleGuiBase::AddCheckBox( const wxString &Prompt, const wxString
 /// For a consistant two-column layout we want labels on the left and
 /// controls on the right.  CheckBoxes break that rule, so we fake it by
 /// placing a static text label and then a tick box with an empty label.
-wxCheckBox * ShuttleGuiBase::AddCheckBoxOnRight( const wxString &Prompt, const wxString &Selected)
+wxCheckBox * ShuttleGuiBase::AddCheckBoxOnRight( const wxString &Prompt, bool Selected)
 {
+   HandleOptionality( Prompt );
+   AddPrompt( Prompt );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxCheckBox);
    wxCheckBox * pCheckBox;
    miProp=0;
-   AddPrompt( Prompt );
    mpWind = pCheckBox = safenew wxCheckBox(GetParent(), miId, wxT(""), wxDefaultPosition, wxDefaultSize,
       Style( 0 ));
-   pCheckBox->SetValue(Selected==wxT("true"));
+   pCheckBox->SetValue(Selected);
    pCheckBox->SetName(wxStripMenuCodes(Prompt));
    UpdateSizers();
    return pCheckBox;
@@ -326,26 +381,35 @@ wxBitmapButton * ShuttleGuiBase::AddBitmapButton(const wxBitmap &Bitmap, int Pos
    return pBtn;
 }
 
-wxChoice * ShuttleGuiBase::AddChoice( const wxString &Prompt, const wxString &Selected, const wxArrayString * pChoices )
+wxChoice * ShuttleGuiBase::AddChoice( const wxString &Prompt,
+   const wxArrayStringEx &choices, int Selected )
 {
+   HandleOptionality( Prompt );
+   AddPrompt( Prompt );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxChoice);
    wxChoice * pChoice;
    miProp=0;
 
-   AddPrompt( Prompt );
    mpWind = pChoice = safenew wxChoice(
       GetParent(),
       miId,
       wxDefaultPosition,
       wxDefaultSize,
-      *pChoices,
+      choices,
       Style( 0 ) );
 
    pChoice->SetSizeHints( 180,-1);// Use -1 for 'default size' - Platform specific.
+#ifdef __WXMAC__
+#if wxUSE_ACCESSIBILITY
+   // so that name can be set on a standard control
+   mpWind->SetAccessible(safenew WindowAccessible(mpWind));
+#endif
+#endif
    pChoice->SetName(wxStripMenuCodes(Prompt));
-   pChoice->SetStringSelection( Selected );
+   if ( Selected >= 0 && Selected < choices.size() )
+      pChoice->SetSelection( Selected );
 
    UpdateSizers();
    return pChoice;
@@ -394,24 +458,24 @@ wxStaticText * ShuttleGuiBase::AddVariableText(const wxString &Str, bool bCenter
    return pStatic;
 }
 
-wxComboBox * ShuttleGuiBase::AddCombo( const wxString &Prompt, const wxString &Selected,const wxArrayString * pChoices, long style )
+wxComboBox * ShuttleGuiBase::AddCombo( const wxString &Prompt, const wxString &Selected,const wxArrayStringEx & choices, long style )
 {
+   HandleOptionality( Prompt );
+   AddPrompt( Prompt );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxComboBox);
    wxComboBox * pCombo;
    miProp=0;
 
-   int n = pChoices->GetCount();
+   int n = choices.size();
    if( n>50 ) n=50;
    int i;
    wxString Choices[50];
    for(i=0;i<n;i++)
    {
-      Choices[i] = (*pChoices)[i];
+      Choices[i] = choices[i];
    }
-
-   AddPrompt( Prompt );
 
    mpWind = pCombo = safenew wxComboBox(GetParent(), miId, Selected, wxDefaultPosition, wxDefaultSize,
       n, Choices, Style( style ));
@@ -451,18 +515,32 @@ wxRadioButton * ShuttleGuiBase::AddRadioButtonToGroup(const wxString &Prompt)
    return pRad;
 }
 
+#ifdef __WXMAC__
+void wxSliderWrapper::SetFocus()
+{
+   // bypassing the override in wxCompositeWindow<wxSliderBase> which ends up
+   // doing nothing
+   return wxSliderBase::SetFocus();
+}
+#endif
+
 wxSlider * ShuttleGuiBase::AddSlider(const wxString &Prompt, int pos, int Max, int Min)
 {
+   HandleOptionality( Prompt );
+   AddPrompt( Prompt );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxSlider);
-   AddPrompt( Prompt );
    wxSlider * pSlider;
-   mpWind = pSlider = safenew wxSlider(GetParent(), miId,
+   mpWind = pSlider = safenew wxSliderWrapper(GetParent(), miId,
       pos, Min, Max,
       wxDefaultPosition, wxDefaultSize,
       Style( wxSL_HORIZONTAL | wxSL_LABELS | wxSL_AUTOTICKS )
       );
+#if wxUSE_ACCESSIBILITY
+   // so that name can be set on a standard control
+   mpWind->SetAccessible(safenew WindowAccessible(mpWind));
+#endif
    mpWind->SetName(wxStripMenuCodes(Prompt));
    miProp=1;
    UpdateSizers();
@@ -471,10 +549,11 @@ wxSlider * ShuttleGuiBase::AddSlider(const wxString &Prompt, int pos, int Max, i
 
 wxSpinCtrl * ShuttleGuiBase::AddSpinCtrl(const wxString &Prompt, int Value, int Max, int Min)
 {
+   HandleOptionality( Prompt );
+   AddPrompt( Prompt );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxSpinCtrl);
-   AddPrompt( Prompt );
    wxSpinCtrl * pSpinCtrl;
    mpWind = pSpinCtrl = safenew wxSpinCtrl(GetParent(), miId,
       wxEmptyString,
@@ -490,6 +569,8 @@ wxSpinCtrl * ShuttleGuiBase::AddSpinCtrl(const wxString &Prompt, int Value, int 
 
 wxTextCtrl * ShuttleGuiBase::AddTextBox(const wxString &Caption, const wxString &Value, const int nChars)
 {
+   HandleOptionality( Caption );
+   AddPrompt( Caption );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxTextCtrl);
@@ -499,7 +580,6 @@ wxTextCtrl * ShuttleGuiBase::AddTextBox(const wxString &Caption, const wxString 
    {
       Size.SetWidth( nChars *5 );
    }
-   AddPrompt( Caption );
    miProp=0;
 
 #ifdef EXPERIMENTAL_RIGHT_ALIGNED_TEXTBOXES
@@ -510,6 +590,10 @@ wxTextCtrl * ShuttleGuiBase::AddTextBox(const wxString &Caption, const wxString 
 
    mpWind = pTextCtrl = safenew wxTextCtrl(GetParent(), miId, Value,
       wxDefaultPosition, Size, Style( flags ));
+#if wxUSE_ACCESSIBILITY
+   // so that name can be set on a standard control
+   mpWind->SetAccessible(safenew WindowAccessible(mpWind));
+#endif
    mpWind->SetName(wxStripMenuCodes(Caption));
    UpdateSizers();
    return pTextCtrl;
@@ -517,6 +601,8 @@ wxTextCtrl * ShuttleGuiBase::AddTextBox(const wxString &Caption, const wxString 
 
 wxTextCtrl * ShuttleGuiBase::AddNumericTextBox(const wxString &Caption, const wxString &Value, const int nChars)
 {
+   HandleOptionality( Caption );
+   AddPrompt( Caption );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wxTextCtrl);
@@ -526,7 +612,6 @@ wxTextCtrl * ShuttleGuiBase::AddNumericTextBox(const wxString &Caption, const wx
    {
       Size.SetWidth( nChars *5 );
    }
-   AddPrompt( Caption );
    miProp=0;
 
 #ifdef EXPERIMENTAL_RIGHT_ALIGNED_TEXTBOXES
@@ -540,6 +625,10 @@ wxTextCtrl * ShuttleGuiBase::AddNumericTextBox(const wxString &Caption, const wx
       wxDefaultPosition, Size, Style( flags ),
       Validator // It's OK to pass this.  It will be cloned.
       );
+#if wxUSE_ACCESSIBILITY
+   // so that name can be set on a standard control
+   mpWind->SetAccessible(safenew WindowAccessible(mpWind));
+#endif
    mpWind->SetName(wxStripMenuCodes(Caption));
    UpdateSizers();
    return pTextCtrl;
@@ -555,6 +644,10 @@ wxTextCtrl * ShuttleGuiBase::AddTextWindow(const wxString &Value)
    SetProportions( 1 );
    mpWind = pTextCtrl = safenew wxTextCtrl(GetParent(), miId, Value,
       wxDefaultPosition, wxDefaultSize, Style( wxTE_MULTILINE ));
+#if wxUSE_ACCESSIBILITY
+   // so that name can be set on a standard control
+   mpWind->SetAccessible(safenew WindowAccessible(mpWind));
+#endif
    UpdateSizers();
    // Start off at start of window...
    pTextCtrl->SetInsertionPoint( 0 );
@@ -565,12 +658,13 @@ wxTextCtrl * ShuttleGuiBase::AddTextWindow(const wxString &Value)
 /// Single line text box of fixed size.
 void ShuttleGuiBase::AddConstTextBox(const wxString &Prompt, const wxString &Value)
 {
+   HandleOptionality( Prompt );
+   AddPrompt( Prompt );
    UseUpId();
    if( mShuttleMode != eIsCreating )
       return;
 //      return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), wx);
    miProp=0;
-   AddPrompt( Prompt );
    UpdateSizers();
    miProp=0;
    mpWind = safenew wxStaticText(GetParent(), miId, Value, wxDefaultPosition, wxDefaultSize,
@@ -579,7 +673,7 @@ void ShuttleGuiBase::AddConstTextBox(const wxString &Prompt, const wxString &Val
    UpdateSizers();
 }
 
-wxListBox * ShuttleGuiBase::AddListBox(const wxArrayString * pChoices, long style)
+wxListBox * ShuttleGuiBase::AddListBox(const wxArrayStringEx &choices, long style)
 {
    UseUpId();
    if( mShuttleMode != eIsCreating )
@@ -587,7 +681,7 @@ wxListBox * ShuttleGuiBase::AddListBox(const wxArrayString * pChoices, long styl
    wxListBox * pListBox;
    SetProportions( 1 );
    mpWind = pListBox = safenew wxListBox(GetParent(), miId,
-      wxDefaultPosition, wxDefaultSize,*pChoices, style);
+      wxDefaultPosition, wxDefaultSize, choices, style);
    pListBox->SetMinSize( wxSize( 120,150 ));
    UpdateSizers();
    return pListBox;
@@ -689,8 +783,6 @@ wxMenu * ShuttleGuiBase::AddMenu( const wxString & Title )
    return mpMenu;
 }
 
-
-
 /// Starts a static box around a number of controls.
 ///  @param Str   The text of the title for the box.
 ///  @param iProp The resizing proportion value.
@@ -699,10 +791,9 @@ wxMenu * ShuttleGuiBase::AddMenu( const wxString & Title )
 wxStaticBox * ShuttleGuiBase::StartStatic(const wxString &Str, int iProp)
 {
    UseUpId();
-   mBoxName = Str;
    if( mShuttleMode != eIsCreating )
       return NULL;
-   wxStaticBox * pBox = safenew wxStaticBox(GetParent(), miId,
+   wxStaticBox * pBox = safenew wxStaticBoxWrapper(GetParent(), miId,
       Str );
    pBox->SetLabel( Str );
    pBox->SetName(wxStripMenuCodes(Str));
@@ -711,6 +802,7 @@ wxStaticBox * ShuttleGuiBase::StartStatic(const wxString &Str, int iProp)
       wxVERTICAL );
    miSizerProp = iProp;
    UpdateSizers();
+   mpParent = pBox;
    return pBox;
 }
 
@@ -719,6 +811,7 @@ void ShuttleGuiBase::EndStatic()
    if( mShuttleMode != eIsCreating )
       return;
    PopSizer();
+   mpParent = mpParent->GetParent();
 }
 
 /// This allows subsequent controls and static boxes to be in
@@ -751,11 +844,7 @@ wxScrolledWindow * ShuttleGuiBase::StartScroller(int iStyle)
    }
    else
    {
-      mpWind->SetBackgroundColour(
-         iStyle==0
-         ? wxColour( 245,244,240) :
-         wxSystemSettings::GetColour(wxSYS_COLOUR_3DFACE)
-         );
+     // mpWind->SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_MENUBAR));
       UpdateSizers();  // adds window in to current sizer.
    }
 
@@ -987,6 +1076,15 @@ void ShuttleGuiBase::StartVerticalLay(int iProp)
    UpdateSizers();
 }
 
+void ShuttleGuiBase::StartVerticalLay(int PositionFlags, int iProp)
+{
+   if( mShuttleMode != eIsCreating )
+      return;
+   miSizerProp=iProp;
+   mpSubSizer = std::make_unique<wxBoxSizer>( wxVERTICAL );
+   UpdateSizersCore( false, PositionFlags | wxALL );
+}
+
 void ShuttleGuiBase::EndVerticalLay()
 {
    if( mShuttleMode != eIsCreating )
@@ -1025,9 +1123,10 @@ void ShuttleGuiBase::DoDataShuttle( const wxString &Name, WrappedType & WrappedR
 // in this file.
 wxCheckBox * ShuttleGuiBase::TieCheckBox(const wxString &Prompt, WrappedType & WrappedRef)
 {
+   HandleOptionality( Prompt );
    // The Add function does a UseUpId(), so don't do it here in that case.
    if( mShuttleMode == eIsCreating )
-      return AddCheckBox( Prompt, WrappedRef.ReadAsString());
+      return AddCheckBox( Prompt, WrappedRef.ReadAsString() == wxT("true"));
 
    UseUpId();
 
@@ -1037,6 +1136,8 @@ wxCheckBox * ShuttleGuiBase::TieCheckBox(const wxString &Prompt, WrappedType & W
    switch( mShuttleMode )
    {
    // IF setting internal storage from the controls.
+   case eIsGettingMetadata:
+      break;
    case eIsGettingFromDialog:
       {
          wxASSERT( pCheckBox );
@@ -1064,9 +1165,10 @@ wxCheckBox * ShuttleGuiBase::TieCheckBox(const wxString &Prompt, WrappedType & W
 
 wxCheckBox * ShuttleGuiBase::TieCheckBoxOnRight(const wxString &Prompt, WrappedType & WrappedRef)
 {
+   HandleOptionality( Prompt );
    // The Add function does a UseUpId(), so don't do it here in that case.
    if( mShuttleMode == eIsCreating )
-      return AddCheckBoxOnRight( Prompt, WrappedRef.ReadAsString());
+      return AddCheckBoxOnRight( Prompt, WrappedRef.ReadAsString() == wxT("true"));
 
    UseUpId();
 
@@ -1076,6 +1178,8 @@ wxCheckBox * ShuttleGuiBase::TieCheckBoxOnRight(const wxString &Prompt, WrappedT
    switch( mShuttleMode )
    {
    // IF setting internal storage from the controls.
+   case eIsGettingMetadata:
+      break;
    case eIsGettingFromDialog:
       {
          wxASSERT( pCheckBox );
@@ -1103,6 +1207,7 @@ wxCheckBox * ShuttleGuiBase::TieCheckBoxOnRight(const wxString &Prompt, WrappedT
 
 wxSpinCtrl * ShuttleGuiBase::TieSpinCtrl( const wxString &Prompt, WrappedType & WrappedRef, const int max, const int min )
 {
+   HandleOptionality( Prompt );
    // The Add function does a UseUpId(), so don't do it here in that case.
    if( mShuttleMode == eIsCreating )
       return AddSpinCtrl( Prompt, WrappedRef.ReadAsInt(), max, min );
@@ -1116,6 +1221,8 @@ wxSpinCtrl * ShuttleGuiBase::TieSpinCtrl( const wxString &Prompt, WrappedType & 
    switch( mShuttleMode )
    {
       // IF setting internal storage from the controls.
+   case eIsGettingMetadata:
+      break;
    case eIsGettingFromDialog:
       {
          wxASSERT( pSpinCtrl );
@@ -1143,6 +1250,7 @@ wxSpinCtrl * ShuttleGuiBase::TieSpinCtrl( const wxString &Prompt, WrappedType & 
 
 wxTextCtrl * ShuttleGuiBase::TieTextBox( const wxString &Prompt, WrappedType & WrappedRef, const int nChars)
 {
+   HandleOptionality( Prompt );
    // The Add function does a UseUpId(), so don't do it here in that case.
    if( mShuttleMode == eIsCreating )
       return AddTextBox( Prompt, WrappedRef.ReadAsString(), nChars );
@@ -1156,6 +1264,8 @@ wxTextCtrl * ShuttleGuiBase::TieTextBox( const wxString &Prompt, WrappedType & W
    switch( mShuttleMode )
    {
    // IF setting internal storage from the controls.
+   case eIsGettingMetadata:
+      break;
    case eIsGettingFromDialog:
       {
          wxASSERT( pTextBox );
@@ -1183,6 +1293,7 @@ wxTextCtrl * ShuttleGuiBase::TieTextBox( const wxString &Prompt, WrappedType & W
 
 wxTextCtrl * ShuttleGuiBase::TieNumericTextBox( const wxString &Prompt, WrappedType & WrappedRef, const int nChars)
 {
+   HandleOptionality( Prompt );
    // The Add function does a UseUpId(), so don't do it here in that case.
    if( mShuttleMode == eIsCreating )
       return AddNumericTextBox( Prompt, WrappedRef.ReadAsString(), nChars );
@@ -1196,6 +1307,8 @@ wxTextCtrl * ShuttleGuiBase::TieNumericTextBox( const wxString &Prompt, WrappedT
    switch( mShuttleMode )
    {
    // IF setting internal storage from the controls.
+   case eIsGettingMetadata:
+      break;
    case eIsGettingFromDialog:
       {
          wxASSERT( pTextBox );
@@ -1223,6 +1336,7 @@ wxTextCtrl * ShuttleGuiBase::TieNumericTextBox( const wxString &Prompt, WrappedT
 
 wxSlider * ShuttleGuiBase::TieSlider( const wxString &Prompt, WrappedType & WrappedRef, const int max, int min )
 {
+   HandleOptionality( Prompt );
    // The Add function does a UseUpId(), so don't do it here in that case.
    if( mShuttleMode != eIsCreating )
       UseUpId();
@@ -1235,6 +1349,8 @@ wxSlider * ShuttleGuiBase::TieSlider( const wxString &Prompt, WrappedType & Wrap
          }
          break;
       // IF setting internal storage from the controls.
+      case eIsGettingMetadata:
+         break;
       case eIsGettingFromDialog:
          {
             wxWindow * pWnd  = wxWindow::FindWindowById( miId, mpDlg);
@@ -1268,30 +1384,30 @@ wxSlider * ShuttleGuiBase::TieSlider( const wxString &Prompt, WrappedType & Wrap
 wxChoice * ShuttleGuiBase::TieChoice(
    const wxString &Prompt,
    WrappedType &WrappedRef,
-   const wxArrayString * pChoices )
+   const wxArrayStringEx &choices )
 {
+   HandleOptionality( Prompt );
+
    // The Add function does a UseUpId(), so don't do it here in that case.
    if( mShuttleMode != eIsCreating )
       UseUpId();
+
    wxChoice * pChoice=NULL;
    switch( mShuttleMode )
    {
    case eIsCreating:
       {
-         if( WrappedRef.IsString() )
-            pChoice = AddChoice( Prompt, WrappedRef.ReadAsString(), pChoices );
-         else
-         {
-            wxString Temp;
-            if( pChoices && ( WrappedRef.ReadAsInt() < (int)pChoices->GetCount() ) )
-            {
-               Temp = (*pChoices)[WrappedRef.ReadAsInt()];
-            }
-            pChoice = AddChoice( Prompt, Temp, pChoices );
+         if( WrappedRef.IsString() ) {
+            auto Selected = choices.Index( WrappedRef.ReadAsString() );
+            pChoice = AddChoice( Prompt, choices, Selected );
          }
+         else
+            pChoice = AddChoice( Prompt, choices, WrappedRef.ReadAsInt() );
       }
       break;
    // IF setting internal storage from the controls.
+   case eIsGettingMetadata:
+      break;
    case eIsGettingFromDialog:
       {
          wxWindow * pWnd  = wxWindow::FindWindowById( miId, mpDlg);
@@ -1324,6 +1440,7 @@ wxChoice * ShuttleGuiBase::TieChoice(
       wxASSERT( false );
       break;
    }
+   SetSizeHints(choices);
    return pChoice;
 }
 
@@ -1341,10 +1458,12 @@ wxRadioButton * ShuttleGuiBase::TieRadioButton(const wxString &Prompt, WrappedTy
          mpWind = pRadioButton = safenew wxRadioButton(GetParent(), miId, Prompt,
             wxDefaultPosition, wxDefaultSize,
             (mRadioCount==1)?wxRB_GROUP:0);
-         pRadioButton->SetValue(WrappedRef.ValuesMatch( mRadioValue ));
+         pRadioButton->SetValue(WrappedRef.ValuesMatch( *mRadioValue ));
          pRadioButton->SetName(wxStripMenuCodes(Prompt));
          UpdateSizers();
       }
+      break;
+   case eIsGettingMetadata:
       break;
    case eIsGettingFromDialog:
       {
@@ -1353,7 +1472,7 @@ wxRadioButton * ShuttleGuiBase::TieRadioButton(const wxString &Prompt, WrappedTy
          wxASSERT( pRadioButton );
          if( pRadioButton->GetValue() )
          {
-            mRadioValue.WriteToAsWrappedType( WrappedRef );
+            mRadioValue->WriteToAsWrappedType( WrappedRef );
          }
       }
       break;
@@ -1369,11 +1488,11 @@ wxRadioButton * ShuttleGuiBase::TieRadioButton(const wxString &Prompt, WrappedTy
 /// Versions for specific types must do that initialisation.
 void ShuttleGuiBase::StartRadioButtonGroup( const wxString & SettingName )
 {
-   wxASSERT( mRadioValue.eWrappedType != eWrappedNotSet );
+   wxASSERT( mRadioValue && mRadioValue->eWrappedType != eWrappedNotSet );
    mSettingName = SettingName;
    mRadioCount = 0;
    if( mShuttleMode == eIsCreating )
-      DoDataShuttle( SettingName, mRadioValue );
+      DoDataShuttle( SettingName, *mRadioValue );
 }
 
 /// Call this after any TieRadioButton calls.
@@ -1381,9 +1500,8 @@ void ShuttleGuiBase::StartRadioButtonGroup( const wxString & SettingName )
 void ShuttleGuiBase::EndRadioButtonGroup()
 {
    if( mShuttleMode == eIsGettingFromDialog )
-      DoDataShuttle( mSettingName, mRadioValue );
-   mRadioValue.Init();// Clear it out...
-   mSettingName = wxT("");
+      DoDataShuttle( mSettingName, *mRadioValue );
+   mRadioValue.reset();// Clear it out...
    mRadioCount = -1; // So we detect a problem.
 }
 
@@ -1400,10 +1518,10 @@ wxCheckBox * ShuttleGuiBase::TieCheckBox(const wxString &Prompt, bool &Var)
 // See comment in AddCheckBoxOnRight() for why we have this variant.
 wxCheckBox * ShuttleGuiBase::TieCheckBoxOnRight(const wxString &Prompt, bool &Var)
 {
-   // Only odes anything different if it's creating.
+   // Only does anything different if it's creating.
    WrappedType WrappedRef( Var );
    if( mShuttleMode == eIsCreating )
-      return AddCheckBoxOnRight( Prompt, WrappedRef.ReadAsString() );
+      return AddCheckBoxOnRight( Prompt, WrappedRef.ReadAsString() == wxT("true") );
    return TieCheckBox( Prompt, WrappedRef );
 }
 
@@ -1431,15 +1549,9 @@ wxTextCtrl * ShuttleGuiBase::TieTextBox( const wxString &Prompt, double &Value, 
    return TieTextBox( Prompt, WrappedRef, nChars );
 }
 
-wxTextCtrl * ShuttleGuiBase::TieNumericTextBox( const wxString &Prompt, wxString &Selected, const int nChars)
+wxTextCtrl * ShuttleGuiBase::TieNumericTextBox( const wxString &Prompt, int &Value, const int nChars)
 {
-   WrappedType WrappedRef(Selected);
-   return TieNumericTextBox( Prompt, WrappedRef, nChars );
-}
-
-wxTextCtrl * ShuttleGuiBase::TieNumericTextBox( const wxString &Prompt, int &Selected, const int nChars)
-{
-   WrappedType WrappedRef( Selected );
+   WrappedType WrappedRef( Value );
    return TieNumericTextBox( Prompt, WrappedRef, nChars );
 }
 
@@ -1485,19 +1597,19 @@ wxSlider * ShuttleGuiBase::TieVSlider( const wxString &Prompt, float &pos, const
 wxChoice * ShuttleGuiBase::TieChoice(
    const wxString &Prompt,
    wxString &Selected,
-   const wxArrayString * pChoices )
+   const wxArrayStringEx &choices )
 {
    WrappedType WrappedRef( Selected );
-   return TieChoice( Prompt, WrappedRef, pChoices );
+   return TieChoice( Prompt, WrappedRef, choices );
 }
 
 wxChoice * ShuttleGuiBase::TieChoice(
    const wxString &Prompt,
    int &Selected,
-   const wxArrayString * pChoices )
+   const wxArrayStringEx &choices )
 {
    WrappedType WrappedRef( Selected );
-   return TieChoice( Prompt, WrappedRef, pChoices );
+   return TieChoice( Prompt, WrappedRef, choices );
 }
 
 //-----------------------------------------------------------------------//
@@ -1508,23 +1620,23 @@ wxChoice * ShuttleGuiBase::TieChoice(
 //-----------------------------------------------------------------------//
 
 /// String-to-Index
-int ShuttleGuiBase::TranslateToIndex( const wxString &Value, const wxArrayString &Choices )
+int ShuttleGuiBase::TranslateToIndex( const wxString &Value, const wxArrayStringEx &Choices )
 {
-   int n = Choices.Index( Value );
-   if( n== wxNOT_FOUND )
+   int n = make_iterator_range( Choices ).index( Value );
+   if( n == wxNOT_FOUND  )
       n=miNoMatchSelector;
    miNoMatchSelector = 0;
    return n;
 }
 
 /// Index-to-String
-wxString ShuttleGuiBase::TranslateFromIndex( const int nIn, const wxArrayString &Choices )
+wxString ShuttleGuiBase::TranslateFromIndex( const int nIn, const wxArrayStringEx &Choices )
 {
    int n = nIn;
    if( n== wxNOT_FOUND )
       n=miNoMatchSelector;
    miNoMatchSelector = 0;
-   if( n < (int)Choices.GetCount() )
+   if( n < (int)Choices.size() )
    {
       return Choices[n];
    }
@@ -1532,23 +1644,23 @@ wxString ShuttleGuiBase::TranslateFromIndex( const int nIn, const wxArrayString 
 }
 
 /// Int-to-Index (choices can be items like e.g 0x400120 )
-int ShuttleGuiBase::TranslateToIndex( const int Value, const wxArrayInt &Choices )
+int ShuttleGuiBase::TranslateToIndex( const int Value, const std::vector<int> &Choices )
 {
-   int n = Choices.Index( Value );
-   if( n== wxNOT_FOUND )
+   int n = make_iterator_range(Choices).index( Value );
+   if( n == wxNOT_FOUND )
       n=miNoMatchSelector;
    miNoMatchSelector = 0;
    return n;
 }
 
 /// Index-to-int (choices can be items like e.g 0x400120 )
-int ShuttleGuiBase::TranslateFromIndex( const int nIn, const wxArrayInt &Choices )
+int ShuttleGuiBase::TranslateFromIndex( const int nIn, const std::vector<int> &Choices )
 {
    int n = nIn;
    if( n== wxNOT_FOUND )
       n=miNoMatchSelector;
    miNoMatchSelector = 0;
-   if( n < (int)Choices.GetCount() )
+   if( n < (int)Choices.size() )
    {
       return Choices[n];
    }
@@ -1616,6 +1728,8 @@ bool ShuttleGuiBase::DoStep( int iStep )
    {
       return (iStep==2) || (iStep==3);
    }
+   if( mShuttleMode == eIsGettingMetadata )
+      return iStep ==2;
    wxASSERT( false );
    return false;
 }
@@ -1717,42 +1831,6 @@ wxTextCtrl * ShuttleGuiBase::TieTextBox(
 
 /// Variant of the standard TieTextBox which does the two step exchange
 /// between gui and stack variable and stack variable and shuttle.
-wxTextCtrl * ShuttleGuiBase::TieNumericTextBox(
-   const wxString & Prompt,
-   const wxString & SettingName,
-   const wxString & Default,
-   const int nChars)
-{
-   wxTextCtrl * pText=(wxTextCtrl*)NULL;
-
-   wxString Temp = Default;
-   WrappedType WrappedRef( Temp );
-   if( DoStep(1) ) DoDataShuttle( SettingName, WrappedRef );
-   if( DoStep(2) ) pText = TieNumericTextBox( Prompt, WrappedRef, nChars );
-   if( DoStep(3) ) DoDataShuttle( SettingName, WrappedRef );
-   return pText;
-}
-/// Variant of the standard TieTextBox which does the two step exchange
-/// between gui and stack variable and stack variable and shuttle.
-/// This one does it for double values...
-wxTextCtrl * ShuttleGuiBase::TieTextBox(
-   const wxString & Prompt,
-   const wxString & SettingName,
-   const double & Default,
-   const int nChars)
-{
-   wxTextCtrl * pText=(wxTextCtrl*)NULL;
-
-   double Temp = Default;
-   WrappedType WrappedRef( Temp );
-   if( DoStep(1) ) DoDataShuttle( SettingName, WrappedRef );
-   if( DoStep(2) ) pText = TieTextBox( Prompt, WrappedRef, nChars );
-   if( DoStep(3) ) DoDataShuttle( SettingName, WrappedRef );
-   return pText;
-}
-
-/// Variant of the standard TieTextBox which does the two step exchange
-/// between gui and stack variable and stack variable and shuttle.
 /// This one does it for double values...
 wxTextCtrl * ShuttleGuiBase::TieNumericTextBox(
    const wxString & Prompt,
@@ -1773,29 +1851,52 @@ wxTextCtrl * ShuttleGuiBase::TieNumericTextBox(
 /// Variant of the standard TieChoice which does the two step exchange
 /// between gui and stack variable and stack variable and shuttle.
 ///   @param Prompt             The prompt shown beside the control.
+///   @param Setting            Encapsulates setting name, internal and visible
+///                             choice strings, and a designation of one of
+///                             those as default.
+wxChoice *ShuttleGuiBase::TieChoice(
+   const wxString &Prompt,
+   ChoiceSetting &choiceSetting )
+{
+   // Do this to force any needed migrations first
+   choiceSetting.Read();
+
+   wxArrayStringEx visibleChoices, internalChoices;
+   for (const auto &ident : choiceSetting) {
+      visibleChoices.push_back( ident.Translation() );
+      internalChoices.push_back( ident.Internal() );
+   }
+   return TieChoice(
+      Prompt, choiceSetting.Key(), choiceSetting.Default().Internal(),
+         visibleChoices, internalChoices );
+}
+
+/// Variant of the standard TieChoice which does the two step exchange
+/// between gui and stack variable and stack variable and shuttle.
+///   @param Prompt             The prompt shown beside the control.
 ///   @param SettingName        The setting name as stored in gPrefs
 ///   @param Default            The default value for this control (translated)
 ///   @param Choices            An array of choices that appear on screen.
-///   @param TranslatedChoices  The corresponding values (as a string array)
+///   @param InternalChoices    The corresponding values (as a string array)
 wxChoice * ShuttleGuiBase::TieChoice(
    const wxString &Prompt,
    const wxString &SettingName,
    const wxString &Default,
-   const wxArrayString & Choices,
-   const wxArrayString & TranslatedChoices)
+   const wxArrayStringEx & Choices,
+   const wxArrayStringEx & InternalChoices)
 {
    wxChoice * pChoice=(wxChoice*)NULL;
 
    int TempIndex=0;
-//   int TempIndex = TranslateToIndex( Default, TranslatedChoices );
+//   int TempIndex = TranslateToIndex( Default, InternalChoices );
    wxString TempStr = Default;
    WrappedType WrappedRef( TempStr );
    // Get from prefs does 1 and 2.
    // Put to prefs does 2 and 3.
    if( DoStep(1) ) DoDataShuttle( SettingName, WrappedRef ); // Get Index from Prefs.
-   if( DoStep(1) ) TempIndex = TranslateToIndex( TempStr, TranslatedChoices ); // To an index
-   if( DoStep(2) ) pChoice = TieChoice( Prompt, TempIndex, &Choices ); // Get/Put index from GUI.
-   if( DoStep(3) ) TempStr = TranslateFromIndex( TempIndex, TranslatedChoices ); // To a string
+   if( DoStep(1) ) TempIndex = TranslateToIndex( TempStr, InternalChoices ); // To an index
+   if( DoStep(2) ) pChoice = TieChoice( Prompt, TempIndex, Choices ); // Get/Put index from GUI.
+   if( DoStep(3) ) TempStr = TranslateFromIndex( TempIndex, InternalChoices ); // To a string
    if( DoStep(3) ) DoDataShuttle( SettingName, WrappedRef ); // Put into Prefs.
    return pChoice;
 }
@@ -1808,13 +1909,13 @@ wxChoice * ShuttleGuiBase::TieChoice(
 ///   @param SettingName        The setting name as stored in gPrefs
 ///   @param Default            The default value for this control (translated)
 ///   @param Choices            An array of choices that appear on screen.
-///   @param TranslatedChoices  The correcponding values (as an integer array)
+///   @param InternalChoices    The corresponding values (as an integer array)
 wxChoice * ShuttleGuiBase::TieChoice(
    const wxString &Prompt,
    const wxString &SettingName,
    const int Default,
-   const wxArrayString & Choices,
-   const wxArrayInt & TranslatedChoices)
+   const wxArrayStringEx & Choices,
+   const std::vector<int> & InternalChoices)
 {
    wxChoice * pChoice=(wxChoice*)NULL;
 
@@ -1824,11 +1925,32 @@ wxChoice * ShuttleGuiBase::TieChoice(
    // Get from prefs does 1 and 2.
    // Put to prefs does 2 and 3.
    if( DoStep(1) ) DoDataShuttle( SettingName, WrappedRef ); // Get Int from Prefs.
-   if( DoStep(1) ) TempIndex = TranslateToIndex( TranslatedInt, TranslatedChoices ); // Int to an index.
-   if( DoStep(2) ) pChoice = TieChoice( Prompt, TempIndex, &Choices ); // Get/Put index from GUI.
-   if( DoStep(3) ) TranslatedInt = TranslateFromIndex( TempIndex, TranslatedChoices ); // Index to int
+   if( DoStep(1) ) TempIndex = TranslateToIndex( TranslatedInt, InternalChoices ); // Int to an index.
+   if( DoStep(2) ) pChoice = TieChoice( Prompt, TempIndex, Choices ); // Get/Put index from GUI.
+   if( DoStep(3) ) TranslatedInt = TranslateFromIndex( TempIndex, InternalChoices ); // Index to int
    if( DoStep(3) ) DoDataShuttle( SettingName, WrappedRef ); // Put into Prefs.
    return pChoice;
+}
+
+/// Variant of the standard TieChoice which does the two step exchange
+/// between gui and stack variable and stack variable and shuttle.
+/// The Translated choices and default are integers, not Strings.
+/// Behaves identically to the previous, but is meant for use when the choices
+/// are non-exhaustive and there is a companion control for abitrary entry.
+///   @param Prompt             The prompt shown beside the control.
+///   @param SettingName        The setting name as stored in gPrefs
+///   @param Default            The default value for this control (translated)
+///   @param Choices            An array of choices that appear on screen.
+///   @param InternalChoices    The corresponding values (as an integer array)
+wxChoice * ShuttleGuiBase::TieNumberAsChoice(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const int Default,
+   const wxArrayStringEx & Choices,
+   const std::vector<int> & InternalChoices)
+{
+   return ShuttleGuiBase::TieChoice(
+      Prompt, SettingName, Default, Choices, InternalChoices );
 }
 
 /// Integer specific version of StartRadioButtonGroup.
@@ -1837,7 +1959,7 @@ void ShuttleGuiBase::StartRadioButtonGroup( const wxString & SettingName, const 
 {
    // Configure the generic type mechanism to use OUR integer.
    mRadioValueInt = iDefaultValue;
-   mRadioValue.SetTo( mRadioValueInt );
+   mRadioValue.create( mRadioValueInt );
    // Now actually start the radio button group.
    StartRadioButtonGroup( SettingName );
 }
@@ -1848,7 +1970,7 @@ void ShuttleGuiBase::StartRadioButtonGroup( const wxString & SettingName, const 
 {
    // Configure the generic type mechanism to use OUR string.
    mRadioValueString = DefaultValue;
-   mRadioValue.SetTo( mRadioValueString );
+   mRadioValue.create( mRadioValueString );
    // Now actually start the radio button group.
    StartRadioButtonGroup( SettingName );
 }
@@ -2043,6 +2165,12 @@ ShuttleGui & ShuttleGui::Id(int id )
    return *this;
 }
 
+ShuttleGui & ShuttleGui::Optional( bool &bVar ){
+   mpbOptionalFlag = &bVar; 
+   return *this;
+};
+
+
 GuiWaveTrack * ShuttleGui::AddGuiWaveTrack( const wxString & WXUNUSED(Name))
 {
 #ifdef EXPERIMENTAL_TRACK_PANEL
@@ -2059,33 +2187,6 @@ GuiWaveTrack * ShuttleGui::AddGuiWaveTrack( const wxString & WXUNUSED(Name))
 #else
    return NULL;
 #endif
-}
-
-RulerPanel * ShuttleGui::AddRulerVertical(float low, float hi, const wxString & Units )
-{
-   UseUpId();
-   if( mShuttleMode != eIsCreating )
-      return (RulerPanel*)NULL;
-//    return wxDynamicCast(wxWindow::FindWindowById( miId, mpDlg), RulerPanel);
-   RulerPanel * pRulerPanel;
-   miProp=0;
-   mpWind = pRulerPanel = safenew RulerPanel(
-      GetParent(),
-      miId,
-      wxDefaultPosition,
-      wxDefaultSize
-      );
-   Ruler & Ruler = pRulerPanel->ruler;
-   Ruler.SetOrientation(wxVERTICAL);
-   Ruler.SetBounds(0, 0, 100, 100); // Ruler can't handle small sizes
-   Ruler.SetRange(low, hi);
-   Ruler.SetFormat(Ruler::RealFormat);
-   Ruler.SetUnits(Units);
-   Ruler.SetLabelEdges(true);
-
-   mpWind->SetMinSize(wxSize(38,50));
-   UpdateSizers();
-   return pRulerPanel;
 }
 
 AttachableScrollBar * ShuttleGui::AddAttachableScrollBar( long style )
@@ -2168,7 +2269,12 @@ std::unique_ptr<wxSizer> CreateStdButtonSizer(wxWindow *parent, long buttons, wx
 
    if( buttons & eHelpButton )
    {
-      bs->AddButton(safenew wxButton(parent, wxID_HELP));
+      // Replace standard Help button with smaller icon button.
+      // bs->AddButton(safenew wxButton(parent, wxID_HELP));
+      b = safenew wxBitmapButton(parent, wxID_HELP, theTheme.Bitmap( bmpHelpIcon ));
+      b->SetToolTip( _("Help") );
+      b->SetLabel(_("Help"));       // for screen readers
+      bs->AddButton( b );
    }
 
    if (buttons & ePreviewButton)
@@ -2202,7 +2308,7 @@ std::unique_ptr<wxSizer> CreateStdButtonSizer(wxWindow *parent, long buttons, wx
       size_t lastLastSpacer = 0;
       size_t lastSpacer = 0;
       wxSizerItemList & list = bs->GetChildren();
-      for( size_t i = 0, cnt = list.GetCount(); i < cnt; i++ )
+      for( size_t i = 0, cnt = list.size(); i < cnt; i++ )
       {
          if( list[i]->IsSpacer() )
          {
@@ -2244,15 +2350,15 @@ wxSizerItem * ShuttleGui::AddSpace( int width, int height )
 {
    if( mShuttleMode != eIsCreating )
       return NULL;
-
-   return mpSizer->Add( width, height, 0);
+   SetProportions(0);
+   return mpSizer->Add( width, height, miProp);
 }
 
-void ShuttleGui::SetSizeHints( wxWindow *window, const wxArrayString & items )
+void ShuttleGuiBase::SetSizeHints( wxWindow *window, const wxArrayStringEx & items )
 {
    int maxw = 0;
 
-   for( size_t i = 0; i < items.GetCount(); i++ )
+   for( size_t i = 0; i < items.size(); i++ )
    {
       int x;
       int y;
@@ -2279,19 +2385,7 @@ void ShuttleGui::SetSizeHints( wxWindow *window, const wxArrayString & items )
    window->SetSizeHints( maxw, -1 );
 }
 
-void ShuttleGui::SetSizeHints( wxWindow *window, const wxArrayInt & items )
-{
-   wxArrayString strs;
-
-   for( size_t i = 0; i < items.GetCount(); i++ )
-   {
-      strs.Add( wxString::Format( wxT("%d"), items[i] ) );
-   }
-
-   SetSizeHints( window, strs );
-}
-
-void ShuttleGui::SetSizeHints( const wxArrayString & items )
+void ShuttleGuiBase::SetSizeHints( const wxArrayStringEx & items )
 {
    if( mShuttleMode != eIsCreating )
       return;
@@ -2299,15 +2393,169 @@ void ShuttleGui::SetSizeHints( const wxArrayString & items )
    SetSizeHints( mpLastWind, items );
 }
 
-void ShuttleGui::SetSizeHints( const wxArrayInt & items )
-{
-   if( mShuttleMode != eIsCreating )
-      return;
+/********************************* GetDefinition ******************************/
 
-   SetSizeHints( mpLastWind, items );
+ShuttleGuiGetDefinition::ShuttleGuiGetDefinition(
+   wxWindow * pParent,CommandMessageTarget & target )
+: ShuttleGui( pParent, eIsGettingMetadata ),
+  CommandMessageTargetDecorator( target )
+{
+
+}
+ShuttleGuiGetDefinition::~ShuttleGuiGetDefinition(void)
+{
 }
 
-void ShuttleGui::SetSizeHints( int minX, int minY )
-{
-   ShuttleGuiBase::SetSizeHints( minX, minY );
+wxCheckBox * ShuttleGuiGetDefinition::TieCheckBox(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const bool bDefault) 
+{ 
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "bool", "type" );
+   AddBool( bDefault, "default"  );
+   EndStruct();
+   return ShuttleGui::TieCheckBox( Prompt, SettingName, bDefault );
 }
+wxCheckBox * ShuttleGuiGetDefinition::TieCheckBoxOnRight(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const bool bDefault) 
+{
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "bool", "type" );
+   AddBool( bDefault, "default"  );
+   EndStruct();
+   return ShuttleGui::TieCheckBoxOnRight( Prompt, SettingName, bDefault );
+}
+wxChoice * ShuttleGuiGetDefinition::TieChoice(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const wxString &Default,
+   const wxArrayStringEx &Choices,
+   const wxArrayStringEx & InternalChoices )
+{
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "enum", "type" );
+   AddItem( Default, "default"  );
+   StartField( "enum" );
+   StartArray();
+   for( size_t i=0;i<Choices.size(); i++ )
+      AddItem( InternalChoices[i] );
+   EndArray();
+   EndField();
+   EndStruct();
+   return ShuttleGui::TieChoice( Prompt, SettingName, Default, Choices, InternalChoices );
+}
+wxChoice * ShuttleGuiGetDefinition::TieChoice(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const int Default,
+   const wxArrayStringEx & Choices,
+   const std::vector<int> & InternalChoices)
+{
+   // Should no longer come here!
+   // Choice controls in Preferences that really are exhaustive choices among
+   // non-numerical options must now encode the internal choices as strings,
+   // not numbers.
+   wxASSERT(false);
+
+   // But if we do get here anyway, proceed sub-optimally as before.
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "enum", "type" );
+   AddItem( Default, "default"  );
+   StartField( "enum" );
+   StartArray();
+   for( size_t i=0;i<Choices.size(); i++ )
+      AddItem( Choices[i] );
+   EndArray();
+   EndField();
+   EndStruct();
+   return ShuttleGui::TieChoice( Prompt, SettingName, Default, Choices, InternalChoices );
+}
+wxChoice * ShuttleGuiGetDefinition::TieNumberAsChoice(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const int Default,
+   const wxArrayStringEx & Choices,
+   const std::vector<int> & InternalChoices)
+{
+   // Come here for controls that present non-exhaustive choices among some
+   //  numbers, with an associated control that allows arbitrary entry of an
+   // "Other..."
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "number", "type" ); // not "enum" !
+   AddItem( Default, "default"  );
+   EndStruct();
+   return ShuttleGui::TieNumberAsChoice(
+      Prompt, SettingName, Default, Choices, InternalChoices );
+}
+wxTextCtrl * ShuttleGuiGetDefinition::TieTextBox(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const wxString &Default,
+   const int nChars) 
+{
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "string", "type" );
+   AddItem( Default, "default"  );
+   EndStruct();
+   return ShuttleGui::TieTextBox( Prompt, SettingName, Default, nChars );
+}
+wxTextCtrl * ShuttleGuiGetDefinition::TieNumericTextBox(
+   const wxString & Prompt,
+   const wxString & SettingName,
+   const double & Default,
+   const int nChars) 
+{
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "number", "type" );
+   AddItem( Default, "default"  );
+   EndStruct();
+   return ShuttleGui::TieNumericTextBox( Prompt, SettingName, Default, nChars );
+}
+wxSlider * ShuttleGuiGetDefinition::TieSlider(
+   const wxString & Prompt,
+   const wxString & SettingName,
+   const int iDefault,
+   const int max,
+   const int min) 
+{
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "number", "type" );
+   AddItem( iDefault, "default"  );
+   EndStruct();
+   return ShuttleGui::TieSlider( Prompt, SettingName, iDefault, max, min );
+}
+wxSpinCtrl * ShuttleGuiGetDefinition::TieSpinCtrl(
+   const wxString &Prompt,
+   const wxString &SettingName,
+   const int Value,
+   const int max,
+   const int min) 
+{
+   StartStruct();
+   AddItem( SettingName, "id" );
+   AddItem( Prompt, "prompt" );
+   AddItem( "number", "type" );
+   AddItem( Value, "default"  );
+   EndStruct();
+   return ShuttleGui::TieSpinCtrl( Prompt, SettingName, Value, max, min );
+}
+

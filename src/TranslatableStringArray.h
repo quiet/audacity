@@ -11,12 +11,11 @@ Paul Licameli
 #ifndef __AUDACITY_TRANSLATABLE_STRING_ARRAY__
 #define __AUDACITY_TRANSLATABLE_STRING_ARRAY__
 
-#include <wx/app.h>
-#include <wx/event.h>
+#include <wx/app.h> // used in inline function template
 
-class wxArrayString;
+class wxArrayStringEx;
 
-DECLARE_EXPORTED_EVENT_TYPE(AUDACITY_DLL_API, EVT_LANGUAGE_CHANGE, -1);
+wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API, EVT_LANGUAGE_CHANGE, wxCommandEvent);
 
 /*
 This class can maintain a static table containing user visible strings that updates
@@ -37,18 +36,8 @@ public:
    TranslatableArray()
    {
       if (wxTheApp)
-         wxTheApp->Connect(EVT_LANGUAGE_CHANGE,
-            wxCommandEventHandler(TranslatableArray::Invalidate),
-            NULL,
-            this);
-   }
-
-   ~TranslatableArray()
-   {
-      if (wxTheApp)
-         wxTheApp->Disconnect(EVT_LANGUAGE_CHANGE,
-            wxCommandEventHandler(TranslatableArray::Invalidate),
-            NULL,
+         wxTheApp->Bind(EVT_LANGUAGE_CHANGE,
+            &TranslatableArray::Invalidate,
             this);
    }
 
@@ -74,6 +63,6 @@ protected:
    ArrayType mContents;
 };
 
-typedef TranslatableArray<wxArrayString> TranslatableStringArray;
+typedef TranslatableArray<wxArrayStringEx> TranslatableStringArray;
 
 #endif

@@ -16,7 +16,7 @@
 This is an abstract class that subclasses will have to derive the types
 from.  For any type there should only be one ODDecodeTask associated with
 a given track.
-There could be the ODBlockFiles of several FLACs in one track (after copy and pasting),
+There could be the ODDecodeBlockFiles of several FLACs in one track (after copy and pasting),
 so things aren't as simple as they seem - the implementation needs to be
 robust enough to allow all the user changes such as copy/paste, DELETE, and so on.
 
@@ -34,6 +34,7 @@ robust enough to allow all the user changes such as copy/paste, DELETE, and so o
 
 #include "FLAC++/decoder.h"
 
+class wxArrayString;
 class ODDecodeBlockFile;
 class WaveTrack;
 class ODFileDecoder;
@@ -51,7 +52,7 @@ class ODDecodeFlacTask final : public ODDecodeTask
    virtual ~ODDecodeFlacTask();
 
 
-   movable_ptr<ODTask> Clone() const override;
+   std::unique_ptr<ODTask> Clone() const override;
    ///Creates an ODFileDecoder that decodes a file of filetype the subclass handles.
    ODFileDecoder* CreateFileDecoder(const wxString & fileName) override;
 

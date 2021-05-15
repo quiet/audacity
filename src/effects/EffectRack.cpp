@@ -12,11 +12,15 @@
 **********************************************************************/
 
 #include "../Audacity.h"
+#include "EffectRack.h"
+
 #include "../Experimental.h"
 
 #if defined(EXPERIMENTAL_EFFECTS_RACK)
 
-#include <wx/access.h>
+#include "../MemoryX.h"
+#include "../UndoManager.h"
+
 #include <wx/defs.h>
 #include <wx/bmpbuttn.h>
 #include <wx/button.h>
@@ -32,7 +36,8 @@
 #include <wx/tglbtn.h>
 
 #include "EffectManager.h"
-#include "EffectRack.h"
+#include "../commands/CommandContext.h"
+#include "../Menus.h"
 #include "../Prefs.h"
 #include "../Project.h"
 
@@ -148,7 +153,7 @@ EffectRack::EffectRack()
       wxString slot;
       gPrefs->Read(wxString::Format(wxT("/EffectsRack/Slot%02d"), i), &slot);
 
-      Effect *effect = em.GetEffect(slot.AfterFirst(wxT(',')).c_str());
+      Effect *effect = em.GetEffect(slot.AfterFirst(wxT(',')));
       if (effect)
       {
          Add(effect, slot.BeforeFirst(wxT(',')) == wxT("1"), true);
@@ -162,7 +167,7 @@ EffectRack::~EffectRack()
 {
    gPrefs->DeleteGroup(wxT("/EffectsRack"));
 
-   for (size_t i = 0, cnt = mEffects.GetCount(); i < cnt; i++)
+   for (size_t i = 0, cnt = mEffects.size(); i < cnt; i++)
    {
       if (mFavState[i])
       {
@@ -170,14 +175,14 @@ EffectRack::~EffectRack()
          gPrefs->Write(wxString::Format(wxT("/EffectsRack/Slot%02d"), i),
                        wxString::Format(wxT("%d,%s"),
                                         mPowerState[i],
-                                        effect->GetID().c_str()));
+                                        effect->GetID()));
       }
    }
 }
 
 void EffectRack::Add(Effect *effect, bool active, bool favorite)
 {
-   if (mEffects.Index(effect) != wxNOT_FOUND)
+   if (mEffects.end() != std::find(mEffects.begin(), mEffects.end(), effect))
    {
       return;
    }
@@ -189,7 +194,7 @@ void EffectRack::Add(Effect *effect, bool active, bool favorite)
    bb->SetBitmapSelected(mPowerRaised);
    bb->SetName(_("Active State"));
    bb->SetToolTip(_("Set effect active state"));
-   mPowerState.Add(active);
+   mPowerState.push_back(active);
    if (active)
    {
       bb->SetBitmapLabel(mPowerPushed);
@@ -226,7 +231,7 @@ void EffectRack::Add(Effect *effect, bool active, bool favorite)
    bb->SetBitmapSelected(mFavPushed);
    bb->SetName(_("Favorite"));
    bb->SetToolTip(_("Mark effect as a favorite"));
-   mFavState.Add(favorite);
+   mFavState.push_back(favorite);
    if (favorite)
    {
       bb->SetBitmapLabel(mFavPushed);
@@ -245,7 +250,8 @@ void EffectRack::Add(Effect *effect, bool active, bool favorite)
    bb->SetToolTip(_("Remove effect from the rack"));
    mMainSizer->Add(bb, 0, wxALIGN_LEFT | wxALIGN_CENTER_VERTICAL);
 
-   wxStaticText *text = safenew wxStaticText(mPanel, ID_NAME + mNumEffects, effect->GetName());
+   wxStaticText *text = safenew wxStaticText(mPanel, ID_NAME + mNumEffects,
+      effect->GetTranslatedName() );
    text->SetToolTip(_("Name of the effect"));
    mMainSizer->Add(text, 0, wxEXPAND | wxALIGN_LEFT | wxALIGN_CENTER_VERTICAL | wxALL, 5);
 
@@ -254,7 +260,7 @@ void EffectRack::Add(Effect *effect, bool active, bool favorite)
    Fit();
    Update();
 
-   mEffects.Add(effect);
+   mEffects.push_back(effect);
    mNumEffects++;
 
    if (!mTimer.IsRunning())
@@ -288,16 +294,37 @@ void EffectRack::OnTimer(wxTimerEvent & WXUNUSED(evt))
 void EffectRack::OnApply(wxCommandEvent & WXUNUSED(evt))
 {
    AudacityProject *project = GetActiveProject();
-   
-   for (size_t i = 0, cnt = mEffects.GetCount(); i < cnt; i++)
+
+   bool success = false;
+   auto state = project->GetUndoManager()->GetCurrentState();
+   auto cleanup = finally( [&] {
+      if(!success)
+         project->SetStateTo(state);
+   } );
+
+   for (size_t i = 0, cnt = mEffects.size(); i < cnt; i++)
    {
       if (mPowerState[i])
       {
-         project->OnEffect(mEffects[i]->GetID(), true);
+         if (!PluginActions::DoEffect(mEffects[i]->GetID(),
+                           *project,
+                           PluginActions::kConfigured))
+            // If any effect fails (or throws), then stop.
+            return;
+      }
+   }
 
+   success = true;
+
+   // Only after all succeed, do the following.
+   for (size_t i = 0, cnt = mEffects.size(); i < cnt; i++)
+   {
+      if (mPowerState[i])
+      {
          mPowerState[i] = false;
 
-         wxBitmapButton *btn = static_cast<wxBitmapButton *>(FindWindowById(ID_POWER + i));
+         wxBitmapButton *btn =
+            static_cast<wxBitmapButton *>(FindWindowById(ID_POWER + i));
          btn->SetBitmapLabel(mPowerRaised);
          btn->SetBitmapSelected(mPowerRaised);
       }
@@ -368,7 +395,7 @@ void EffectRack::OnDown(wxCommandEvent & evt)
 
    evt.Skip();
 
-   size_t index = GetEffectIndex(btn);
+   int index = GetEffectIndex(btn);
    if (index < 0 || index == (mMainSizer->GetChildren().GetCount() / NUMCOLS) - 1)
    {
       return;
@@ -407,11 +434,11 @@ void EffectRack::OnRemove(wxCommandEvent & evt)
       return;
    }
 
-   mEffects.RemoveAt(index);
-   mPowerState.RemoveAt(index);
-   mFavState.RemoveAt(index);
+   mEffects.erase(mEffects.begin() + index);
+   mPowerState.erase(mPowerState.begin() + index);
+   mFavState.erase(mFavState.begin() + index);
 
-   if (mEffects.GetCount() == 0)
+   if (mEffects.size() == 0)
    {
       if (mTimer.IsRunning())
       {
@@ -433,7 +460,7 @@ void EffectRack::OnRemove(wxCommandEvent & evt)
    UpdateActive();
 }
 
-wxBitmap EffectRack::CreateBitmap(const char *xpm[], bool up, bool pusher)
+wxBitmap EffectRack::CreateBitmap(const char *const xpm[], bool up, bool pusher)
 {
    wxMemoryDC dc;
    wxBitmap pic(xpm);
@@ -488,16 +515,16 @@ int EffectRack::GetEffectIndex(wxWindow *win)
 void EffectRack::MoveRowUp(int row)
 {
    Effect *effect = mEffects[row];
-   mEffects.RemoveAt(row);
-   mEffects.Insert(effect, row - 1);
+   mEffects.erase(mEffects.begin() + row);
+   mEffects.insert(mEffects.begin() + row - 1, effect);
 
    int state = mPowerState[row];
-   mPowerState.RemoveAt(row);
-   mPowerState.Insert(state, row - 1);
+   mPowerState.erase(mPowerState.begin() + row);
+   mPowerState.insert(mPowerState.begin() + row - 1, state);
 
    state = mFavState[row];
-   mFavState.RemoveAt(row);
-   mFavState.Insert(state, row - 1);
+   mFavState.erase(mFavState.begin() + row);
+   mFavState.insert(mFavState.begin() + row - 1, state);
 
    row *= NUMCOLS;
 
@@ -524,11 +551,11 @@ void EffectRack::UpdateActive()
 
    if (!mBypassing)
    {
-      for (size_t i = 0, cnt = mEffects.GetCount(); i < cnt; i++)
+      for (size_t i = 0, cnt = mEffects.size(); i < cnt; i++)
       {
          if (mPowerState[i])
          {
-            mActive.Add(mEffects[i]);
+            mActive.push_back(mEffects[i]);
          }
       }
    }

@@ -13,14 +13,13 @@
 
 #include "MemoryX.h"
 #include <vector>
-#include <wx/sizer.h>
-#include <wx/statbmp.h>
-#include <wx/bitmap.h>
-#include "widgets/wxPanelWrapper.h"
+#include "widgets/wxPanelWrapper.h" // to inherit
 
 extern const wxString VerCheckArgs();
 extern const wxString VerCheckUrl();
 extern const wxString VerCheckHtml();
+
+class wxStaticBitmap;
 
 class ShuttleGui;
 
@@ -32,14 +31,9 @@ struct AboutDialogCreditItem {
       : description(description_), role(role_)
    {}
 
-#ifdef __AUDACITY_OLD_STD__
-   AboutDialogCreditItem(const AboutDialogCreditItem&) = default;
-   AboutDialogCreditItem& operator= (const AboutDialogCreditItem&) = default;
-#else
    // No copy, use the move
    AboutDialogCreditItem(const AboutDialogCreditItem&) PROHIBITED;
    AboutDialogCreditItem& operator= (const AboutDialogCreditItem&) PROHIBITED;
-#endif
 
    // Move constructor, because wxString lacks one
    AboutDialogCreditItem(AboutDialogCreditItem &&moveMe)
@@ -72,8 +66,9 @@ class AboutDialog final : public wxDialogWrapper {
    enum Role {
       roleTeamMember,
       roleEmeritusTeam,
+      roleDeceased,
       roleContributor,
-      roleTranslators,
+      roleGraphics,
       roleLibrary,
       roleThanks
    };

@@ -21,6 +21,7 @@ UndoManager
 
 
 #include "Audacity.h"
+#include "UndoManager.h"
 
 #include <wx/hashset.h>
 
@@ -29,19 +30,25 @@ UndoManager
 #include "Internat.h"
 #include "Project.h"
 #include "Sequence.h"
+#include "WaveClip.h"
 #include "WaveTrack.h"          // temp
 #include "NoteTrack.h"  // for Sonify* function declarations
 #include "Diags.h"
 #include "Tags.h"
 
-#include "UndoManager.h"
+
+#include <unordered_set>
+
+wxDEFINE_EVENT(EVT_UNDO_PUSHED, wxCommandEvent);
+wxDEFINE_EVENT(EVT_UNDO_MODIFIED, wxCommandEvent);
+wxDEFINE_EVENT(EVT_UNDO_RESET, wxCommandEvent);
 
 using ConstBlockFilePtr = const BlockFile*;
-WX_DECLARE_HASH_SET(ConstBlockFilePtr, wxPointerHash, wxPointerEqual, Set );
+using Set = std::unordered_set<ConstBlockFilePtr>;
 
 struct UndoStackElem {
 
-   UndoStackElem(std::unique_ptr<TrackList> &&tracks_,
+   UndoStackElem(std::shared_ptr<TrackList> &&tracks_,
       const wxString &description_,
       const wxString &shortDescription_,
       const SelectedRegion &selectedRegion_,
@@ -61,7 +68,6 @@ UndoManager::UndoManager()
 {
    current = -1;
    saved = -1;
-   consolidationCount = 0;
    ResetODChangesFlag();
 }
 
@@ -77,9 +83,7 @@ namespace {
       SpaceArray::value_type result = 0;
 
       //TIMER_START( "CalculateSpaceUsage", space_calc );
-      TrackListOfKindIterator iter(Track::Wave);
-      WaveTrack *wt = (WaveTrack *) iter.First(tracks);
-      while (wt)
+      for (auto wt : tracks->Any< WaveTrack >())
       {
          // Scan all clips within current track
          for(const auto &clip : wt->GetAllClips())
@@ -103,8 +107,6 @@ namespace {
                   seen->insert( &*file );
             }
          }
-
-         wt = (WaveTrack *) iter.Next();
       }
 
       return result;
@@ -128,8 +130,8 @@ void UndoManager::CalculateSpaceUsage()
    // contains it.
 
    // Why the last and not the first? Because the user of the History dialog
-   // may delete undo states, oldest first.  To reclaim disk space you must
-   // delete all states containing the block file.  So the block file's
+   // may DELETE undo states, oldest first.  To reclaim disk space you must
+   // DELETE all states containing the block file.  So the block file's
    // contribution to space usage should be counted only in that latest state.
 
    for (size_t nn = stack.size(); nn--;)
@@ -197,6 +199,8 @@ void UndoManager::RemoveStates(int num)
 void UndoManager::ClearStates()
 {
    RemoveStates(stack.size());
+   current = -1;
+   saved = -1;
 }
 
 unsigned int UndoManager::GetNumStates()
@@ -232,12 +236,12 @@ void UndoManager::ModifyState(const TrackList * l,
    stack[current]->state.tracks.reset();
 
    // Duplicate
-   auto tracksCopy = std::make_unique<TrackList>();
-   TrackListConstIterator iter(l);
-   const Track *t = iter.First();
-   while (t) {
+   auto tracksCopy = TrackList::Create();
+   for (auto t : *l) {
+      if ( t->GetId() == TrackId{} )
+         // Don't copy a pending added track
+         continue;
       tracksCopy->Add(t->Duplicate());
-      t = iter.Next();
    }
 
    // Replace
@@ -246,6 +250,9 @@ void UndoManager::ModifyState(const TrackList * l,
 
    stack[current]->state.selectedRegion = selectedRegion;
    SonifyEndModifyState();
+
+   // wxWidgets will own the event object
+   QueueEvent( safenew wxCommandEvent{ EVT_UNDO_MODIFIED } );
 }
 
 void UndoManager::PushState(const TrackList * l,
@@ -257,10 +264,9 @@ void UndoManager::PushState(const TrackList * l,
 {
    unsigned int i;
 
-   // If consolidate is set to true, group up to 3 identical operations.
-   if (((flags & UndoPush::CONSOLIDATE) != UndoPush::MINIMAL) && lastAction == longDescription &&
-       consolidationCount < 2) {
-      consolidationCount++;
+   if ( ((flags & UndoPush::CONSOLIDATE) != UndoPush::MINIMAL) &&
+       lastAction == longDescription &&
+       mayConsolidate ) {
       ModifyState(l, selectedRegion, tags);
       // MB: If the "saved" state was modified by ModifyState, reset
       //  it so that UnsavedChanges returns true.
@@ -270,25 +276,25 @@ void UndoManager::PushState(const TrackList * l,
       return;
    }
 
-   consolidationCount = 0;
+   auto tracksCopy = TrackList::Create();
+   for (auto t : *l) {
+      if ( t->GetId() == TrackId{} )
+         // Don't copy a pending added track
+         continue;
+      tracksCopy->Add(t->Duplicate());
+   }
+
+   mayConsolidate = true;
 
    i = current + 1;
    while (i < stack.size()) {
       RemoveStateAt(i);
    }
 
-   auto tracksCopy = std::make_unique<TrackList>();
-   TrackListConstIterator iter(l);
-   const Track *t = iter.First();
-   while (t) {
-      tracksCopy->Add(t->Duplicate());
-      t = iter.Next();
-   }
-
    // Assume tags was duplicted before any changes.
    // Just save a NEW shared_ptr to it.
    stack.push_back(
-      make_movable<UndoStackElem>
+      std::make_unique<UndoStackElem>
          (std::move(tracksCopy),
             longDescription, shortDescription, selectedRegion, tags)
    );
@@ -300,10 +306,12 @@ void UndoManager::PushState(const TrackList * l,
    }
 
    lastAction = longDescription;
+
+   // wxWidgets will own the event object
+   QueueEvent( safenew wxCommandEvent{ EVT_UNDO_PUSHED } );
 }
 
-const UndoState &UndoManager::SetStateTo
-   (unsigned int n, SelectedRegion *selectedRegion)
+void UndoManager::SetStateTo(unsigned int n, const Consumer &consumer)
 {
    n -= 1;
 
@@ -311,40 +319,35 @@ const UndoState &UndoManager::SetStateTo
 
    current = n;
 
-   if (current == (int)(stack.size()-1)) {
-      *selectedRegion = stack[current]->state.selectedRegion;
-   }
-   else {
-      *selectedRegion = stack[current + 1]->state.selectedRegion;
-   }
-
    lastAction = wxT("");
-   consolidationCount = 0;
+   mayConsolidate = false;
 
-   return stack[current]->state;
+   consumer( stack[current]->state );
+
+   // wxWidgets will own the event object
+   QueueEvent( safenew wxCommandEvent{ EVT_UNDO_RESET } );
 }
 
-const UndoState &UndoManager::Undo(SelectedRegion *selectedRegion)
+void UndoManager::Undo(const Consumer &consumer)
 {
    wxASSERT(UndoAvailable());
 
    current--;
 
-   *selectedRegion = stack[current]->state.selectedRegion;
-
    lastAction = wxT("");
-   consolidationCount = 0;
+   mayConsolidate = false;
 
-   return stack[current]->state;
+   consumer( stack[current]->state );
+
+   // wxWidgets will own the event object
+   QueueEvent( safenew wxCommandEvent{ EVT_UNDO_RESET } );
 }
 
-const UndoState &UndoManager::Redo(SelectedRegion *selectedRegion)
+void UndoManager::Redo(const Consumer &consumer)
 {
    wxASSERT(RedoAvailable());
 
    current++;
-
-   *selectedRegion = stack[current]->state.selectedRegion;
 
    /*
    if (!RedoAvailable()) {
@@ -360,9 +363,12 @@ const UndoState &UndoManager::Redo(SelectedRegion *selectedRegion)
    */
 
    lastAction = wxT("");
-   consolidationCount = 0;
+   mayConsolidate = false;
 
-   return stack[current]->state;
+   consumer( stack[current]->state );
+
+   // wxWidgets will own the event object
+   QueueEvent( safenew wxCommandEvent{ EVT_UNDO_RESET } );
 }
 
 bool UndoManager::UnsavedChanges()
@@ -379,11 +385,11 @@ void UndoManager::StateSaved()
 // currently unused
 //void UndoManager::Debug()
 //{
-//   for (unsigned int i = 0; i < stack.Count(); i++) {
-//      TrackListIterator iter(stack[i]->tracks);
-//      WaveTrack *t = (WaveTrack *) (iter.First());
-//      wxPrintf(wxT("*%d* %s %f\n"), i, (i == (unsigned int)current) ? wxT("-->") : wxT("   "),
-//             t ? t->GetEndTime()-t->GetStartTime() : 0);
+//   for (unsigned int i = 0; i < stack.size(); i++) {
+//      for (auto t : stack[i]->tracks->Any())
+//         wxPrintf(wxT("*%d* %s %f\n"),
+//                  i, (i == (unsigned int)current) ? wxT("-->") : wxT("   "),
+//                t ? t->GetEndTime()-t->GetStartTime() : 0);
 //   }
 //}
 

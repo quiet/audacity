@@ -14,12 +14,13 @@
 *//*******************************************************************/
 
 #include "../Audacity.h"
+#include "FileHistory.h"
 
 #include <wx/defs.h>
 #include <wx/fileconf.h>
 #include <wx/menu.h>
 
-#include "FileHistory.h"
+#include "../Internat.h"
 
 FileHistory::FileHistory(size_t maxfiles, wxWindowID base)
 {
@@ -32,11 +33,11 @@ FileHistory::~FileHistory()
 }
 
 // File history management
-void FileHistory::AddFileToHistory(const wxString & file, bool update)
+void FileHistory::AddFileToHistory(const FilePath & file, bool update)
 {
    // Needed to transition from wxFileHistory to FileHistory since there
    // can be empty history "slots".
-   if (file.IsEmpty()) {
+   if (file.empty()) {
       return;
    }
 
@@ -47,14 +48,14 @@ void FileHistory::AddFileToHistory(const wxString & file, bool update)
 #endif
 
    if (i != wxNOT_FOUND) {
-      mHistory.RemoveAt(i);
+      mHistory.erase( mHistory.begin() + i );
    }
 
-   if (mMaxFiles == mHistory.GetCount()) {
-      mHistory.RemoveAt(mHistory.GetCount() - 1);
+   if (mMaxFiles > 0 && mMaxFiles == mHistory.size()) {
+      mHistory.erase( mHistory.end() - 1 );
    }
 
-   mHistory.Insert(file, 0);
+   mHistory.insert(mHistory.begin(), file);
 
    if (update) {
       AddFilesToMenu();
@@ -63,10 +64,10 @@ void FileHistory::AddFileToHistory(const wxString & file, bool update)
 
 void FileHistory::RemoveFileFromHistory(size_t i, bool update)
 {
-   wxASSERT(i < mHistory.GetCount());
+   wxASSERT(i < mHistory.size());
 
-   if (i < mHistory.GetCount()) {
-      mHistory.RemoveAt(i);
+   if (i < mHistory.size()) {
+      mHistory.erase( mHistory.begin() + i );
 
       if (update) {
          AddFilesToMenu();
@@ -76,30 +77,32 @@ void FileHistory::RemoveFileFromHistory(size_t i, bool update)
 
 void FileHistory::Clear()
 {
-   mHistory.Clear();
+   mHistory.clear();
 
    AddFilesToMenu();
 }
 
-const wxString &FileHistory::GetHistoryFile(size_t i) const
+const FilePath &FileHistory::GetHistoryFile(size_t i) const
 {
-   wxASSERT(i < mHistory.GetCount());
+   wxASSERT(i < mHistory.size());
 
-   if (i < mHistory.GetCount()) {
+   if (i < mHistory.size()) {
       return mHistory[i];
    }
 
-   static const wxString empty;
+   static const FilePath empty{};
    return empty;
 }
 
 size_t FileHistory::GetCount()
 {
-   return mHistory.GetCount();
+   return mHistory.size();
 }
 
 void FileHistory::UseMenu(wxMenu *menu)
 {
+   Compress();
+
    auto end = mMenus.end();
    auto iter = std::find(mMenus.begin(), end, menu);
    auto found = (iter != end);
@@ -111,22 +114,9 @@ void FileHistory::UseMenu(wxMenu *menu)
    }
 }
 
-void FileHistory::RemoveMenu(wxMenu *menu)
-{
-   auto end = mMenus.end();
-   auto iter = std::find(mMenus.begin(), end, menu);
-   auto found = (iter != end);
-
-   if (found)
-      mMenus.erase(iter);
-   else {
-      wxASSERT(false);
-   }
-}
-
 void FileHistory::Load(wxConfigBase & config, const wxString & group)
 {
-   mHistory.Clear();
+   mHistory.clear();
 
    config.SetPath(group);
 
@@ -145,22 +135,25 @@ void FileHistory::Load(wxConfigBase & config, const wxString & group)
 
 void FileHistory::Save(wxConfigBase & config, const wxString & group)
 {
+   config.SetPath(wxT(""));
    config.DeleteGroup(group);
    config.SetPath(group);
 
    // Stored in reverse order
-   int n = mHistory.GetCount() - 1;
-   for (size_t i = 1; i <= mHistory.GetCount(); i++) {
+   int n = mHistory.size() - 1;
+   for (size_t i = 1; i <= mHistory.size(); i++) {
       config.Write(wxString::Format(wxT("file%02d"), (int)i), mHistory[n--]);
    }
 
-   config.SetPath(wxT(".."));
+   config.SetPath(wxT(""));
 }
 
 void FileHistory::AddFilesToMenu()
 {
+   Compress();
    for (auto pMenu : mMenus)
-      AddFilesToMenu(pMenu);
+      if (pMenu)
+         AddFilesToMenu(pMenu);
 }
 
 void FileHistory::AddFilesToMenu(wxMenu *menu)
@@ -169,13 +162,27 @@ void FileHistory::AddFilesToMenu(wxMenu *menu)
    for (auto end = items.end(), iter = items.begin(); iter != end;)
       menu->Destroy(*iter++);
 
-   for (size_t i = 0; i < mHistory.GetCount(); i++) {
-      menu->Append(mIDBase + 1 + i, mHistory[i]);
+   for (size_t i = 0; i < mHistory.size(); i++) {
+      wxString item =  mHistory[i];
+      item.Replace( "&", "&&" );
+      menu->Append(mIDBase + 1 + i,item);
    }
 
-   if (mHistory.GetCount() > 0) {
+   if (mHistory.size() > 0) {
       menu->AppendSeparator();
    }
    menu->Append(mIDBase, _("&Clear"));
-   menu->Enable(mIDBase, mHistory.GetCount() > 0);
+   menu->Enable(mIDBase, mHistory.size() > 0);
 }
+
+void FileHistory::Compress()
+{
+   // Clear up expired weak pointers
+   auto end = mMenus.end();
+   mMenus.erase(
+     std::remove_if( mMenus.begin(), end,
+        [](wxWeakRef<wxMenu> &pMenu){ return !pMenu; } ),
+     end
+   );
+}
+

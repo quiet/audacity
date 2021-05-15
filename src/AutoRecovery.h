@@ -11,16 +11,15 @@
 #ifndef __AUDACITY_AUTORECOVERY__
 #define __AUDACITY_AUTORECOVERY__
 
-#include "Project.h"
-
 #include "xml/XMLTagHandler.h"
 #include "xml/XMLWriter.h"
 
-#include <wx/debug.h>
-#include <wx/dynarray.h>
-#include <wx/ffile.h>
-#include <wx/hashmap.h>
-#include <wx/mstream.h>
+#include <wx/mstream.h> // member variables
+
+#include <unordered_map>
+
+class wxFFile;
+class AudacityProject;
 
 //
 // Show auto recovery dialog if there are projects to recover. Should be
@@ -50,7 +49,6 @@ public:
    XMLTagHandler *HandleXMLChild(const wxChar *tag) override;
 
    // This class only knows reading tags
-   // void WriteXML(XMLWriter & WXUNUSED(xmlFile)) /* not override */ { wxASSERT(false); }
 
 private:
 
@@ -69,13 +67,15 @@ private:
 // Should be plain ASCII
 #define AutoSaveIdent "<?xml autosave>"
 
-WX_DECLARE_STRING_HASH_MAP_WITH_DECL(short, NameMap, class AUDACITY_DLL_API);
-WX_DECLARE_HASH_MAP_WITH_DECL(short, wxString, wxIntegerHash, wxIntegerEqual, IdMap, class AUDACITY_DLL_API);
-WX_DECLARE_OBJARRAY_WITH_DECL(IdMap, IdMapArray, class AUDACITY_DLL_API);
+using NameMap = std::unordered_map<wxString, short>;
+using IdMap = std::unordered_map<short, wxString>;
 
+// This class's overrides do NOT throw AudacityException.
 class AUDACITY_DLL_API AutoSaveFile final : public XMLWriter
 {
 public:
+
+   static wxString FailureMessage( const FilePath &filePath );
 
    AutoSaveFile(size_t allocSize = 1024 * 1024);
    virtual ~AutoSaveFile();
@@ -105,7 +105,7 @@ public:
 
    bool IsEmpty() const;
 
-   bool Decode(const wxString & fileName);
+   bool Decode(const FilePath & fileName);
 
 private:
    void WriteName(const wxString & name);
@@ -115,8 +115,6 @@ private:
    wxMemoryOutputStream mBuffer;
    wxMemoryOutputStream mDict;
    NameMap mNames;
-   IdMap mIds;
-   IdMapArray mIdStack;
    size_t mAllocSize;
 };
 

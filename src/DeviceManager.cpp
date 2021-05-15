@@ -6,6 +6,14 @@
 
 ******************************************************************/
 
+#include "Audacity.h" // for USE_* macros
+#include "DeviceManager.h"
+
+// For compilers that support precompilation, includes "wx/wx.h".
+#include <wx/wxprec.h>
+
+#include "Experimental.h"
+
 #include "portaudio.h"
 #ifdef __WXMSW__
 #include "pa_win_wasapi.h"
@@ -14,10 +22,6 @@
 #ifdef USE_PORTMIXER
 #include "portmixer.h"
 #endif
-
-#include "Audacity.h"
-// For compilers that support precompilation, includes "wx/wx.h".
-#include <wx/wxprec.h>
 
 #ifndef WX_PRECOMP
 #include <wx/choice.h>
@@ -33,11 +37,8 @@
 
 #include "AudioIO.h"
 
-#include "DeviceChange.h"
-#include "DeviceManager.h"
+#include "DeviceChange.h" // for HAVE_DEVICE_CHANGE
 #include "toolbars/DeviceToolBar.h"
-
-#include "Experimental.h"
 
 DeviceManager DeviceManager::dm;
 
@@ -306,7 +307,16 @@ void DeviceManager::Rescan()
       }
    }
    m_inited = true;
+   mRescanTime = std::chrono::steady_clock::now();
 }
+
+
+float DeviceManager::GetTimeSinceRescan() {
+   auto now = std::chrono::steady_clock::now();
+   auto dur = std::chrono::duration_cast<std::chrono::duration<float>>(now - mRescanTime);
+   return dur.count();
+}
+
 
 //private constructor - Singleton.
 DeviceManager::DeviceManager()
@@ -317,6 +327,7 @@ DeviceManager::DeviceManager()
 #endif
 {
    m_inited = false;
+   mRescanTime = std::chrono::steady_clock::now();
 }
 
 DeviceManager::~DeviceManager()

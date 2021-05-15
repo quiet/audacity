@@ -15,13 +15,13 @@
 
 #include "../MemoryX.h"
 #include <wx/defs.h>
-#include <wx/frame.h>
-#include <wx/timer.h>
+#include <wx/eventfilter.h> // to inherit
+#include <wx/frame.h> // to inherit
+#include <wx/timer.h> // member variable
 
 #include "ToolDock.h"
 #include "ToolBar.h"
 
-class wxBitmap;
 class wxCommandEvent;
 class wxFrame;
 class wxMouseEvent;
@@ -41,7 +41,7 @@ class ToolFrame;
 /// class ToolManager
 ////////////////////////////////////////////////////////////
 
-class ToolManager final : public wxEvtHandler
+class ToolManager final : public wxEvtHandler, public wxEventFilter
 {
 
  public:
@@ -68,6 +68,10 @@ class ToolManager final : public wxEvtHandler
    void Reset();
    void RegenerateTooltips();
 
+   int FilterEvent(wxEvent &event) override;
+
+   bool RestoreFocus();
+
  private:
 
    ToolBar *Float( ToolBar *t, wxPoint & pos );
@@ -75,6 +79,7 @@ class ToolManager final : public wxEvtHandler
    void OnTimer( wxTimerEvent & event );
    void OnMouse( wxMouseEvent & event );
    void OnCaptureLost( wxMouseCaptureLostEvent & event );
+   void UndockBar( wxPoint mp );
    void OnGrabber( GrabberEvent & event );
    void HandleEscapeKey();
    void DoneDragging();
@@ -87,6 +92,7 @@ class ToolManager final : public wxEvtHandler
    void Updated();
 
    AudacityProject *mParent;
+   wxWindowRef mLastFocus{};
 
    ToolFrame *mDragWindow;
    ToolDock *mDragDock;
@@ -119,6 +125,8 @@ class ToolManager final : public wxEvtHandler
    ToolBarConfiguration::Position mPrevSlot
       { ToolBarConfiguration::UnspecifiedPosition };
    ToolBarConfiguration mPrevConfiguration;
+   bool mDidDrag{};
+   bool mClicked{};
 
  public:
 
@@ -135,7 +143,7 @@ class ToolFrame final : public wxFrame
 {
 public:
 
-   ToolFrame( wxWindow *parent, ToolManager *manager, ToolBar *bar, wxPoint pos );
+   ToolFrame( AudacityProject *parent, ToolManager *manager, ToolBar *bar, wxPoint pos );
 
    ~ToolFrame();
 
@@ -171,9 +179,11 @@ public:
 
    void Resize( const wxSize &size );
 
+   AudacityProject *GetParent() const { return mParent; }
+
 private:
 
-   wxWindow *mParent;
+   AudacityProject *const mParent;
    ToolManager *mManager;
    ToolBar *mBar;
    wxSize mMinSize;

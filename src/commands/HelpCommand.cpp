@@ -1,10 +1,11 @@
 /**********************************************************************
 
    Audacity - A Digital Audio Editor
-   Copyright 1999-2009 Audacity Team
+   Copyright 1999-2018 Audacity Team
    License: wxwidgets
 
    Dan Horgan
+   James Crook
 
 ******************************************************************//**
 
@@ -15,34 +16,35 @@
 
 #include "../Audacity.h"
 #include "HelpCommand.h"
-#include "CommandDirectory.h"
-#include <wx/string.h>
 
-wxString HelpCommandType::BuildName()
-{
-   return wxT("Help");
-}
+#include "../Shuttle.h"
+#include "../ShuttleGui.h"
+#include "CommandContext.h"
+#include "../effects/EffectManager.h"
 
-void HelpCommandType::BuildSignature(CommandSignature &signature)
-{
-   auto commandNameValidator = make_movable<DefaultValidator>();
-   signature.AddParameter(wxT("CommandName"), wxT(""), std::move(commandNameValidator));
-}
-
-CommandHolder HelpCommandType::Create(std::unique_ptr<CommandOutputTarget> &&target)
-{
-   return std::make_shared<HelpCommand>(*this, std::move(target));
-}
-
-bool HelpCommand::Apply(CommandExecutionContext WXUNUSED(context))
-{
-   wxString commandName = GetString(wxT("CommandName"));
-   CommandType *type = CommandDirectory::Get()->LookUp(commandName);
-   if (type == NULL)
-   {
-      Error(wxString::Format(wxT("Command '%s' does not exist!"), commandName.c_str()));
-      return false;
-   }
-   Status(type->Describe());
+bool HelpCommand::DefineParams( ShuttleParams & S ){
+   S.Define( mCommandName, wxT("Command"),  "Help" );
    return true;
 }
+
+void HelpCommand::PopulateOrExchange(ShuttleGui & S)
+{
+   S.AddSpace(0, 5);
+
+   S.StartMultiColumn(2, wxALIGN_CENTER);
+   {
+      S.TieTextBox(_("Command:"),mCommandName);
+   }
+   S.EndMultiColumn();
+}
+
+bool HelpCommand::Apply(const CommandContext & context){
+   EffectManager & em = EffectManager::Get();
+   PluginID ID = em.GetEffectByIdentifier( mCommandName );
+   if( ID.empty() )
+      context.Status( "Command not found" );
+   else
+      em.GetCommandDefinition( ID, context, 1);
+   return true;
+}
+

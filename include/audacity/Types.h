@@ -43,14 +43,42 @@
 #define __AUDACITY_TYPES_H__
 
 #include <algorithm>
-#include <wx/string.h>
-#include <wx/arrstr.h>
+#include <type_traits>
+#include <vector>
+#include <wx/debug.h> // for wxASSERT
+
+class wxString;
 
 // ----------------------------------------------------------------------------
 // TODO:  I'd imagine this header may be replaced by other public headers. But,
 //        to try and minimize more changes to the base code, we can use this
 //        until proper public headers are created for the stuff in here.
 // ----------------------------------------------------------------------------
+
+/**************************************************************************//**
+
+\brief type alias for identifying a Plugin supplied by a module, each module
+defining its own interpretation of the strings, which may or may not be as a
+file system path
+********************************************************************************/
+using PluginPath = wxString;
+using PluginPaths = std::vector< PluginPath >;
+
+// A key to be passed to wxConfigBase
+using RegistryPath = wxString;
+using RegistryPaths = std::vector< RegistryPath >;
+
+class wxArrayStringEx;
+
+// File extensions, not including any leading dot
+using FileExtension = wxString;
+using FileExtensions = wxArrayStringEx;
+
+using FilePath = wxString;
+using FilePaths = wxArrayStringEx;
+
+using CommandID = wxString;
+using CommandIDs = std::vector< CommandID >;
 
 // ----------------------------------------------------------------------------
 // A native 64-bit integer...used when referring to any number of samples
@@ -70,7 +98,9 @@ public:
    sampleCount ( int v ) : value { v } {}
    sampleCount ( unsigned v ) : value { v } {}
    sampleCount ( long v ) : value { v } {}
-   sampleCount ( unsigned long v ) : value { v } {}
+
+   // unsigned long is 64 bit on some platforms.  Let it narrow.
+   sampleCount ( unsigned long v ) : value ( v ) {}
 
    // Beware implicit conversions from floating point values!
    // Otherwise the meaning of binary operators with sampleCount change
@@ -88,7 +118,7 @@ public:
 
    size_t as_size_t() const {
       wxASSERT(value >= 0);
-      wxASSERT(value <= std::numeric_limits<size_t>::max());
+      wxASSERT(static_cast<std::make_unsigned<type>::type>(value) <= std::numeric_limits<size_t>::max());
       return value;
    }
 
@@ -182,12 +212,12 @@ inline size_t limitSampleBufferSize( size_t bufferSize, sampleCount limit )
 // ----------------------------------------------------------------------------
 // Supported sample formats
 // ----------------------------------------------------------------------------
-typedef enum
+enum sampleFormat : unsigned
 {
    int16Sample = 0x00020001,
    int24Sample = 0x00040001,
    floatSample = 0x0004000F
-} sampleFormat;
+};
 
 // ----------------------------------------------------------------------------
 // Provide the number of bytes a specific sample will take
@@ -242,10 +272,24 @@ typedef enum
    ChannelNameBottomFrontRight,
 } ChannelName, *ChannelNames;
 
+// ----------------------------------------------------------------------------
+// some frequently needed forward declarations
+// ----------------------------------------------------------------------------
+
+class ComponentInterfaceSymbol;
+
+using EnumValueSymbol = ComponentInterfaceSymbol;
+using NumericFormatSymbol = EnumValueSymbol;
+
+using VendorSymbol = ComponentInterfaceSymbol;
+
+using EffectFamilySymbol = ComponentInterfaceSymbol;
+
 // LLL FIXME: Until a complete API is devised, we have to use
 //            AUDACITY_DLL_API when defining API classes.  This
 //            it ugly, but a part of the game.  Remove it when
 //            the API is complete.
+
 
 #if !defined(AUDACITY_DLL_API)
    // This was copied from "Audacity.h" so these headers wouldn't have
@@ -271,7 +315,10 @@ typedef enum
    #endif //_MSC_VER
 
    #ifdef __GNUC__
-   #include "configunix.h"
+      #ifndef __CONFIG_UNIX_INCLUDED
+         #define __CONFIG_UNIX_INCLUDED
+         #include "configunix.h"
+      #endif
    #endif
 
    /* The GCC-elf implementation */

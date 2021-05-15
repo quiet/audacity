@@ -13,14 +13,16 @@
 
 **********************************************************************/
 
-#include "../Audacity.h"
+#include "../Audacity.h" // for USE_* macros
 #include "ImportQT.h"
+
 #include "ImportPlugin.h"
+#include "../widgets/ErrorDialog.h"
+#include "../widgets/ProgressDialog.h"
 
 #define DESC _("QuickTime files")
 
-static const wxChar *exts[] =
-{
+static const auto exts = {
    wxT("aif"),
    wxT("aifc"),
    wxT("aiff"),
@@ -30,20 +32,27 @@ static const wxChar *exts[] =
    wxT("mp4")
 };
 
+#if defined(__WXMAC__)
+#undef USE_QUICKTIME
+#endif
+
 #ifndef USE_QUICKTIME
 
 void GetQTImportPlugin(ImportPluginList &importPluginList,
                        UnusableImportPluginList &unusableImportPluginList)
 {
-   unusableImportPluginList.push_back(
-      make_movable<UnusableImportPlugin>
-         (DESC, wxArrayString(WXSIZEOF(exts), exts))
-   );
+// Bug 2068: misleading error message about QuickTime  
+// In 64 bit versions we cannot compile in (obsolete) QuickTime
+// So don't register the QuickTime extensions, so ensuring we never report
+// "This version of Audacity was not compiled with QuickTime files support"  
+// When attempting to import MP4 files.
+//   unusableImportPluginList.push_back(
+//      std::make_unique<UnusableImportPlugin>(DESC,
+//         FileExtensions( exts.begin(), exts.end() ) )
+//   );
 }
 
 #else /* USE_QUICKTIME */
-
-#include <wx/msgdlg.h>
 
 // There's a name collision between our Track and QuickTime's...workaround it
 #define Track XTrack
@@ -79,7 +88,7 @@ class QTImportPlugin final : public ImportPlugin
 {
  public:
    QTImportPlugin()
-   :  ImportPlugin(wxArrayString(WXSIZEOF(exts), exts)),
+   :  ImportPlugin( FileExtensions( exts.begin(), exts.end() ) ),
       mInitialized(false)
    {
       OSErr err = noErr;
@@ -139,10 +148,10 @@ class QTImportFileHandle final : public ImportFileHandle
       }
    }
 
-   wxString GetFileDescription();
+   wxString GetFileDescription() override;
    ByteCount GetFileUncompressedBytes() override;
 
-   wxInt32 GetStreamCount()
+   wxInt32 GetStreamCount() override
    {
       return 1;
    }
@@ -153,11 +162,11 @@ class QTImportFileHandle final : public ImportFileHandle
       return empty;
    }
 
-   void SetStreamUsage(wxInt32 StreamID, bool Use)
+   void SetStreamUsage(wxInt32 StreamID, bool Use) override
    {
    }
 
-   int Import(TrackFactory *trackFactory,
+   ProgressResult Import(TrackFactory *trackFactory,
               TrackHolders &outTracks,
               Tags *tags) override;
 
@@ -170,7 +179,7 @@ class QTImportFileHandle final : public ImportFileHandle
 void GetQTImportPlugin(ImportPluginList &importPluginList,
                        UnusableImportPluginList &unusableImportPluginList)
 {
-   importPluginList.push_back( make_movable<QTImportPlugin>() );
+   importPluginList.push_back( std::make_unique<QTImportPlugin>() );
 }
 
 wxString QTImportPlugin::GetPluginFormatDescription()
@@ -229,7 +238,7 @@ auto QTImportFileHandle::GetFileUncompressedBytes() -> ByteCount
    return 0;
 }
 
-int QTImportFileHandle::Import(TrackFactory *trackFactory,
+ProgressResult QTImportFileHandle::Import(TrackFactory *trackFactory,
                                TrackHolders &outTracks,
                                Tags *tags)
 {
@@ -237,7 +246,7 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
 
    OSErr err = noErr;
    MovieAudioExtractionRef maer = NULL;
-   int updateResult = eProgressSuccess;
+   auto updateResult = ProgressResult::Success;
    auto totSamples =
       (sampleCount) GetMovieDuration(mMovie); // convert from TimeValue
    decltype(totSamples) numSamples = 0;
@@ -245,8 +254,13 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
    UInt32 quality = kQTAudioRenderQuality_Max;
    AudioStreamBasicDescription desc;
    UInt32 maxSampleSize;
-   UInt32 bufsize;
    bool res = false;
+
+   auto cleanup = finally( [&] {
+      if (maer) {
+         MovieAudioExtractionEnd(maer);
+      }
+   } );
 
    CreateProgress();
 
@@ -254,7 +268,7 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
    {
       err = MovieAudioExtractionBegin(mMovie, 0, &maer);
       if (err != noErr) {
-         wxMessageBox(_("Unable to start QuickTime extraction"));
+         AudacityMessageBox(_("Unable to start QuickTime extraction"));
          break;
       }
    
@@ -264,7 +278,7 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
                                             sizeof(quality),
                                             &quality);
       if (err != noErr) {
-         wxMessageBox(_("Unable to set QuickTime render quality"));
+         AudacityMessageBox(_("Unable to set QuickTime render quality"));
          break;
       }
    
@@ -274,7 +288,7 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
                                             sizeof(discrete),
                                             &discrete);
       if (err != noErr) {
-         wxMessageBox(_("Unable to set QuickTime discrete channels property"));
+         AudacityMessageBox(_("Unable to set QuickTime discrete channels property"));
          break;
       }
    
@@ -285,7 +299,7 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
                                             &maxSampleSize,
                                             NULL);
       if (err != noErr) {
-         wxMessageBox(_("Unable to get QuickTime sample size property"));
+         AudacityMessageBox(_("Unable to get QuickTime sample size property"));
          break;
       }
    
@@ -296,12 +310,12 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
                                             &desc,
                                             NULL);
       if (err != noErr) {
-         wxMessageBox(_("Unable to retrieve stream description"));
+         AudacityMessageBox(_("Unable to retrieve stream description"));
          break;
       }
    
       auto numchan = desc.mChannelsPerFrame;
-      bufsize = 5 * desc.mSampleRate;
+      const size_t bufsize = 5 * desc.mSampleRate;
    
       // determine sample format
       sampleFormat format;
@@ -319,31 +333,31 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
             format = floatSample;
             break;
       }
-   
-      AudioBufferList *abl = (AudioBufferList *)
-         calloc(1, offsetof(AudioBufferList, mBuffers) + (sizeof(AudioBuffer) * numchan));
+
+      // Allocate an array of pointers, whose size is not known statically,
+      // and prefixed with the AudioBufferList structure.
+      MallocPtr< AudioBufferList > abl{
+         static_cast< AudioBufferList * >(
+            calloc( 1, offsetof( AudioBufferList, mBuffers ) +
+               (sizeof(AudioBuffer) * numchan))) };
       abl->mNumberBuffers = numchan;
    
-      TrackHolders channels{ numchan };
+      NewChannelGroup channels{ numchan };
+
+      const auto size = sizeof(float) * bufsize;
+      ArraysOf<unsigned char> holders{ numchan, size };
+      for (size_t c = 0; c < numchan; c++) {
+         auto &buffer = abl->mBuffers[c];
+         auto &holder = holders[c];
+         auto &channel = channels[c];
+
+         buffer.mNumberChannels = 1;
+         buffer.mDataByteSize = size;
+
+         buffer.mData = holder.get();
    
-      int c;
-      for (c = 0; c < numchan; c++) {
-         abl->mBuffers[c].mNumberChannels = 1;
-         abl->mBuffers[c].mDataByteSize = sizeof(float) * bufsize;
-         abl->mBuffers[c].mData = malloc(abl->mBuffers[c].mDataByteSize);
-   
-         channels[c] = trackFactory->NewWaveTrack(format);
-         channels[c]->SetRate(desc.mSampleRate);
-   
-         if (numchan == 2) {
-            if (c == 0) {
-               channels[c]->SetChannel(Track::LeftChannel);
-               channels[c]->SetLinked(true);
-            }
-            else if (c == 1) {
-               channels[c]->SetChannel(Track::RightChannel);
-            }
-         }
+         channel = trackFactory->NewWaveTrack( format );
+         channel->SetRate( desc.mSampleRate );
       }
    
       do {
@@ -352,14 +366,14 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
    
          err = MovieAudioExtractionFillBuffer(maer,
                                               &numFrames,
-                                              abl,
+                                              abl.get(),
                                               &flags);
          if (err != noErr) {
-            wxMessageBox(_("Unable to get fill buffer"));
+            AudacityMessageBox(_("Unable to get fill buffer"));
             break;
          }
    
-         for (c = 0; c < numchan; c++) {
+         for (size_t c = 0; c < numchan; c++) {
             channels[c]->Append((char *) abl->mBuffers[c].mData, floatSample, numFrames);
          }
    
@@ -372,23 +386,17 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
          if (numFrames == 0 || flags & kQTMovieAudioExtractionComplete) {
             break;
          }
-      } while (updateResult == eProgressSuccess);
+      } while (updateResult == ProgressResult::Success);
    
-      res = (updateResult == eProgressSuccess && err == noErr);
+      res = (updateResult == ProgressResult::Success && err == noErr);
    
       if (res) {
-         for (const auto &channel: channels) {
+         for (auto &channel: channels)
             channel->Flush();
-         }
-   
-         outTracks.swap(channels);
+         if (!channels.empty())
+            outTracks.push_back(std::move(channels));
       }
-   
-      for (c = 0; c < numchan; c++) {
-         free(abl->mBuffers[c].mData);
-      }
-      free(abl);
-   
+
       //
       // Extract any metadata
       //
@@ -399,11 +407,7 @@ int QTImportFileHandle::Import(TrackFactory *trackFactory,
 
 // done:
 
-   if (maer) {
-      MovieAudioExtractionEnd(maer);
-   }
-
-   return (res ? eProgressSuccess : eProgressFailed);
+   return (res ? ProgressResult::Success : ProgressResult::Failed);
 }
 
 static const struct
@@ -437,6 +441,12 @@ names[] =
 void QTImportFileHandle::AddMetadata(Tags *tags)
 {
    QTMetaDataRef metaDataRef = NULL;
+   auto cleanup = finally( [&] {
+      // we are done so release our metadata object
+      if ( metaDataRef )
+         QTMetaDataRelease(metaDataRef);
+   } );
+
    OSErr err;
 
    err = QTCopyMovieMetaData(mMovie, &metaDataRef);
@@ -463,7 +473,6 @@ void QTImportFileHandle::AddMetadata(Tags *tags)
          continue;
       }
 
-      QTPropertyValuePtr outValPtr = nil;
       QTPropertyValueType outPropType;
       ::ByteCount outPropValueSize;
       ::ByteCount outPropValueSizeUsed = 0;
@@ -495,7 +504,7 @@ void QTImportFileHandle::AddMetadata(Tags *tags)
       }
 
       // Alloc memory for it
-      outValPtr = malloc(outPropValueSize);
+      ArrayOf<char> outVals{ outPropValueSize };
 
       // Retrieve the data
       err =  QTMetaDataGetItemProperty(metaDataRef,
@@ -503,37 +512,30 @@ void QTImportFileHandle::AddMetadata(Tags *tags)
                                        kPropertyClass_MetaDataItem,
                                        kQTMetaDataItemPropertyID_Value,
                                        outPropValueSize,
-                                       outValPtr,
+                                       outVals.get(),
                                        &outPropValueSizeUsed);
-      if (err != noErr) {
-         free(outValPtr);
+      if (err != noErr)
          continue;
-      }
 
-      wxString v = wxT("");
+      wxString v;
 
       switch (dataType)
       {
          case kQTMetaDataTypeUTF8:
-            v = wxString((char *)outValPtr, wxConvUTF8);
+            v = wxString(outVals.get(), wxConvUTF8);
          break;
          case kQTMetaDataTypeUTF16BE:
          {
             wxMBConvUTF16BE conv;
-            v = wxString((char *)outValPtr, conv);
+            v = wxString(outVals.get(), conv);
          }
          break;
       }
 
-      if (!v.IsEmpty()) {
+      if (!v.empty()) {
          tags->SetTag(names[i].name, v);
       }
-
-      free(outValPtr);
    }
-
-   // we are done so release our metadata object
-   QTMetaDataRelease(metaDataRef);
 
    return;
 }

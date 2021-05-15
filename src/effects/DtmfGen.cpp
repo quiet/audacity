@@ -16,11 +16,16 @@
 #include "../Audacity.h"
 #include "DtmfGen.h"
 
+#include "../Experimental.h"
+
 #include <wx/intl.h>
+#include <wx/slider.h>
 #include <wx/valgen.h>
 #include <wx/valtext.h>
+#include <wx/stattext.h>
 
 #include "../Prefs.h"
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../widgets/valnum.h"
 
@@ -33,12 +38,19 @@ enum
    ID_DutyCycle,
 };
 
+// DA: DTMF for Audacity uses a different string.
+#ifdef EXPERIMENTAL_DA
+#define SHORT_APP_NAME "darkaudacity"
+#else
+#define SHORT_APP_NAME "audacity"
+#endif
+
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
-//     Name       Type        Key               Def               Min      Max      Scale
-Param( Sequence,  wxString,   XO("Sequence"),   wxT("audacity"),  wxT(""), wxT(""), wxT(""));
-Param( DutyCycle, double,     XO("Duty Cycle"), 55.0,             0.0,     100.0,   10.0   );
-Param( Amplitude, double,     XO("Amplitude"),  0.8,              0.001,   1.0,     1      );
+//     Name       Type        Key               Def                   Min      Max      Scale
+Param( Sequence,  wxString,   wxT("Sequence"),   wxT(SHORT_APP_NAME),  wxT(""), wxT(""), wxT(""));
+Param( DutyCycle, double,     wxT("Duty Cycle"), 55.0,                 0.0,     100.0,   10.0   );
+Param( Amplitude, double,     wxT("Amplitude"),  0.8,                  0.001,   1.0,     1      );
 
 static const double kFadeInOut = 250.0; // used for fadein/out needed to remove clicking noise
 
@@ -81,19 +93,24 @@ EffectDtmf::~EffectDtmf()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectDtmf::GetSymbol()
+ComponentInterfaceSymbol EffectDtmf::GetSymbol()
 {
    return DTMFTONES_PLUGIN_SYMBOL;
 }
 
 wxString EffectDtmf::GetDescription()
 {
-   return XO("Generates dual-tone multi-frequency (DTMF) tones like those produced by the keypad on telephones");
+   return _("Generates dual-tone multi-frequency (DTMF) tones like those produced by the keypad on telephones");
 }
 
-// EffectIdentInterface implementation
+wxString EffectDtmf::ManualPage()
+{
+   return wxT("DTMF_Tones");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectDtmf::GetType()
 {
@@ -216,8 +233,14 @@ size_t EffectDtmf::ProcessBlock(float **WXUNUSED(inbuf), float **outbuf, size_t 
 
    return processed;
 }
+bool EffectDtmf::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( dtmfSequence, Sequence );
+   S.SHUTTLE_PARAM( dtmfDutyCycle, DutyCycle );
+   S.SHUTTLE_PARAM( dtmfAmplitude, Amplitude );
+   return true;
+}
 
-bool EffectDtmf::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectDtmf::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_Sequence, dtmfSequence);
    parms.Write(KEY_DutyCycle, dtmfDutyCycle);
@@ -226,7 +249,7 @@ bool EffectDtmf::GetAutomationParameters(EffectAutomationParameters & parms)
    return true;
 }
 
-bool EffectDtmf::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectDtmf::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyDouble(DutyCycle);
    ReadAndVerifyDouble(Amplitude);
@@ -269,7 +292,7 @@ bool EffectDtmf::Startup()
    // Load the old "current" settings
    if (gPrefs->Exists(base))
    {
-      gPrefs->Read(base + wxT("String"), &dtmfSequence, wxT("audacity"));
+      gPrefs->Read(base + wxT("String"), &dtmfSequence, wxT(SHORT_APP_NAME));
       gPrefs->Read(base + wxT("DutyCycle"), &dtmfDutyCycle, 550L);
       gPrefs->Read(base + wxT("Amplitude"), &dtmfAmplitude, 0.8f);
 
@@ -307,28 +330,25 @@ void EffectDtmf::PopulateOrExchange(ShuttleGui & S)
       mDtmfSequenceT = S.Id(ID_Sequence).AddTextBox(_("DTMF sequence:"), wxT(""), 10);
       mDtmfSequenceT->SetValidator(vldDtmf);
 
-      FloatingPointValidator<double> vldAmp(3, &dtmfAmplitude, NUM_VAL_NO_TRAILING_ZEROES);
+      FloatingPointValidator<double> vldAmp(3, &dtmfAmplitude, NumValidatorStyle::NO_TRAILING_ZEROES);
       vldAmp.SetRange(MIN_Amplitude, MAX_Amplitude);
       S.Id(ID_Amplitude).AddTextBox(_("Amplitude (0-1):"), wxT(""), 10)->SetValidator(vldAmp);
 
       S.AddPrompt(_("Duration:"));
       mDtmfDurationT = safenew
-         NumericTextCtrl(NumericConverter::TIME,
-                         S.GetParent(),
-                         ID_Duration,
+         NumericTextCtrl(S.GetParent(), ID_Duration,
+                         NumericConverter::TIME,
                          GetDurationFormat(),
                          GetDuration(),
                          mProjectRate,
-                         wxDefaultPosition,
-                         wxDefaultSize,
-                         true);
+                         NumericTextCtrl::Options{}
+                            .AutoPos(true));
       mDtmfDurationT->SetName(_("Duration"));
-      mDtmfDurationT->EnableMenu();
       S.AddWindow(mDtmfDurationT);
 
       S.AddFixedText(_("Tone/silence ratio:"), false);
       S.SetStyle(wxSL_HORIZONTAL | wxEXPAND);
-      mDtmfDutyCycleS = S.Id(ID_DutyCycle).AddSlider(wxT(""),
+      mDtmfDutyCycleS = S.Id(ID_DutyCycle).AddSlider( {},
                                                      dtmfDutyCycle * SCL_DutyCycle,
                                                      MAX_DutyCycle * SCL_DutyCycle, 
                                                      MIN_DutyCycle * SCL_DutyCycle);
@@ -391,7 +411,7 @@ void EffectDtmf::Recalculate()
 {
    // remember that dtmfDutyCycle is in range (0.0-100.0)
 
-   dtmfNTones = (int) dtmfSequence.Length();
+   dtmfNTones = (int) dtmfSequence.length();
 
    if (dtmfNTones==0) {
       // no tones, all zero: don't do anything
@@ -563,10 +583,10 @@ void EffectDtmf::UpdateUI(void)
    mDtmfDutyT->SetLabel(wxString::Format(wxT("%.1f %%"), dtmfDutyCycle));
    mDtmfDutyT->SetName(mDtmfDutyT->GetLabel()); // fix for bug 577 (NVDA/Narrator screen readers do not read static text in dialogs)
 
-   mDtmfSilenceT->SetLabel(wxString::Format(wxString(wxT("%.0f ")) + _("ms"), dtmfTone * 1000.0));
+   mDtmfSilenceT->SetLabel(wxString::Format(_("%.0f ms"), dtmfTone * 1000.0));
    mDtmfSilenceT->SetName(mDtmfSilenceT->GetLabel()); // fix for bug 577 (NVDA/Narrator screen readers do not read static text in dialogs)
 
-   mDtmfToneT->SetLabel(wxString::Format(wxString(wxT("%0.f ")) + _("ms"), dtmfSilence * 1000.0));
+   mDtmfToneT->SetLabel(wxString::Format(_("%.0f ms"), dtmfSilence * 1000.0));
    mDtmfToneT->SetName(mDtmfToneT->GetLabel()); // fix for bug 577 (NVDA/Narrator screen readers do not read static text in dialogs)
 }
 

@@ -15,11 +15,13 @@ Paul Licameli
 
 #include "../Audacity.h"
 #include "SpectrogramSettings.h"
+
+#include "../Experimental.h"
+
 #include "../NumberScale.h"
 #include "../TranslatableStringArray.h"
 
 #include <algorithm>
-#include <wx/msgdlg.h>
 
 #include "../FFT.h"
 #include "../Prefs.h"
@@ -27,7 +29,8 @@ Paul Licameli
 
 #include <cmath>
 
-#include "../Experimental.h"
+#include "../widgets/ErrorDialog.h"
+#include "../Internat.h"
 
 SpectrogramSettings::Globals::Globals()
 {
@@ -138,23 +141,25 @@ SpectrogramSettings& SpectrogramSettings::defaults()
 }
 
 //static
-const wxArrayString &SpectrogramSettings::GetScaleNames()
+const wxArrayStringEx &SpectrogramSettings::GetScaleNames()
 {
    class ScaleNamesArray final : public TranslatableStringArray
    {
       void Populate() override
       {
-         // Keep in correspondence with enum SpectrogramSettings::ScaleType:
-         mContents.Add(_("Linear"));
-         mContents.Add(_("Logarithmic"));
-         /* i18n-hint: The name of a frequency scale in psychoacoustics */
-         mContents.Add(_("Mel"));
-         /* i18n-hint: The name of a frequency scale in psychoacoustics, named for Heinrich Barkhausen */
-         mContents.Add(_("Bark"));
-         /* i18n-hint: The name of a frequency scale in psychoacoustics, abbreviates Equivalent Rectangular Bandwidth */
-         mContents.Add(_("ERB"));
-         /* i18n-hint: Time units, that is Period = 1 / Frequency */
-         mContents.Add(_("Period"));
+         mContents.insert( mContents.end(), {
+            // Keep in correspondence with enum SpectrogramSettings::ScaleType:
+            _("Linear") ,
+            _("Logarithmic") ,
+            /* i18n-hint: The name of a frequency scale in psychoacoustics */
+            _("Mel") ,
+            /* i18n-hint: The name of a frequency scale in psychoacoustics, named for Heinrich Barkhausen */
+            _("Bark") ,
+            /* i18n-hint: The name of a frequency scale in psychoacoustics, abbreviates Equivalent Rectangular Bandwidth */
+            _("ERB") ,
+            /* i18n-hint: Time units, that is Period = 1 / Frequency */
+            _("Period") ,
+         } );
       }
    };
 
@@ -163,18 +168,20 @@ const wxArrayString &SpectrogramSettings::GetScaleNames()
 }
 
 //static
-const wxArrayString &SpectrogramSettings::GetAlgorithmNames()
+const wxArrayStringEx &SpectrogramSettings::GetAlgorithmNames()
 {
    class AlgorithmNamesArray final : public TranslatableStringArray
    {
       void Populate() override
       {
-         // Keep in correspondence with enum SpectrogramSettings::Algorithm:
-         mContents.Add(_("Frequencies"));
-         /* i18n-hint: the Reassignment algorithm for spectrograms */
-         mContents.Add(_("Reassignment"));
-         /* i18n-hint: EAC abbreviates "Enhanced Autocorrelation" */
-         mContents.Add(_("Pitch (EAC)"));
+         mContents.insert( mContents.end(), {
+            // Keep in correspondence with enum SpectrogramSettings::Algorithm:
+            _("Frequencies") ,
+            /* i18n-hint: the Reassignment algorithm for spectrograms */
+            _("Reassignment") ,
+            /* i18n-hint: EAC abbreviates "Enhanced Autocorrelation" */
+            _("Pitch (EAC)") ,
+         } );
       }
    };
 
@@ -186,7 +193,7 @@ bool SpectrogramSettings::Validate(bool quiet)
 {
    if (!quiet &&
       maxFreq < 100) {
-      wxMessageBox(_("Maximum frequency must be 100 Hz or above"));
+      AudacityMessageBox(_("Maximum frequency must be 100 Hz or above"));
       return false;
    }
    else
@@ -194,7 +201,7 @@ bool SpectrogramSettings::Validate(bool quiet)
 
    if (!quiet &&
       minFreq < 0) {
-      wxMessageBox(_("Minimum frequency must be at least 0 Hz"));
+      AudacityMessageBox(_("Minimum frequency must be at least 0 Hz"));
       return false;
    }
    else
@@ -202,7 +209,7 @@ bool SpectrogramSettings::Validate(bool quiet)
 
    if (!quiet &&
       maxFreq <= minFreq) {
-      wxMessageBox(_("Minimum frequency must be less than maximum frequency"));
+      AudacityMessageBox(_("Minimum frequency must be less than maximum frequency"));
       return false;
    }
    else
@@ -210,7 +217,7 @@ bool SpectrogramSettings::Validate(bool quiet)
 
    if (!quiet &&
       range <= 0) {
-      wxMessageBox(_("The range must be at least 1 dB"));
+      AudacityMessageBox(_("The range must be at least 1 dB"));
       return false;
    }
    else
@@ -218,12 +225,12 @@ bool SpectrogramSettings::Validate(bool quiet)
 
    if (!quiet &&
       frequencyGain < 0) {
-      wxMessageBox(_("The frequency gain cannot be negative"));
+      AudacityMessageBox(_("The frequency gain cannot be negative"));
       return false;
    }
    else if (!quiet &&
       frequencyGain > 60) {
-      wxMessageBox(_("The frequency gain must be no more than 60 dB/dec"));
+      AudacityMessageBox(_("The frequency gain must be no more than 60 dB/dec"));
       return false;
    }
    else
@@ -258,7 +265,7 @@ void SpectrogramSettings::LoadPrefs()
    gain = gPrefs->Read(wxT("/Spectrum/Gain"), 20L);
    frequencyGain = gPrefs->Read(wxT("/Spectrum/FrequencyGain"), 0L);
 
-   windowSize = gPrefs->Read(wxT("/Spectrum/FFTSize"), 256);
+   windowSize = gPrefs->Read(wxT("/Spectrum/FFTSize"), 1024);
 
 #ifdef EXPERIMENTAL_ZERO_PADDED_SPECTROGRAMS
    zeroPaddingFactor = gPrefs->Read(wxT("/Spectrum/ZeroPaddingFactor"), 1);
@@ -271,7 +278,7 @@ void SpectrogramSettings::LoadPrefs()
    scaleType = ScaleType(gPrefs->Read(wxT("/Spectrum/ScaleType"), 0L));
 
 #ifndef SPECTRAL_SELECTION_GLOBAL_SWITCH
-   spectralSelection = (gPrefs->Read(wxT("/Spectrum/EnableSpectralSelection"), 0L) != 0);
+   spectralSelection = (gPrefs->Read(wxT("/Spectrum/EnableSpectralSelection"), 1L) != 0);
 #endif
 
    algorithm = Algorithm(gPrefs->Read(wxT("/Spectrum/Algorithm"), 0L));
@@ -348,22 +355,10 @@ SpectrogramSettings::~SpectrogramSettings()
 
 void SpectrogramSettings::DestroyWindows()
 {
-   if (hFFT != NULL) {
-      EndFFT(hFFT);
-      hFFT = NULL;
-   }
-   if (window != NULL) {
-      delete[] window;
-      window = NULL;
-   }
-   if (dWindow != NULL) {
-      delete[] dWindow;
-      dWindow = NULL;
-   }
-   if (tWindow != NULL) {
-      delete[] tWindow;
-      tWindow = NULL;
-   }
+   hFFT.reset();
+   window.reset();
+   dWindow.reset();
+   tWindow.reset();
 }
 
 
@@ -371,21 +366,19 @@ namespace
 {
    enum { WINDOW, TWINDOW, DWINDOW };
    void RecreateWindow(
-      float *&window, int which, size_t fftLen,
+      Floats &window, int which, size_t fftLen,
       size_t padding, int windowType, size_t windowSize, double &scale)
    {
-      if (window != NULL)
-         delete[] window;
       // Create the requested window function
-      window = new float[fftLen];
-      int ii;
+      window = Floats{ fftLen };
+      size_t ii;
 
       const bool extra = padding > 0;
       wxASSERT(windowSize % 2 == 0);
       if (extra)
          // For windows that do not go to 0 at the edges, this improves symmetry
          ++windowSize;
-      const int endOfWindow = padding + windowSize;
+      const size_t endOfWindow = padding + windowSize;
       // Left and right padding
       for (ii = 0; ii < padding; ++ii) {
          window[ii] = 0.0;
@@ -397,16 +390,17 @@ namespace
       // Overwrite middle as needed
       switch (which) {
       case WINDOW:
-         NewWindowFunc(windowType, windowSize, extra, window + padding);
+         NewWindowFunc(windowType, windowSize, extra, window.get() + padding);
          break;
-         // Future, reassignment
       case TWINDOW:
-         NewWindowFunc(windowType, windowSize, extra, window + padding);
-         for (int ii = padding, multiplier = -(int)windowSize / 2; ii < endOfWindow; ++ii, ++multiplier)
-            window[ii] *= multiplier;
+         NewWindowFunc(windowType, windowSize, extra, window.get() + padding);
+         {
+            for (int jj = padding, multiplier = -(int)windowSize / 2; jj < (int)endOfWindow; ++jj, ++multiplier)
+               window[jj] *= multiplier;
+         }
          break;
       case DWINDOW:
-         DerivativeOfWindowFunc(windowType, windowSize, extra, window + padding);
+         DerivativeOfWindowFunc(windowType, windowSize, extra, window.get() + padding);
          break;
       default:
          wxASSERT(false);
@@ -430,11 +424,9 @@ void SpectrogramSettings::CacheWindows() const
 
       double scale;
       const auto fftLen = WindowSize() * ZeroPaddingFactor();
-      const auto padding = (windowSize * (zeroPaddingFactor - 1)) / 2;
+      const auto padding = (WindowSize() * (zeroPaddingFactor - 1)) / 2;
 
-      if (hFFT != NULL)
-         EndFFT(hFFT);
-      hFFT = InitializeFFT(fftLen);
+      hFFT = GetFFT(fftLen);
       RecreateWindow(window, WINDOW, fftLen, padding, windowType, windowSize, scale);
       if (algorithm == algReassignment) {
          RecreateWindow(tWindow, TWINDOW, fftLen, padding, windowType, windowSize, scale);
@@ -475,6 +467,15 @@ void SpectrogramSettings::ConvertToActualWindowSizes()
 #endif
 }
 
+float SpectrogramSettings::findBin( float frequency, float binUnit ) const
+{
+   float linearBin = frequency / binUnit;
+   if (linearBin < 0)
+      return -1;
+   else
+      return linearBin;
+}
+
 size_t SpectrogramSettings::GetFFTLength() const
 {
    return windowSize
@@ -484,11 +485,15 @@ size_t SpectrogramSettings::GetFFTLength() const
    ;
 }
 
-NumberScale SpectrogramSettings::GetScale
-(float minFreq, float maxFreq, double rate, bool bins) const
+size_t SpectrogramSettings::NBins() const
+{
+   // Omit the Nyquist frequency bin
+   return GetFFTLength() / 2;
+}
+
+NumberScale SpectrogramSettings::GetScale( float minFreqIn, float maxFreqIn ) const
 {
    NumberScaleType type = nstLinear;
-   const auto half = GetFFTLength() / 2;
 
    // Don't assume the correspondence of the enums will remain direct in the future.
    // Do this switch.
@@ -509,8 +514,7 @@ NumberScale SpectrogramSettings::GetScale
       type = nstPeriod; break;
    }
 
-   return NumberScale(type, minFreq, maxFreq,
-      bins ? rate / (2 * half) : 1.0f);
+   return NumberScale(type, minFreqIn, maxFreqIn);
 }
 
 bool SpectrogramSettings::SpectralSelectionEnabled() const

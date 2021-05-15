@@ -13,7 +13,11 @@
 
 **********************************************************************/
 
+#include "../Audacity.h"
 #include "RawAudioGuess.h"
+
+#include "../AudacityException.h"
+#include "../MemoryX.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,10 +35,9 @@
 static FILE *g_raw_debug_file = NULL;
 #endif
 
-static float AmpStat(float *data, int len)
+static float AmpStat(float *data, size_t len)
 {
    float sum, sumofsquares, avg, variance, dev;
-   int i;
 
    if (len == 0)
       return 1.0;
@@ -44,7 +47,7 @@ static float AmpStat(float *data, int len)
    sum = 0.0;
    sumofsquares = 0.0;
 
-   for (i = 0; i < len; i++) {
+   for (size_t i = 0; i < len; i++) {
       float x = fabs(data[i]);
       sum += x;
       sumofsquares += x * x;
@@ -58,31 +61,29 @@ static float AmpStat(float *data, int len)
    return dev;
 }
 
-static float JumpStat(float *data, int len)
+static float JumpStat(float *data, size_t len)
 {
    float avg;
-   int i;
 
    /* Calculate 1.0 - avg jump
     * A score near 1.0 means avg jump is pretty small
     */
 
    avg = 0.0;
-   for (i = 0; i < len - 1; i++)
+   for (size_t i = 0; i + 1 < len; i++)
       avg += fabs(data[i + 1] - data[i]);
    avg = 1.0 - (avg / (len - 1) / 2.0);
 
    return avg;
 }
 
-static float SecondDStat(float *data, int len)
+static float SecondDStat(float *data, size_t len)
 {
-   int i;
    float v1=0, v2=0;
    float a1=0, a2=0;
    float sum=0;
 
-   for (i = 1; i < len; i++) {
+   for (size_t i = 1; i < len; i++) {
       a2 = a1;
       v2 = v1;
       v1 = data[i]-data[i-1];
@@ -93,12 +94,11 @@ static float SecondDStat(float *data, int len)
    return sum/len;
 }
 
-static float RedundantStereo(float *data, int len)
+static float RedundantStereo(float *data, size_t len)
 {
-   int i;
    int c = 0;
 
-   for (i = 1; i < len - 1; i += 2)
+   for (size_t i = 1; i + 1 < len; i += 2)
       if (fabs(data[i + 1] - data[i]) > 2*fabs(data[i] - data[i - 1]) ||
           2*fabs(data[i + 1] - data[i]) < fabs(data[i] - data[i - 1]))
          c++;
@@ -109,14 +109,13 @@ static float RedundantStereo(float *data, int len)
 static void ExtractFloats(bool doublePrec,
                           bool bigendian,
                           bool stereo,
-                          int offset,
-                          char *rawData, int dataSize,
-                          float *data1, float *data2, int *len1, int *len2)
+                          size_t offset,
+                          char *rawData, size_t dataSize,
+                          float *data1, float *data2, size_t *len1, size_t *len2)
 {
-   int rawCount = 0;
-   int dataCount1 = 0;
-   int dataCount2 = 0;
-   int i;
+   size_t rawCount = 0;
+   size_t dataCount1 = 0;
+   size_t dataCount2 = 0;
    bool swap;
 
    *len1 = 0;
@@ -124,7 +123,7 @@ static void ExtractFloats(bool doublePrec,
 
    if (offset) {
       rawData += offset;
-      dataSize -= offset;
+      dataSize -= std::min(dataSize, offset);
    }
 
    #if WORDS_BIGENDIAN
@@ -142,10 +141,10 @@ static void ExtractFloats(bool doublePrec,
       u.d = 0.0f;
       while (rawCount + 7 < dataSize) {
          if (swap)
-            for(i=0; i<8; i++)
+            for(size_t i = 0; i < 8; i++)
                u.c[7-i] = rawData[rawCount+i];
          else
-            for(i=0; i<8; i++)
+            for(size_t i = 0; i < 8; i++)
                u.c[i] = rawData[rawCount+i];
          data1[dataCount1] = (float)u.d;
          dataCount1++;
@@ -161,10 +160,10 @@ static void ExtractFloats(bool doublePrec,
       u.f = 0.0f;
       while (rawCount + 3 < dataSize) {
          if (swap)
-            for(i=0; i<4; i++)
+            for(size_t i = 0; i < 4; i++)
                u.c[3-i] = rawData[rawCount+i];
          else
-            for(i=0; i<4; i++)
+            for(size_t i = 0; i < 4; i++)
                u.c[i] = rawData[rawCount+i];
          data1[dataCount1] = u.f;
          dataCount1++;
@@ -174,7 +173,7 @@ static void ExtractFloats(bool doublePrec,
 
    if (stereo) {
       dataCount1 /= 2;
-      for(i=0; i<dataCount1; i++) {
+      for(size_t i = 0; i < dataCount1; i++) {
          data2[i] = data1[2*i+1];
          data1[i] = data1[2*i];
       }
@@ -190,13 +189,12 @@ static void Extract(bool bits16,
                     bool stereo,
                     bool bigendian,
                     bool offset,
-                    char *rawData, int dataSize,
-                    float *data1, float *data2, int *len1, int *len2)
+                    char *rawData, int dataSizeIn,
+                    float *data1, float *data2, size_t *len1, size_t *len2)
 {
-   int rawCount = 0;
-   int dataCount1 = 0;
-   int dataCount2 = 0;
-   int i;
+   size_t rawCount = 0;
+   size_t dataCount1 = 0;
+   size_t dataCount2 = 0;
 
    *len1 = 0;
    *len2 = 0;
@@ -205,13 +203,18 @@ static void Extract(bool bits16,
       /* Special case so as to not flip stereo channels during analysis */
       if (stereo && !bigendian) {
          rawData += 3;
-         dataSize -= 3;
+         dataSizeIn -= 3;
       }
       else {
          rawData++;
-         dataSize--;
+         dataSizeIn--;
       }
    }
+
+   if( dataSizeIn < 1 )
+      throw SimpleMessageBoxException{_("Bad data size")};
+
+   size_t dataSize = (size_t)dataSizeIn;
 
    if (bits16) {
       if (sign && bigendian)
@@ -275,7 +278,7 @@ static void Extract(bool bits16,
 
    if (stereo) {
       dataCount1 /= 2;
-      for(i=0; i<dataCount1; i++) {
+      for(size_t i = 0; i < dataCount1; i++) {
          data2[i] = data1[2*i+1];
          data1[i] = data1[2*i];
       }
@@ -286,33 +289,27 @@ static void Extract(bool bits16,
    *len2 = dataCount2;
 }
 
-static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
-                             int *out_offset, unsigned *out_channels)
+static int GuessFloatFormats(unsigned numTests, const ArrayOf<char> rawData[], size_t dataSize,
+                             size_t *out_offset, unsigned *out_channels)
 {
    int format;
-   int bestOffset = 0;
+   size_t bestOffset = 0;
    int bestEndian = 0;
    int bestPrec = 0;
    float bestSmoothAvg = 1000.0;
-   int offset;
-   int endian;
-   int prec;
-   float *data1, *data2;
-   int len1;
-   int len2;
-   int test;
-   int i;
+   size_t len1;
+   size_t len2;
    bool guessStereo = false;
-   int stereoVotes = 0;
-   int monoVotes = 0;
+   unsigned stereoVotes = 0;
+   unsigned monoVotes = 0;
 
   #if RAW_GUESS_DEBUG
    FILE *af = g_raw_debug_file;
-   fprintf(af, "Testing float\n");
+   wxFprintf(af, "Testing float\n");
   #endif
 
-   data1 = (float *)malloc((dataSize + 4) * sizeof(float));
-   data2 = (float *)malloc((dataSize + 4) * sizeof(float));
+   ArrayOf<float> data1{ dataSize + 4 };
+   ArrayOf<float> data2{ dataSize + 4 };
 
    /*
     * First determine if it is possibly in a floating-point
@@ -332,43 +329,47 @@ static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
     * floats with a 1-byte offset.
     */
 
-   for(prec=0; prec<2; prec++) {
-      for(endian=0; endian<2; endian++) {
-         for(offset=0; offset<(4*prec+4); offset++) {
-            int finiteVotes = 0;
-            int maxminVotes = 0;
+   for(unsigned int prec = 0; prec < 2; prec++) {
+      for(int endian = 0; endian < 2; endian++) {
+         for(size_t offset = 0; offset < (4 * prec + 4); offset++) {
+            unsigned finiteVotes = 0;
+            unsigned maxminVotes = 0;
             float smoothAvg = 0;
 
            #if RAW_GUESS_DEBUG
-            fprintf(af, "prec=%d endian=%d offset=%d\n",
-                    prec, endian, offset);
+            wxFprintf(af, "prec=%d endian=%d offset=%d\n",
+                    prec, endian, (int)offset);
            #endif
 
-            for(test=0; test<numTests; test++) {
+            for(unsigned test = 0; test < numTests; test++) {
                float min, max;
 
-               ExtractFloats(prec?true:false, endian?true:false,
+               ExtractFloats(prec == 1, endian == 1,
                              true, /* stereo */
                              offset,
-                             rawData[test], dataSize,
-                             data1, data2, &len1, &len2);
+                             rawData[test].get(), dataSize,
+                             data1.get(), data2.get(), &len1, &len2);
 
-               for(i=0; i<len1; i++)
+               size_t i = 0;
+               for(; i < len1; i++)
+                  // This code is testing for NaNs.
+                  // We'd like to know if all data is finite.
                   if (!(data1[i]>=0 || data1[i]<=0) ||
                       !(data2[i]>=0 || data2[i]<=0))
                      break;
                if (i == len1)
+                  // all data is finite.
                   finiteVotes++;
 
                min = data1[0];
                max = data1[0];
-               for(i=1; i<len1; i++) {
+               for(i = 1; i < len1; i++) {
                   if (data1[i]<min)
                      min = data1[i];
                   if (data1[i]>max)
                      max = data1[i];
                }
-               for(i=1; i<len2; i++) {
+               for(i = 1; i < len2; i++) {
                   if (data2[i]<min)
                      min = data2[i];
                   if (data2[i]>max)
@@ -379,13 +380,13 @@ static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
                    max > 0.01 && max <= 100000)
                   maxminVotes++;
 
-               smoothAvg += SecondDStat(data1, len1) / max;
+               smoothAvg += SecondDStat(data1.get(), len1) / max;
             }
 
             smoothAvg /= numTests;
 
            #if RAW_GUESS_DEBUG
-            fprintf(af, "finite: %d/%d maxmin: %d/%d smooth: %f\n",
+            wxFprintf(af, "finite: %ud/%ud maxmin: %ud/%ud smooth: %f\n",
                     finiteVotes, numTests, maxminVotes, numTests,
                     smoothAvg);
            #endif
@@ -410,11 +411,8 @@ static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
     * main function will try guessing an integer format.
     */
 
-   if (bestSmoothAvg >= 1000.0) {
-      free(data1);
-      free(data2);
+   if (bestSmoothAvg >= 1000.0)
       return 0;
-   }
 
    /*
     * We still have to test for mono/stereo.  For an explanation
@@ -422,22 +420,22 @@ static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
     * tests for 8-bit or 16-bit data.
     */
 
-   for (test = 0; test < numTests; test++) {
+   for (unsigned test = 0; test < numTests; test++) {
       float leftChannel, rightChannel, combinedChannel;
 
-      ExtractFloats(bestPrec?true:false, bestEndian?true:false,
+      ExtractFloats(bestPrec == 1, bestEndian == 1,
                     true, /* stereo */
                     bestOffset,
-                    rawData[test], dataSize,
-                    data1, data2, &len1, &len2);
-      leftChannel = JumpStat(data1, len1);
-      rightChannel = JumpStat(data2, len2);
-      ExtractFloats(bestPrec?true:false, bestEndian?true:false,
+                    rawData[test].get(), dataSize,
+                    data1.get(), data2.get(), &len1, &len2);
+      leftChannel = JumpStat(data1.get(), len1);
+      rightChannel = JumpStat(data2.get(), len2);
+      ExtractFloats(bestPrec == 1, bestEndian == 1,
                     false, /* stereo */
                     bestOffset,
-                    rawData[test], dataSize,
-                    data1, data2, &len1, &len2);
-      combinedChannel = JumpStat(data1, len1);
+                    rawData[test].get(), dataSize,
+                    data1.get(), data2.get(), &len1, &len2);
+      combinedChannel = JumpStat(data1.get(), len1);
 
       if (leftChannel > combinedChannel
           && rightChannel > combinedChannel)
@@ -447,33 +445,30 @@ static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
    }
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "stereo: %d mono: %d\n", stereoVotes, monoVotes);
+   wxFprintf(af, "stereo: %ud mono: %ud\n", stereoVotes, monoVotes);
   #endif
 
-   if (stereoVotes > monoVotes)
-      guessStereo = true;
-   else
-      guessStereo = false;
+   guessStereo = (stereoVotes > monoVotes);
 
-   if (guessStereo == false) {
+   if (!guessStereo) {
 
       /* test for repeated-byte, redundant stereo */
 
-      int rstereoVotes = 0;
-      int rmonoVotes = 0;
+      unsigned rstereoVotes = 0;
+      unsigned rmonoVotes = 0;
 
-      for (test = 0; test < numTests; test++) {
+      for (unsigned test = 0; test < numTests; test++) {
          float redundant;
 
-         ExtractFloats(bestPrec?true:false, bestEndian?true:false,
+         ExtractFloats(bestPrec == 1, bestEndian == 1,
                        false, /* stereo */
                        bestOffset,
-                       rawData[test], dataSize,
-                       data1, data2, &len1, &len2);
-         redundant = RedundantStereo(data1, len1);
+                       rawData[test].get(), dataSize,
+                       data1.get(), data2.get(), &len1, &len2);
+         redundant = RedundantStereo(data1.get(), len1);
 
         #if RAW_GUESS_DEBUG
-         fprintf(af, "redundant: %f\n", redundant);
+         wxFprintf(af, "redundant: %f\n", redundant);
         #endif
 
          if (redundant > 0.8)
@@ -483,19 +478,18 @@ static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
       }
 
      #if RAW_GUESS_DEBUG
-      fprintf(af, "rstereo: %d rmono: %d\n", rstereoVotes, rmonoVotes);
+      wxFprintf(af, "rstereo: %ud rmono: %ud\n", rstereoVotes, rmonoVotes);
      #endif
 
-      if (rstereoVotes > rmonoVotes)
-         guessStereo = true;
+      guessStereo = (rstereoVotes > rmonoVotes);
 
    }
 
   #if RAW_GUESS_DEBUG
    if (guessStereo)
-      fprintf(af, "stereo\n");
+      wxFprintf(af, "stereo\n");
    else
-      fprintf(af, "mono\n");
+      wxFprintf(af, "mono\n");
   #endif
 
    *out_offset = bestOffset;
@@ -515,29 +509,26 @@ static int GuessFloatFormats(int numTests, char **rawData, int dataSize,
    else
       format |= SF_ENDIAN_LITTLE;
 
-   free(data1);
-   free(data2);
-
    return format;
 }
 
-static int Guess8Bit(int numTests, char **rawData, int dataSize, unsigned *out_channels)
+static int Guess8Bit(unsigned numTests, const ArrayOf<char> rawData[], size_t dataSize, unsigned *out_channels)
 {
    bool guessSigned = false;
    bool guessStereo = false;
-   int signvotes = 0;
-   int unsignvotes = 0;
-   int stereoVotes = 0;
-   int monoVotes = 0;
-   float *data1 = (float *)malloc((dataSize + 4) * sizeof(float));
-   float *data2 = (float *)malloc((dataSize + 4) * sizeof(float));
-   int len1;
-   int len2;
-   int test;
+   unsigned signvotes = 0;
+   unsigned unsignvotes = 0;
+   unsigned stereoVotes = 0;
+   unsigned monoVotes = 0;
+
+   ArrayOf<float> data1 { dataSize + 4 };
+   ArrayOf<float> data2 { dataSize + 4 };
+   size_t len1;
+   size_t len2;
 
   #if RAW_GUESS_DEBUG
    FILE *af = g_raw_debug_file;
-   fprintf(af, "8-bit\n");
+   wxFprintf(af, "8-bit\n");
   #endif
 
    /*
@@ -551,19 +542,19 @@ static int Guess8Bit(int numTests, char **rawData, int dataSize, unsigned *out_c
     * and returns a value 0-1.  0 is maximally discontinuous, 1 is smooth.
     */
 
-   for (test = 0; test < numTests; test++) {
+   for (unsigned test = 0; test < numTests; test++) {
       float signL, signR, unsignL, unsignR;
 
       Extract(0, 1, 1, 0, /* 8-bit signed stereo */
-              false, rawData[test], dataSize,
-              data1, data2, &len1, &len2);
-      signL = JumpStat(data1, len1);
-      signR = JumpStat(data2, len2);
+              false, rawData[test].get(), dataSize,
+              data1.get(), data2.get(), &len1, &len2);
+      signL = JumpStat(data1.get(), len1);
+      signR = JumpStat(data2.get(), len2);
       Extract(0, 0, 1, 0, /* 8-bit unsigned stereo */
-              false, rawData[test], dataSize,
-              data1, data2, &len1, &len2);
-      unsignL = JumpStat(data1, len1);
-      unsignR = JumpStat(data2, len2);
+              false, rawData[test].get(), dataSize,
+              data1.get(), data2.get(), &len1, &len2);
+      unsignL = JumpStat(data1.get(), len1);
+      unsignR = JumpStat(data2.get(), len2);
 
       if (signL > unsignL)
          signvotes++;
@@ -577,19 +568,16 @@ static int Guess8Bit(int numTests, char **rawData, int dataSize, unsigned *out_c
    }
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "sign: %d unsign: %d\n", signvotes, unsignvotes);
+   wxFprintf(af, "sign: %ud unsign: %ud\n", signvotes, unsignvotes);
   #endif
 
-   if (signvotes > unsignvotes)
-      guessSigned = true;
-   else
-      guessSigned = false;
+   guessSigned = (signvotes > unsignvotes);
 
   #if RAW_GUESS_DEBUG
    if (guessSigned)
-      fprintf(af, "signed\n");
+      wxFprintf(af, "signed\n");
    else
-      fprintf(af, "unsigned\n");
+      wxFprintf(af, "unsigned\n");
   #endif
 
    /* Finally we test stereo/mono.  We use the same JumpStat, and say
@@ -598,16 +586,16 @@ static int Guess8Bit(int numTests, char **rawData, int dataSize, unsigned *out_c
     * the entire stream interpreted as one channel.
     */
 
-   for (test = 0; test < numTests; test++) {
+   for (unsigned test = 0; test < numTests; test++) {
       float leftChannel, rightChannel, combinedChannel;
 
-      Extract(0, guessSigned, 1, 0, 0, rawData[test], dataSize, data1,
-              data2, &len1, &len2);
-      leftChannel = JumpStat(data1, len1);
-      rightChannel = JumpStat(data2, len2);
-      Extract(0, guessSigned, 0, 0, 0, rawData[test], dataSize, data1,
-              data2, &len1, &len2);
-      combinedChannel = JumpStat(data1, len1);
+      Extract(0, guessSigned, 1, 0, 0, rawData[test].get(), dataSize, data1.get(),
+              data2.get(), &len1, &len2);
+      leftChannel = JumpStat(data1.get(), len1);
+      rightChannel = JumpStat(data2.get(), len2);
+      Extract(0, guessSigned, 0, 0, 0, rawData[test].get(), dataSize, data1.get(),
+              data2.get(), &len1, &len2);
+      combinedChannel = JumpStat(data1.get(), len1);
 
       if (leftChannel > combinedChannel
           && rightChannel > combinedChannel)
@@ -617,30 +605,27 @@ static int Guess8Bit(int numTests, char **rawData, int dataSize, unsigned *out_c
    }
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "stereo: %d mono: %d\n", stereoVotes, monoVotes);
+   wxFprintf(af, "stereo: %ud mono: %ud\n", stereoVotes, monoVotes);
   #endif
 
-   if (stereoVotes > monoVotes)
-      guessStereo = true;
-   else
-      guessStereo = false;
+   guessStereo = (stereoVotes > monoVotes);
 
-   if (guessStereo == false) {
+   if (!guessStereo) {
 
       /* test for repeated-byte, redundant stereo */
 
-      int rstereoVotes = 0;
-      int rmonoVotes = 0;
+      unsigned rstereoVotes = 0;
+      unsigned rmonoVotes = 0;
 
-      for (test = 0; test < numTests; test++) {
+      for (unsigned test = 0; test < numTests; test++) {
          float redundant;
 
-         Extract(0, guessSigned, 0, 0, 0, rawData[test], dataSize,
-                 data1, data2, &len1, &len2);
-         redundant = RedundantStereo(data1, len1);
+         Extract(0, guessSigned, 0, 0, 0, rawData[test].get(), dataSize,
+                 data1.get(), data2.get(), &len1, &len2);
+         redundant = RedundantStereo(data1.get(), len1);
 
         #if RAW_GUESS_DEBUG
-         fprintf(af, "redundant: %f\n", redundant);
+         wxFprintf(af, "redundant: %f\n", redundant);
         #endif
 
          if (redundant > 0.8)
@@ -650,23 +635,19 @@ static int Guess8Bit(int numTests, char **rawData, int dataSize, unsigned *out_c
       }
 
      #if RAW_GUESS_DEBUG
-      fprintf(af, "rstereo: %d rmono: %d\n", rstereoVotes, rmonoVotes);
+      wxFprintf(af, "rstereo: %ud rmono: %ud\n", rstereoVotes, rmonoVotes);
      #endif
 
-      if (rstereoVotes > rmonoVotes)
-         guessStereo = true;
+      guessStereo = (rstereoVotes > rmonoVotes);
 
    }
 
   #if RAW_GUESS_DEBUG
    if (guessStereo)
-      fprintf(af, "stereo\n");
+      wxFprintf(af, "stereo\n");
    else
-      fprintf(af, "mono\n");
+      wxFprintf(af, "mono\n");
   #endif
-
-   free(data1);
-   free(data2);
 
    if (guessStereo)
       *out_channels = 2;
@@ -679,57 +660,55 @@ static int Guess8Bit(int numTests, char **rawData, int dataSize, unsigned *out_c
       return SF_FORMAT_RAW | SF_FORMAT_PCM_U8;
 }
 
-static int Guess16Bit(int numTests, char **rawData,
-                      int dataSize, bool evenMSB,
-                      int *out_offset, unsigned *out_channels)
+static int Guess16Bit(unsigned numTests, const ArrayOf<char> rawData[],
+                      size_t dataSize, bool evenMSB,
+                      size_t *out_offset, unsigned *out_channels)
 {
    int format;
    bool guessSigned = false;
    bool guessStereo = false;
    bool guessBigEndian = false;
    bool guessOffset = false;
-   int signvotes = 0;
-   int unsignvotes = 0;
-   int stereoVotes = 0;
-   int monoVotes = 0;
-   int formerVotes = 0;
-   int latterVotes = 0;
-   char *rawData2 = (char *)malloc(dataSize + 4);
-   float *data1 = (float *)malloc((dataSize + 4) * sizeof(float));
-   float *data2 = (float *)malloc((dataSize + 4) * sizeof(float));
-   int len1;
-   int len2;
-   int test;
+   unsigned signvotes = 0;
+   unsigned unsignvotes = 0;
+   unsigned stereoVotes = 0;
+   unsigned monoVotes = 0;
+   unsigned formerVotes = 0;
+   unsigned latterVotes = 0;
+   ArrayOf<char> rawData2{ dataSize + 4 };
+   ArrayOf<float> data1{ dataSize + 4 };
+   ArrayOf<float> data2{ dataSize + 4 };
+   size_t len1;
+   size_t len2;
 
   #if RAW_GUESS_DEBUG
    FILE *af = g_raw_debug_file;
-   fprintf(af, "16-bit\n");
+   wxFprintf(af, "16-bit\n");
   #endif
 
    /*
     * Do the signed/unsigned test by using only the MSB.
     */
 
-   for (test = 0; test < numTests; test++) {
+   for (unsigned test = 0; test < numTests; test++) {
 
       float signL, signR, unsignL, unsignR;
-      int i;
 
       /* Extract a NEW array of the MSBs only: */
 
-      for (i = 0; i < dataSize / 2; i++)
+      for (size_t i = 0; i < dataSize / 2; i++)
          rawData2[i] = rawData[test][2 * i + (evenMSB ? 0 : 1)];
 
       /* Test signed/unsigned of the MSB */
 
       Extract(0, 1, 1, 0, /* 8-bit signed stereo */
-              0, rawData2, dataSize / 2, data1, data2, &len1, &len2);
-      signL = JumpStat(data1, len1);
-      signR = JumpStat(data2, len2);
+              0, rawData2.get(), dataSize / 2, data1.get(), data2.get(), &len1, &len2);
+      signL = JumpStat(data1.get(), len1);
+      signR = JumpStat(data2.get(), len2);
       Extract(0, 0, 1, 0, /* 8-bit unsigned stereo */
-              0, rawData2, dataSize / 2, data1, data2, &len1, &len2);
-      unsignL = JumpStat(data1, len1);
-      unsignR = JumpStat(data2, len2);
+              0, rawData2.get(), dataSize / 2, data1.get(), data2.get(), &len1, &len2);
+      unsignL = JumpStat(data1.get(), len1);
+      unsignR = JumpStat(data2.get(), len2);
 
       if (signL > unsignL)
          signvotes++;
@@ -743,41 +722,37 @@ static int Guess16Bit(int numTests, char **rawData,
    }
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "sign: %d unsign: %d\n", signvotes, unsignvotes);
+   wxFprintf(af, "sign: %ud unsign: %ud\n", signvotes, unsignvotes);
   #endif
 
-   if (signvotes > unsignvotes)
-      guessSigned = true;
-   else
-      guessSigned = false;
+   guessSigned = (signvotes > unsignvotes);
 
   #if RAW_GUESS_DEBUG
    if (guessSigned)
-      fprintf(af, "signed\n");
+      wxFprintf(af, "signed\n");
    else
-      fprintf(af, "unsigned\n");
+      wxFprintf(af, "unsigned\n");
   #endif
 
    /*
     * Test mono/stereo using only the MSB
     */
 
-   for (test = 0; test < numTests; test++) {
+   for (unsigned test = 0; test < numTests; test++) {
       float leftChannel, rightChannel, combinedChannel;
-      int i;
 
       /* Extract a NEW array of the MSBs only: */
 
-      for (i = 0; i < dataSize / 2; i++)
+      for (size_t i = 0; i < dataSize / 2; i++)
          rawData2[i] = rawData[test][2 * i + (evenMSB ? 0 : 1)];
 
       Extract(0, guessSigned, 1, 0, 0,
-              rawData2, dataSize / 2, data1, data2, &len1, &len2);
-      leftChannel = JumpStat(data1, len1);
-      rightChannel = JumpStat(data2, len2);
+              rawData2.get(), dataSize / 2, data1.get(), data2.get(), &len1, &len2);
+      leftChannel = JumpStat(data1.get(), len1);
+      rightChannel = JumpStat(data2.get(), len2);
       Extract(0, guessSigned, 0, 0, 0,
-              rawData2, dataSize / 2, data1, data2, &len1, &len2);
-      combinedChannel = JumpStat(data1, len1);
+              rawData2.get(), dataSize / 2, data1.get(), data2.get(), &len1, &len2);
+      combinedChannel = JumpStat(data1.get(), len1);
 
       if (leftChannel > combinedChannel
           && rightChannel > combinedChannel)
@@ -787,35 +762,31 @@ static int Guess16Bit(int numTests, char **rawData,
    }
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "stereoVotes: %d monoVotes: %d\n", stereoVotes, monoVotes);
+   wxFprintf(af, "stereoVotes: %ud monoVotes: %ud\n", stereoVotes, monoVotes);
   #endif
 
-   if (stereoVotes > monoVotes)
-      guessStereo = true;
-   else
-      guessStereo = false;
+   guessStereo = (stereoVotes > monoVotes);
 
-   if (guessStereo == false) {
+   if (!guessStereo) {
 
       /* Test for repeated-byte, redundant stereo */
 
-      int rstereoVotes = 0;
-      int rmonoVotes = 0;
+      unsigned rstereoVotes = 0;
+      unsigned rmonoVotes = 0;
 
-      for (test = 0; test < numTests; test++) {
+      for (unsigned test = 0; test < numTests; test++) {
 
          float redundant;
-         int i;
 
          /* Extract a NEW array of the MSBs only: */
 
-         for (i = 0; i < dataSize / 2; i++)
+         for (size_t i = 0; i < dataSize / 2; i++)
             rawData2[i] = rawData[test][2 * i + (evenMSB ? 0 : 1)];
 
-         Extract(0, guessSigned, 0, 0, 0, rawData2, dataSize / 2,
-                 data1, data2, &len1, &len2);
+         Extract(0, guessSigned, 0, 0, 0, rawData2.get(), dataSize / 2,
+                 data1.get(), data2.get(), &len1, &len2);
 
-         redundant = RedundantStereo(data1, len1);
+         redundant = RedundantStereo(data1.get(), len1);
 
          if (redundant > 0.8)
             rstereoVotes++;
@@ -824,20 +795,19 @@ static int Guess16Bit(int numTests, char **rawData,
       }
 
      #if RAW_GUESS_DEBUG
-      fprintf(af, "rstereoVotes: %d rmonoVotes: %d\n",
+      wxFprintf(af, "rstereoVotes: %ud rmonoVotes: %ud\n",
               rstereoVotes, rmonoVotes);
      #endif
 
-      if (rstereoVotes > rmonoVotes)
-         guessStereo = true;
+      guessStereo = (rstereoVotes > rmonoVotes);
 
    }
 
   #if RAW_GUESS_DEBUG
    if (guessStereo)
-      fprintf(af, "stereo\n");
+      wxFprintf(af, "stereo\n");
    else
-      fprintf(af, "mono\n");
+      wxFprintf(af, "mono\n");
   #endif
 
    /*
@@ -851,32 +821,32 @@ static int Guess16Bit(int numTests, char **rawData,
    guessOffset = 0;
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "evenMSB: %d BE: %d\n", evenMSB, guessBigEndian);
+   wxFprintf(af, "evenMSB: %d BE: %d\n", evenMSB, guessBigEndian);
   #endif
 
-   for (test = 0; test < numTests; test++) {
+   for (unsigned test = 0; test < numTests; test++) {
 
       float former, latter;
-      int i, offs;
+      int offs;
 
       /* Extract a NEW array of the MSBs only: */
 
       if (guessStereo)
-         for (i = 0; i < (dataSize/4)-1; i++)
+         for (size_t i = 0; i + 1 < (dataSize / 4); i++)
             rawData2[i] =
                rawData[test][4 * i + (evenMSB ? 0 : 1)];
       else
-         for (i = 0; i < (dataSize/2)-1; i++)
+         for (size_t i = 0; i + 1 < (dataSize / 2); i++)
             rawData2[i] =
                rawData[test][2 * i + (evenMSB ? 0 : 1)];
 
       former = 0.0;
       Extract(1, guessSigned, guessStereo, guessBigEndian, guessOffset,
-              rawData[test], dataSize-4, data1, data2, &len1, &len2);
+              rawData[test].get(), dataSize-4, data1.get(), data2.get(), &len1, &len2);
 
       offs=(!guessBigEndian);
 
-      for(i=3; i<len1-4; i++) {
+      for(size_t i = 3; i + 4 < len1; i++) {
          if (rawData2[offs+i-2]==rawData2[offs+i-1] &&
              rawData2[offs+i]==rawData2[offs+i-1]+1 &&
              rawData2[offs+i]==rawData2[offs+i+1]) {
@@ -886,12 +856,12 @@ static int Guess16Bit(int numTests, char **rawData,
 
       latter = 0.0;
       Extract(1, guessSigned, guessStereo, !guessBigEndian,
-              !guessOffset, rawData[test], dataSize, data1, data2,
+              !guessOffset, rawData[test].get(), dataSize, data1.get(), data2.get(),
               &len1, &len2);
 
       offs=(guessBigEndian);
 
-      for(i=3; i<len1-4; i++) {
+      for(size_t i = 3; i + 4 < len1; i++) {
          if (rawData2[offs+i-2]==rawData2[offs+i-1] &&
              rawData2[offs+i]==rawData2[offs+i-1]+1 &&
              rawData2[offs+i]==rawData2[offs+i+1]) {
@@ -901,7 +871,7 @@ static int Guess16Bit(int numTests, char **rawData,
       }
 
      #if RAW_GUESS_DEBUG
-      fprintf(af, "former: %f latter: %f\n", former, latter);
+      wxFprintf(af, "former: %f latter: %f\n", former, latter);
      #endif
 
       if (former <= latter)
@@ -911,7 +881,7 @@ static int Guess16Bit(int numTests, char **rawData,
    }
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "former (BE/LE): %d latter (LE+/BE+): %d\n",
+   wxFprintf(af, "former (BE/LE): %ud latter (LE+/BE+): %ud\n",
            formerVotes, latterVotes);
   #endif
 
@@ -923,16 +893,16 @@ static int Guess16Bit(int numTests, char **rawData,
 
   #if RAW_GUESS_DEBUG
    if (guessBigEndian)
-      fprintf(af, "big endian\n");
+      wxFprintf(af, "big endian\n");
    else
-      fprintf(af, "little endian\n");
+      wxFprintf(af, "little endian\n");
   #endif
 
   #if RAW_GUESS_DEBUG
    if (guessOffset)
-      fprintf(af, "offset 1 byte\n");
+      wxFprintf(af, "offset 1 byte\n");
    else
-      fprintf(af, "no byte offset\n");
+      wxFprintf(af, "no byte offset\n");
   #endif
 
    format = SF_FORMAT_RAW | SF_FORMAT_PCM_16;
@@ -950,29 +920,23 @@ static int Guess16Bit(int numTests, char **rawData,
    else
       *out_channels = 1;
 
-   free(rawData2);
-
-   free(data1);
-   free(data2);
-
    return format;
 }
 
-static int GuessIntFormats(int numTests, char **rawData, int dataSize,
-                           int *out_offset, unsigned *out_channels)
+static int GuessIntFormats(unsigned numTests, const ArrayOf<char> rawData[], size_t dataSize,
+                           size_t *out_offset, unsigned *out_channels)
 {
    int format = SF_FORMAT_RAW;
    bool guess16bit = false;
    bool evenMSB;
-   float *data1 = (float *)malloc((dataSize + 4) * sizeof(float));
-   float *data2 = (float *)malloc((dataSize + 4) * sizeof(float));
-   int len1;
-   int len2;
-   int vote8 = 0;
-   int vote16 = 0;
-   int evenMSBVotes = 0;
-   int oddMSBVotes = 0;
-   int test;
+   ArrayOf<float> data1{ dataSize + 4 };
+   ArrayOf<float> data2{ dataSize + 4 };
+   size_t len1;
+   size_t len2;
+   unsigned vote8 = 0;
+   unsigned vote16 = 0;
+   unsigned evenMSBVotes = 0;
+   unsigned oddMSBVotes = 0;
 
   #if RAW_GUESS_DEBUG
    FILE *af = g_raw_debug_file;
@@ -993,17 +957,17 @@ static int GuessIntFormats(int numTests, char **rawData, int dataSize,
     * with mono or stereo data.
     */
 
-   for (test = 0; test < numTests; test++) {
+   for (unsigned test = 0; test < numTests; test++) {
       float even, odd;
 
       Extract(0, 1, 1, 0, /* 8-bit signed stereo */
-              false, rawData[test], dataSize,
-              data1, data2, &len1, &len2);
-      even = AmpStat(data1, len1);
-      odd = AmpStat(data2, len2);
+              false, rawData[test].get(), dataSize,
+              data1.get(), data2.get(), &len1, &len2);
+      even = AmpStat(data1.get(), len1);
+      odd = AmpStat(data2.get(), len2);
       if ((even > 0.15) && (odd > 0.15)) {
         #if RAW_GUESS_DEBUG
-         fprintf(af, "Both appear random: %.2f, %.2f.\n", even, odd);
+         wxFprintf(af, "Both appear random: %.2f, %.2f.\n", even, odd);
         #endif
       }
       else if ((even > 0.15) || (odd > 0.15))
@@ -1021,15 +985,12 @@ static int GuessIntFormats(int numTests, char **rawData, int dataSize,
    evenMSB = (evenMSBVotes > oddMSBVotes);
 
   #if RAW_GUESS_DEBUG
-   fprintf(af, "evenMSBVote: %d oddMSBVote: %d\n",
+   wxFprintf(af, "evenMSBVote: %ud oddMSBVote: %ud\n",
            evenMSBVotes, oddMSBVotes);
-   fprintf(af, "vote8: %d vote16: %d\n", vote8, vote16);
+   wxFprintf(af, "vote8: %ud vote16: %ud\n", vote8, vote16);
   #endif
 
-   if (vote8 > vote16)
-      guess16bit = false;
-   else
-      guess16bit = true;
+   guess16bit = (vote8 <= vote16);
 
    if (!guess16bit)
       format = Guess8Bit(numTests, rawData, dataSize, out_channels);
@@ -1038,29 +999,24 @@ static int GuessIntFormats(int numTests, char **rawData, int dataSize,
                           dataSize, evenMSB,
                           out_offset, out_channels);
 
-   free(data1);
-   free(data2);
-
    return format;
 }
 
 int RawAudioGuess(const wxString &in_fname,
-                  int *out_offset, unsigned *out_channels)
+                  size_t *out_offset, unsigned *out_channels)
 {
-   const int numTests = 11;
+   const unsigned numTests = 11;
    size_t headerSkipSize = 64;
    size_t dataSize = 16384;
    int format = SF_FORMAT_RAW;
    FILE *inf;
    size_t fileLen;
-   char *rawData[numTests];
-   int test;
    size_t read_data;
 
   #if RAW_GUESS_DEBUG
    FILE *af = fopen("raw.txt", "a");
    g_raw_debug_file = af;
-   fprintf(af, "File: %s\n", in_fname);
+   wxFprintf(af, "File: %s\n", in_fname);
   #endif
 
    *out_offset = 0;
@@ -1095,10 +1051,14 @@ int RawAudioGuess(const wxString &in_fname,
    if (fileLen < dataSize)
       dataSize = fileLen / 2;
 
-   for (test = 0; test < numTests; test++) {
+   wxASSERT( dataSize >= 4 );
+   wxASSERT( dataSize <= fileLen );
+
+   ArraysOf<char> rawData{ numTests, dataSize + 4 };
+
+   for (unsigned test = 0; test < numTests; test++) {
       int startPoint;
 
-      rawData[test] = (char *)malloc(dataSize + 4);
       startPoint = (fileLen - dataSize) * (test + 1) / (numTests + 2);
 
       /* Make it a multiple of 16 (stereo double-precision) */
@@ -1106,7 +1066,7 @@ int RawAudioGuess(const wxString &in_fname,
 
       // FIXME: TRAP_ERR fseek return in MultiFormatReader unchecked.
       fseek(inf, headerSkipSize + startPoint, SEEK_SET);
-      read_data = fread(rawData[test], 1, dataSize, inf);
+      read_data = fread(rawData[test].get(), 1, dataSize, inf);
       if (read_data != dataSize && ferror(inf)) {
          perror("fread error in RawAudioGuess");
       }
@@ -1121,16 +1081,17 @@ int RawAudioGuess(const wxString &in_fname,
     * almost anything looks like it could be integer data...
     */
 
-   format = GuessFloatFormats(numTests, rawData, dataSize,
+   format = GuessFloatFormats(numTests,
+                              rawData.get(),
+                              dataSize,
                               out_offset, out_channels);
 
    if (format == 0) {
-      format = GuessIntFormats(numTests, rawData, dataSize,
+      format = GuessIntFormats(numTests,
+                               rawData.get(),
+                               dataSize,
                                out_offset, out_channels);
    }
-
-   for (test = 0; test < numTests; test++)
-      free(rawData[test]);
 
   #if RAW_GUESS_DEBUG
    fclose(af);

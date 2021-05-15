@@ -11,16 +11,14 @@
 #ifndef __AUDACITY_EFFECT_REPEAT__
 #define __AUDACITY_EFFECT_REPEAT__
 
-#include <wx/event.h>
-#include <wx/string.h>
-#include <wx/stattext.h>
-#include <wx/textctrl.h>
-
 #include "Effect.h"
 
+class wxTextCtrl;
 class ShuttleGui;
 
-#define REPEAT_PLUGIN_SYMBOL XO("Repeat")
+#define REPEAT_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Repeat") }
+
+class wxStaticText;
 
 class EffectRepeat final : public Effect
 {
@@ -28,19 +26,21 @@ public:
    EffectRepeat();
    virtual ~EffectRepeat();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 

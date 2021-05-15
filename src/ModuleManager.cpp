@@ -18,15 +18,16 @@ i.e. an alternative to the usual interface, for Audacity.
 
 *//*******************************************************************/
 
-#include <wx/dynarray.h>
+#include "Audacity.h"
+#include "ModuleManager.h"
+
+#include "Experimental.h"
+
 #include <wx/dynlib.h>
-#include <wx/list.h>
 #include <wx/log.h>
-#include <wx/msgdlg.h>
 #include <wx/string.h>
 #include <wx/filename.h>
 
-#include "Audacity.h"
 #include "AudacityApp.h"
 #include "FileNames.h"
 #include "Internat.h"
@@ -42,12 +43,9 @@ i.e. an alternative to the usual interface, for Audacity.
 #include "./prefs/ModulePrefs.h"
 #endif
 
-#include "ModuleManager.h"
 #include "widgets/MultiDialog.h"
 
-#include <wx/arrimpl.cpp>
-
-#include "Experimental.h"
+#include "widgets/ErrorDialog.h"
 
 #define initFnName      "ExtensionModuleInit"
 #define versionFnName   "GetVersionString"
@@ -88,7 +86,7 @@ wxWindow * MakeHijackPanel()
 // starts a thread and reads script commands.
 static tpRegScriptServerFunc scriptFn;
 
-Module::Module(const wxString & name)
+Module::Module(const FilePath & name)
 {
    mName = name;
    mLib = std::make_unique<wxDynamicLibrary>();
@@ -116,17 +114,17 @@ bool Module::Load()
    tVersionFn versionFn = (tVersionFn)(mLib->GetSymbol(wxT(versionFnName)));
    if (versionFn == NULL){
       wxString ShortName = wxFileName( mName ).GetName();
-      wxMessageBox(wxString::Format(_("The module %s does not provide a version string.\nIt will not be loaded."), ShortName.c_str()), _("Module Unsuitable"));
-      wxLogMessage(wxString::Format(_("The module %s does not provide a version string.  It will not be loaded."), mName.c_str()));
+      AudacityMessageBox(wxString::Format(_("The module %s does not provide a version string.\nIt will not be loaded."), ShortName), _("Module Unsuitable"));
+      wxLogMessage(wxString::Format(_("The module %s does not provide a version string. It will not be loaded."), mName));
       mLib->Unload();
       return false;
    }
 
    wxString moduleVersion = versionFn();
-   if( !moduleVersion.IsSameAs(AUDACITY_VERSION_STRING)) {
+   if( moduleVersion != AUDACITY_VERSION_STRING) {
       wxString ShortName = wxFileName( mName ).GetName();
-      wxMessageBox(wxString::Format(_("The module %s is matched with Audacity version %s.\n\nIt will not be loaded."), ShortName.c_str(), moduleVersion.c_str()), _("Module Unsuitable"));
-      wxLogMessage(wxString::Format(_("The module %s is matched with Audacity version %s.  It will not be loaded."), mName.c_str(), moduleVersion.c_str()));
+      AudacityMessageBox(wxString::Format(_("The module %s is matched with Audacity version %s.\n\nIt will not be loaded."), ShortName, moduleVersion), _("Module Unsuitable"));
+      wxLogMessage(wxString::Format(_("The module %s is matched with Audacity version %s. It will not be loaded."), mName, moduleVersion));
       mLib->Unload();
       return false;
    }
@@ -215,18 +213,18 @@ ModuleManager::~ModuleManager()
 // static 
 void ModuleManager::Initialize(CommandHandler &cmdHandler)
 {
-   wxArrayString audacityPathList = wxGetApp().audacityPathList;
-   wxArrayString pathList;
-   wxArrayString files;
+   const auto &audacityPathList = wxGetApp().audacityPathList;
+   FilePaths pathList;
+   FilePaths files;
    wxString pathVar;
    size_t i;
 
    // Code from LoadLadspa that might be useful in load modules.
    pathVar = wxGetenv(wxT("AUDACITY_MODULES_PATH"));
-   if (pathVar != wxT(""))
+   if (!pathVar.empty())
       wxGetApp().AddMultiPathsToPathList(pathVar, pathList);
 
-   for (i = 0; i < audacityPathList.GetCount(); i++) {
+   for (i = 0; i < audacityPathList.size(); i++) {
       wxString prefix = audacityPathList[i] + wxFILE_SEP_PATH;
       wxGetApp().AddUniquePathToPathList(prefix + wxT("modules"),
                                          pathList);
@@ -239,11 +237,11 @@ void ModuleManager::Initialize(CommandHandler &cmdHandler)
    #endif
 
    wxString saveOldCWD = ::wxGetCwd();
-   for (i = 0; i < files.GetCount(); i++) {
+   for (i = 0; i < files.size(); i++) {
       // As a courtesy to some modules that might be bridges to
       // open other modules, we set the current working
       // directory to be the module's directory.
-      wxString prefix = ::wxPathOnly(files[i]);
+      auto prefix = ::wxPathOnly(files[i]);
       ::wxSetWorkingDirectory(prefix);
 
 #ifdef EXPERIMENTAL_MODULE_PREFS
@@ -268,7 +266,7 @@ void ModuleManager::Initialize(CommandHandler &cmdHandler)
       {
          wxString ShortName = wxFileName( files[i] ).GetName();
          wxString msg;
-         msg.Printf(_("Module \"%s\" found."), ShortName.c_str());
+         msg.Printf(_("Module \"%s\" found."), ShortName);
          msg += _("\n\nOnly use modules from trusted sources");
          const wxChar *buttons[] = {_("Yes"), _("No"), NULL};  // could add a button here for 'yes and remember that', and put it into the cfg file.  Needs more thought.
          int action;
@@ -290,7 +288,7 @@ void ModuleManager::Initialize(CommandHandler &cmdHandler)
       ModulePrefs::SetModuleStatus( files[i], kModuleFailed );
 #endif
 
-      auto umodule = make_movable<Module>(files[i]);
+      auto umodule = std::make_unique<Module>(files[i]);
       if (umodule->Load())   // it will get rejected if there  are version problems
       {
          auto module = umodule.get();
@@ -352,13 +350,13 @@ bool ModuleManager::DiscoverProviders()
 {
    InitializeBuiltins();
 
-   wxArrayString provList;
-   wxArrayString pathList;
+   FilePaths provList;
+   FilePaths pathList;
 
    // Code from LoadLadspa that might be useful in load modules.
    wxString pathVar = wxString::FromUTF8(getenv("AUDACITY_MODULES_PATH"));
 
-   if (pathVar != wxT(""))
+   if (!pathVar.empty())
    {
       wxGetApp().AddMultiPathsToPathList(pathVar, pathList);
    }
@@ -377,7 +375,7 @@ bool ModuleManager::DiscoverProviders()
 
    PluginManager & pm = PluginManager::Get();
 
-   for (int i = 0, cnt = provList.GetCount(); i < cnt; i++)
+   for (int i = 0, cnt = provList.size(); i < cnt; i++)
    {
       ModuleInterface *module = LoadModule(provList[i]);
       if (module)
@@ -422,9 +420,9 @@ void ModuleManager::InitializeBuiltins()
    }
 }
 
-ModuleInterface *ModuleManager::LoadModule(const wxString & path)
+ModuleInterface *ModuleManager::LoadModule(const PluginPath & path)
 {
-   auto lib = make_movable<wxDynamicLibrary>();
+   auto lib = std::make_unique<wxDynamicLibrary>();
 
    if (lib->Load(path, wxDL_NOW))
    {
@@ -493,12 +491,12 @@ void ModuleManager::RegisterModule(ModuleInterface *inModule)
    PluginManager::Get().RegisterPlugin(inModule);
 }
 
-void ModuleManager::FindAllPlugins(PluginIDList & providers, wxArrayString & paths)
+void ModuleManager::FindAllPlugins(PluginIDs & providers, PluginPaths & paths)
 {
    PluginManager & pm = PluginManager::Get();
 
    wxArrayString modIDs;
-   wxArrayString modPaths;
+   PluginPaths modPaths;
    const PluginDescriptor *plug = pm.GetFirstPlugin(PluginTypeModule);
    while (plug)
    {
@@ -507,24 +505,27 @@ void ModuleManager::FindAllPlugins(PluginIDList & providers, wxArrayString & pat
       plug = pm.GetNextPlugin(PluginTypeModule);
    }
 
-   for (size_t i = 0, cnt = modIDs.size(); i < cnt; i++)
+   for (size_t i = 0, cntIds = modIDs.size(); i < cntIds; i++)
    {
       PluginID providerID = modIDs[i];
 
       ModuleInterface *module =
          static_cast<ModuleInterface *>(CreateProviderInstance(providerID, modPaths[i]));
-      
-      wxArrayString newpaths = module->FindPlugins(pm);
-      for (size_t i = 0, cnt = newpaths.size(); i < cnt; i++)
+
+      if (!module)
+         continue;
+
+      auto newpaths = module->FindPluginPaths(pm);
+      for (size_t j = 0, cntPaths = newpaths.size(); j < cntPaths; j++)
       {
          providers.push_back(providerID);
-         paths.push_back(newpaths[i]);
+         paths.push_back(newpaths[j]);
       }
    }
 }
 
-wxArrayString ModuleManager::FindPluginsForProvider(const PluginID & providerID,
-                                                    const wxString & path)
+PluginPaths ModuleManager::FindPluginsForProvider(const PluginID & providerID,
+                                                    const PluginPath & path)
 {
    // Instantiate if it hasn't already been done
    if (mDynModules.find(providerID) == mDynModules.end())
@@ -532,27 +533,30 @@ wxArrayString ModuleManager::FindPluginsForProvider(const PluginID & providerID,
       // If it couldn't be created, just give up and return an empty list
       if (!CreateProviderInstance(providerID, path))
       {
-         return wxArrayString();
+         return {};
       }
    }
 
-   return mDynModules[providerID]->FindPlugins(PluginManager::Get());
+   return mDynModules[providerID]->FindPluginPaths(PluginManager::Get());
 }
 
-bool ModuleManager::RegisterPlugin(const PluginID & providerID, const wxString & path)
+bool ModuleManager::RegisterEffectPlugin(const PluginID & providerID, const PluginPath & path, wxString &errMsg)
 {
+   errMsg.clear();
    if (mDynModules.find(providerID) == mDynModules.end())
    {
       return false;
    }
 
-   return mDynModules[providerID]->RegisterPlugin(PluginManager::Get(), path);
+   auto nFound = mDynModules[providerID]->DiscoverPluginsAtPath(path, errMsg, PluginManagerInterface::DefaultRegistrationCallback);
+
+   return nFound > 0;
 }
 
-IdentInterface *ModuleManager::CreateProviderInstance(const PluginID & providerID,
-                                                      const wxString & path)
+ComponentInterface *ModuleManager::CreateProviderInstance(const PluginID & providerID,
+                                                      const PluginPath & path)
 {
-   if (path.IsEmpty() && mDynModules.find(providerID) != mDynModules.end())
+   if (path.empty() && mDynModules.find(providerID) != mDynModules.end())
    {
       return mDynModules[providerID].get();
    }
@@ -560,8 +564,8 @@ IdentInterface *ModuleManager::CreateProviderInstance(const PluginID & providerI
    return LoadModule(path);
 }
 
-IdentInterface *ModuleManager::CreateInstance(const PluginID & providerID,
-                                              const wxString & path)
+ComponentInterface *ModuleManager::CreateInstance(const PluginID & providerID,
+                                              const PluginPath & path)
 {
    if (mDynModules.find(providerID) == mDynModules.end())
    {
@@ -572,7 +576,7 @@ IdentInterface *ModuleManager::CreateInstance(const PluginID & providerID,
 }
 
 void ModuleManager::DeleteInstance(const PluginID & providerID,
-                                   IdentInterface *instance)
+                                   ComponentInterface *instance)
 {
    if (mDynModules.find(providerID) == mDynModules.end())
    {
@@ -583,10 +587,10 @@ void ModuleManager::DeleteInstance(const PluginID & providerID,
 }
 
 bool ModuleManager::IsProviderValid(const PluginID & WXUNUSED(providerID),
-                                    const wxString & path)
+                                    const PluginPath & path)
 {
    // Builtin modules do not have a path
-   if (path.IsEmpty())
+   if (path.empty())
    {
       return true;  
    }
@@ -601,7 +605,7 @@ bool ModuleManager::IsProviderValid(const PluginID & WXUNUSED(providerID),
 }
 
 bool ModuleManager::IsPluginValid(const PluginID & providerID,
-                                  const wxString & path,
+                                  const PluginPath & path,
                                   bool bFast)
 {
    if (mDynModules.find(providerID) == mDynModules.end())

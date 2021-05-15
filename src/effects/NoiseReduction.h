@@ -17,7 +17,7 @@
 
 #include "../MemoryX.h"
 
-#define NOISEREDUCTION_PLUGIN_SYMBOL XO("Noise Reduction")
+#define NOISEREDUCTION_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Noise Reduction") }
 
 class EffectNoiseReduction final : public Effect {
 public:
@@ -27,12 +27,12 @@ public:
 
    using Effect::TrackProgress;
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 

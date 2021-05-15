@@ -11,14 +11,16 @@
 
 **********************************************************************/
 
-#if USE_SBSMS
-
 #ifndef __AUDACITY_EFFECT_SBSMS__
 #define __AUDACITY_EFFECT_SBSMS__
 
-#include "Effect.h"
+#include "../Audacity.h" // for USE_* macros
 
-#include "sbsms.h"
+#if USE_SBSMS
+
+#include "Effect.h"
+#include "../../../lib-src/header-substitutes/sbsms.h"
+
 using namespace _sbsms_;
 
 class LabelTrack;
@@ -36,7 +38,10 @@ public:
 
 protected:
    wxString mProxyEffectName { XO("SBSMS Time / Pitch Stretch") };
-   wxString GetName() override { return mProxyEffectName; };
+   // This supplies the abstract virtual function, but in fact this symbol
+   // does not get used:  this class is either a temporary helper, or else
+   // GetSymbol() is overridden further in derived classes.
+   ComponentInterfaceSymbol GetSymbol() override { return mProxyEffectName; }
 
 private:
    bool ProcessLabelTrack(LabelTrack *track);

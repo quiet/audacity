@@ -51,11 +51,10 @@
 
 
 #include "Audacity.h"
+#include "Prefs.h"
 
 #include <wx/defs.h>
-#include <wx/msgdlg.h>
 #include <wx/app.h>
-#include <wx/config.h>
 #include <wx/intl.h>
 #include <wx/fileconf.h>
 #include <wx/filename.h>
@@ -65,12 +64,15 @@
 #include "FileNames.h"
 #include "Languages.h"
 
-#include "Prefs.h"
+#include "widgets/ErrorDialog.h"
+#include "Internat.h"
 
-std::unique_ptr<wxFileConfig> ugPrefs {};
-wxFileConfig *gPrefs = NULL;
+std::unique_ptr<AudacityPrefs> ugPrefs {};
+
+AudacityPrefs *gPrefs = NULL;
 int gMenusDirty = 0;
 
+#if 0
 // Copy one entry from one wxConfig object to another
 static void CopyEntry(wxString path, wxConfigBase *src, wxConfigBase *dst, wxString entry)
 {
@@ -102,7 +104,7 @@ static void CopyEntry(wxString path, wxConfigBase *src, wxConfigBase *dst, wxStr
    }
 }
 
-#if 0
+
 // Recursive routine to copy all groups and entries from one wxConfig object to another
 static void CopyEntriesRecursive(wxString path, wxConfigBase *src, wxConfigBase *dst)
 {
@@ -131,13 +133,45 @@ static void CopyEntriesRecursive(wxString path, wxConfigBase *src, wxConfigBase 
 }
 #endif
 
+AudacityPrefs::AudacityPrefs(const wxString& appName,
+               const wxString& vendorName,
+               const wxString& localFilename,
+               const wxString& globalFilename,
+               long style,
+               const wxMBConv& conv) :
+   wxFileConfig(appName,
+               vendorName,
+               localFilename,
+               globalFilename,
+               style,
+               conv)
+{
+}
+
+
+
+// Bug 825 is essentially that SyncLock requires EditClipsCanMove.
+// SyncLock needs rethinking, but meanwhile this function 
+// fixes the issues of Bug 825 by allowing clips to move when in 
+// SyncLock.
+bool AudacityPrefs::GetEditClipsCanMove()
+{
+   bool mIsSyncLocked;
+   gPrefs->Read(wxT("/GUI/SyncLockTracks"), &mIsSyncLocked, false);
+   if( mIsSyncLocked )
+      return true;
+   bool editClipsCanMove;
+   Read(wxT("/GUI/EditClipCanMove"), &editClipsCanMove, true);
+   return editClipsCanMove;
+}
+
 void InitPreferences()
 {
    wxString appName = wxTheApp->GetAppName();
 
    wxFileName configFileName(FileNames::DataDir(), wxT("audacity.cfg"));
 
-   ugPrefs = std::make_unique<wxFileConfig>
+   ugPrefs = std::make_unique<AudacityPrefs>
       (appName, wxEmptyString,
        configFileName.GetFullPath(),
        wxEmptyString, wxCONFIG_USE_LOCAL_FILE);
@@ -179,25 +213,18 @@ void InitPreferences()
       bool gone = wxRemoveFile(fullPath);  // remove FirstTime.ini
       if (!gone)
       {
-         wxMessageBox(wxString::Format(_("Failed to remove %s"), fullPath.c_str()), _("Failed!"));
+         AudacityMessageBox(wxString::Format(_("Failed to remove %s"), fullPath), _("Failed!"));
       }
    }
 
-   // Use the system default language if one wasn't specified or if the user selected System.
-   if (langCode.IsEmpty())
-   {
-      langCode = GetSystemLanguageCode();
-   }
-
-   // Initialize the language
-   langCode = wxGetApp().InitLang(langCode);
+   langCode = wxGetApp().InitLang( langCode );
 
    // User requested that the preferences be completely reset
    if (resetPrefs)
    {
       // pop up a dialogue
       wxString prompt = _("Reset Preferences?\n\nThis is a one-time question, after an 'install' where you asked to have the Preferences reset.");
-      int action = wxMessageBox(prompt, _("Reset Audacity Preferences"),
+      int action = AudacityMessageBox(prompt, _("Reset Audacity Preferences"),
                                 wxYES_NO, NULL);
       if (action == wxYES)   // reset
       {
@@ -234,6 +261,9 @@ void InitPreferences()
    int vMajor = gPrefs->Read(wxT("/Version/Major"), (long) 0);
    int vMinor = gPrefs->Read(wxT("/Version/Minor"), (long) 0);
    int vMicro = gPrefs->Read(wxT("/Version/Micro"), (long) 0);
+
+   wxGetApp().SetVersionKeysInit(vMajor, vMinor, vMicro);   // make a note of these initial values
+                                                            // for use by ToolManager::ReadConfig()
 
    // These integer version keys were introduced april 4 2011 for 1.3.13
    // The device toolbar needs to be enabled due to removal of source selection features in
@@ -313,6 +343,13 @@ void InitPreferences()
       gPrefs->Write(wxT("/GUI/ToolBars/Meter/Dock"), -1);
    }
 
+   // Upgrading pre 2.2.0 configs we assume extended set of defaults.
+   if ((0<vMajor && vMajor < 2) ||
+       (vMajor == 2 && vMinor < 2))
+   {
+      gPrefs->Write(wxT("/GUI/Shortcuts/FullDefaults"),1);
+   }
+
    // write out the version numbers to the prefs file for future checking
    gPrefs->Write(wxT("/Version/Major"), AUDACITY_VERSION);
    gPrefs->Write(wxT("/Version/Minor"), AUDACITY_RELEASE);
@@ -328,4 +365,92 @@ void FinishPreferences()
       ugPrefs.reset();
       gPrefs = NULL;
    }
+}
+
+//////////
+wxString ChoiceSetting::Read() const
+{
+   const auto &defaultValue = Default().Internal();
+   wxString value;
+   if ( !gPrefs->Read(mKey, &value, defaultValue) )
+      if (!mMigrated) {
+         const_cast<ChoiceSetting*>(this)->Migrate( value );
+         mMigrated = true;
+      }
+
+   // Remap to default if the string is not known -- this avoids surprises
+   // in case we try to interpret config files from future versions
+   auto index = Find( value );
+   if ( index >= mnSymbols )
+      value = defaultValue;
+   return value;
+}
+
+size_t ChoiceSetting::Find( const wxString &value ) const
+{
+   return size_t(
+      std::find( begin(), end(), EnumValueSymbol{ value, {} } )
+         - mSymbols );
+}
+
+void ChoiceSetting::Migrate( wxString &value )
+{
+   (void)value;// Compiler food
+}
+
+bool ChoiceSetting::Write( const wxString &value )
+{
+   auto index = Find( value );
+   if (index >= mnSymbols)
+      return false;
+
+   auto result = gPrefs->Write( mKey, value );
+   mMigrated = true;
+   return result;
+}
+
+int EnumSetting::ReadInt() const
+{
+   if (!mIntValues)
+      return 0;
+
+   auto index = Find( Read() );
+   wxASSERT( index < mnSymbols );
+   return mIntValues[ index ];
+}
+
+size_t EnumSetting::FindInt( int code ) const
+{
+   if (!mIntValues)
+      return mnSymbols;
+
+   return size_t(
+      std::find( mIntValues, mIntValues + mnSymbols, code )
+         - mIntValues );
+}
+
+void EnumSetting::Migrate( wxString &value )
+{
+   int intValue = 0;
+   if ( !mOldKey.empty() &&
+        gPrefs->Read(mOldKey, &intValue, 0) ) {
+      // Make the migration, only once and persistently.
+      // Do not DELETE the old key -- let that be read if user downgrades
+      // Audacity.  But further changes will be stored only to the NEW key
+      // and won't be seen then.
+      auto index = FindInt( intValue );
+      if ( index >= mnSymbols )
+         index = mDefaultSymbol;
+      value = mSymbols[index].Internal();
+      Write(value);
+      gPrefs->Flush();
+   }
+}
+
+bool EnumSetting::WriteInt( int code ) // you flush gPrefs afterward
+{
+   auto index = FindInt( code );
+   if ( index >= mnSymbols )
+      return false;
+   return Write( mSymbols[index].Internal() );
 }

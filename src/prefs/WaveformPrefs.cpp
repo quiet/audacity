@@ -15,18 +15,22 @@ Paul Licameli
 
 #include "../Audacity.h"
 #include "WaveformPrefs.h"
+
 #include "GUIPrefs.h"
 #include "GUISettings.h"
 
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 
 #include "../Project.h"
+
 #include "../TrackPanel.h"
 #include "../ShuttleGui.h"
 #include "../WaveTrack.h"
 
-WaveformPrefs::WaveformPrefs(wxWindow * parent, WaveTrack *wt)
-: PrefsPanel(parent, _("Waveforms"))
+WaveformPrefs::WaveformPrefs(wxWindow * parent, wxWindowID winid, WaveTrack *wt)
+/* i18n-hint: A waveform is a visual representation of vibration */
+: PrefsPanel(parent, winid, _("Waveforms"))
 , mWt(wt)
 , mPopulating(false)
 {
@@ -48,6 +52,21 @@ WaveformPrefs::~WaveformPrefs()
 {
 }
 
+ComponentInterfaceSymbol WaveformPrefs::GetSymbol()
+{
+   return WAVEFORM_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString WaveformPrefs::GetDescription()
+{
+   return _("Preferences for Waveforms");
+}
+
+wxString WaveformPrefs::HelpPageName()
+{
+   return "Waveform_Preferences";
+}
+
 enum {
    ID_DEFAULTS = 10001,
 
@@ -57,14 +76,12 @@ enum {
 
 void WaveformPrefs::Populate()
 {
-   mScaleChoices = WaveformSettings::GetScaleNames();
-
    // Reuse the same choices and codes as for Interface prefs
    GUIPrefs::GetRangeChoices(&mRangeChoices, &mRangeCodes);
 
    //------------------------- Main section --------------------
    // Now construct the GUI itself.
-   ShuttleGui S(this, eIsCreating);
+   ShuttleGui S(this, eIsCreatingFromPrefs);
    PopulateOrExchange(S);
    // ----------------------- End of main section --------------
 }
@@ -74,6 +91,7 @@ void WaveformPrefs::PopulateOrExchange(ShuttleGui & S)
    mPopulating = true;
 
    S.SetBorder(2);
+   S.StartScroller();
 
    // S.StartStatic(_("Track Settings"));
    {
@@ -89,14 +107,13 @@ void WaveformPrefs::PopulateOrExchange(ShuttleGui & S)
          {
             mScaleChoice =
                S.Id(ID_SCALE).TieChoice(_("S&cale") + wxString(wxT(":")),
-                  *(int*)&mTempSettings.scaleType,
-                  &mScaleChoices);
+                  mTempSettings.scaleType,
+                  WaveformSettings::GetScaleNames());
 
             mRangeChoice =
                S.Id(ID_RANGE).TieChoice(_("Waveform dB &range") + wxString(wxT(":")),
-               *(int*)&mTempSettings.dBRange,
-               &mRangeChoices);
-            S.SetSizeHints(mRangeChoices);
+               mTempSettings.dBRange,
+               mRangeChoices);
          }
          S.EndTwoColumn();
       }
@@ -110,6 +127,8 @@ void WaveformPrefs::PopulateOrExchange(ShuttleGui & S)
    }
    S.EndStatic();
    */
+
+   S.EndScroller();
 
    EnableDisableRange();
 
@@ -132,15 +151,9 @@ bool WaveformPrefs::Validate()
    return result;
 }
 
-bool WaveformPrefs::Apply()
+bool WaveformPrefs::Commit()
 {
    const bool isOpenPage = this->IsShown();
-
-   const auto partner =
-      mWt ?
-            // Assume linked track is wave or null
-            static_cast<WaveTrack*>(mWt->GetLink())
-          : nullptr;
 
    ShuttleGui S(this, eIsGettingFromDialog);
    PopulateOrExchange(S);
@@ -149,18 +162,13 @@ bool WaveformPrefs::Apply()
    WaveformSettings::Globals::Get().SavePrefs();
 
    if (mWt) {
-      if (mDefaulted) {
-         mWt->SetWaveformSettings({});
-         if (partner)
-            partner->SetWaveformSettings({});
-      }
-      else {
-         WaveformSettings *pSettings =
-            &mWt->GetIndependentWaveformSettings();
-         *pSettings = mTempSettings;
-         if (partner) {
-            pSettings = &partner->GetIndependentWaveformSettings();
-            *pSettings = mTempSettings;
+      for (auto channel : TrackList::Channels(mWt)) {
+         if (mDefaulted)
+            channel->SetWaveformSettings({});
+         else {
+            WaveformSettings &settings =
+               channel->GetIndependentWaveformSettings();
+            settings = mTempSettings;
          }
       }
    }
@@ -175,9 +183,8 @@ bool WaveformPrefs::Apply()
    mTempSettings.ConvertToEnumeratedDBRange();
 
    if (mWt && isOpenPage) {
-      mWt->SetDisplay(WaveTrack::Waveform);
-      if (partner)
-         partner->SetDisplay(WaveTrack::Waveform);
+      for (auto channel : TrackList::Channels(mWt))
+         channel->SetDisplay(WaveTrack::Waveform);
    }
 
    if (isOpenPage) {
@@ -189,7 +196,7 @@ bool WaveformPrefs::Apply()
    return true;
 }
 
-bool WaveformPrefs::ShowsApplyButton()
+bool WaveformPrefs::ShowsPreviewButton()
 {
    return true;
 }
@@ -245,8 +252,8 @@ WaveformPrefsFactory::WaveformPrefsFactory(WaveTrack *wt)
 {
 }
 
-PrefsPanel *WaveformPrefsFactory::Create(wxWindow *parent)
+PrefsPanel *WaveformPrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew WaveformPrefs(parent, mWt);
+   return safenew WaveformPrefs(parent, winid, mWt);
 }

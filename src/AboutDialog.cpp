@@ -25,7 +25,10 @@ hold information about one contributor to Audacity.
 *//********************************************************************/
 
 
-#include "Audacity.h"
+#include "Audacity.h" // for USE_* macros
+#include "AboutDialog.h"
+
+#include "Experimental.h"
 
 #include <wx/dialog.h>
 #include <wx/html/htmlwin.h>
@@ -35,7 +38,6 @@ hold information about one contributor to Audacity.
 #include <wx/statbmp.h>
 #include <wx/intl.h>
 
-#include "AboutDialog.h"
 #include "FileNames.h"
 #include "Internat.h"
 #include "ShuttleGui.h"
@@ -44,7 +46,12 @@ hold information about one contributor to Audacity.
 #include "Theme.h"
 #include "AllThemeResources.h"
 
+// DA: Logo for About box.
+#ifdef EXPERIMENTAL_DA
+#include "../images/DarkAudacityLogoWithName.xpm"
+#else
 #include "../images/AudacityLogoWithName.xpm"
+#endif
 #include "RevisionIdent.h"
 
 // RevisionIdent.h may contain #defines like these ones:
@@ -57,7 +64,7 @@ hold information about one contributor to Audacity.
 #endif
 
 #ifdef REV_LONG
-#define REV_IDENT wxString( "[[http://github.com/audacity/audacity/commit/" )+ REV_LONG + "|" + wxString( REV_LONG ).Left(6) + "]] of " +  REV_TIME 
+#define REV_IDENT wxString( "[[https://github.com/audacity/audacity/commit/" )+ REV_LONG + "|" + wxString( REV_LONG ).Left(6) + "]] of " +  REV_TIME 
 #else
 #define REV_IDENT wxT("No revision identifier was provided")
 #endif
@@ -78,7 +85,7 @@ const wxString VerCheckArgs(){
 // Url with Version check args attached.
 const wxString VerCheckUrl(){
    //The version we intend to use for live Audacity.
-#define VER_CHECK_URL "http://www.audacityteam.org/download/?"
+#define VER_CHECK_URL "https://www.audacityteam.org/download/?"
 //For testing of our scriptlet.
 //#define VER_CHECK_URL "http://www.audacityteam.org/slug/?"
 //For testing locally
@@ -100,21 +107,19 @@ const wxString VerCheckHtml(){
 void AboutDialog::CreateCreditsList()
 {
    // The Audacity Team: developers and support
-   AddCredit(wxString(wxT("Gale Andrews, ")) + _("quality assurance"), roleTeamMember);
    AddCredit(wxString(wxT("Arturo \"Buanzo\" Busleiman, ")) + _("system administration"), roleTeamMember);
    AddCredit(wxString(wxT("James Crook, ")) + _("developer"), roleTeamMember);
    AddCredit(wxString(wxT("Roger Dannenberg, ")) + _("co-founder and developer"), roleTeamMember);
    AddCredit(wxString(wxT("Steve Daulton")), roleTeamMember);
-   AddCredit(wxString(wxT("Vaughan Johnson, ")) + _("developer"), roleTeamMember);
    AddCredit(wxString(wxT("Greg Kozikowski, ")) + _("documentation and support"), roleTeamMember);
    AddCredit(wxString(wxT("Paul Licameli, ")) + _("developer"), roleTeamMember);
    AddCredit(wxString(wxT("Peter Sampson")), roleTeamMember);
-   AddCredit(wxString(wxT("Martyn Shaw, ")) + _("developer"), roleTeamMember);
    AddCredit(wxString(wxT("Bill Wharrie, ")) + _("documentation and support"), roleTeamMember);
 
    // Emeritus: people who were "lead developers" or made an
    // otherwise distinguished contribution, but who are no
    // longer active.
+   AddCredit(wxString(wxT("[[https://wiki.audacityteam.org/wiki/User:Galeandrews|Gale Andrews]], ")) + _("quality assurance"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Richard Ash, ")) + _("developer"), roleEmeritusTeam); 
    AddCredit(wxString(wxT("Christian Brochec, ")) + _("documentation and support, French"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Matt Brubeck, ")) + _("developer"), roleEmeritusTeam);
@@ -123,6 +128,7 @@ void AboutDialog::CreateCreditsList()
    AddCredit(wxString(wxT("Benjamin Drung, ")) + _("developer"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Joshua Haberman, ")) + _("developer"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Ruslan Ijbulatov, ")) + _("developer"), roleEmeritusTeam);
+   AddCredit(wxString(wxT("Vaughan Johnson, ")) + _("developer"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Leland Lucius, ")) + _("developer"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Dominic Mazzoni, "))+_("co-founder and developer"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Markus Meyer, ")) + _("developer"), roleEmeritusTeam);
@@ -130,9 +136,11 @@ void AboutDialog::CreateCreditsList()
    AddCredit(wxString(wxT("Shane Mueller, ")) + _("developer"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Tony Oetzmann, ")) + _("documentation and support"), roleEmeritusTeam);
    AddCredit(wxString(wxT("Alexandre Prokoudine, ")) + _("documentation and support"), roleEmeritusTeam);
+   AddCredit(wxString(wxT("Martyn Shaw, ")) + _("developer"), roleEmeritusTeam);
 
    // Contributors
    AddCredit(wxString(wxT("Lynn Allan, ")) + _("developer"), roleContributor);
+   AddCredit(wxString(wxT("Brian Armstrong, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("David Avery, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("David Bailes, ")) + _("accessibility advisor"), roleContributor);
    AddCredit(wxString(wxT("William Bland, ")) + _("developer"), roleContributor);
@@ -151,9 +159,11 @@ void AboutDialog::CreateCreditsList()
    AddCredit(wxString(wxT("David Hostetler, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Steve Jolly, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Steven Jones, ")) + _("developer"), roleContributor);
+   AddCredit(wxString(wxT("Henric Jungheim, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Arun Kishore, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Paul Livesey, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Harvey Lubin, ")) + _("graphic artist"), roleContributor);
+   AddCredit(wxString(wxT("Max Maisel, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Greg Mekkes, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Abe Milde, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Paul Nasca, ")) + _("developer"), roleContributor);
@@ -163,6 +173,7 @@ void AboutDialog::CreateCreditsList()
    AddCredit(wxString(wxT("Jean Claude Risset, ")) + _("composer"), roleContributor);
    AddCredit(wxString(wxT("Augustus Saunders, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Benjamin Schwartz, ")) + _("developer"), roleContributor);
+   AddCredit(wxString(wxT("Cliff Scott, ")) + _("tester"), roleContributor);
    AddCredit(wxString(wxT("David R. Sky, ")) + _("Nyquist plug-ins"), roleContributor);
    AddCredit(wxString(wxT("Rob Sykes, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Mike Underwood, ")) + _("developer"), roleContributor);
@@ -175,78 +186,29 @@ void AboutDialog::CreateCreditsList()
    AddCredit(wxString(wxT("Mark Young, ")) + _("developer"), roleContributor);
    AddCredit(wxString(wxT("Wing Yu, ")) + _("developer"), roleContributor);
 
-#if 1
-   // Translators
-   // This list is not current, so should it be commented out?
-   // Also translators get a translation credit in Audacity about box by a special
-   // mechanism that shows it when their translation is being used - unlike
-   // on the website credits.
-   // Translators who are currently helping have queried our showing this inaccurate list,
-   // and in all languages.
-   AddCredit(wxT("Mikhail Balabanov (bg)"), roleTranslators);
-   AddCredit(wxT("Francesc Busquets (ca)"), roleTranslators);
-   AddCredit(wxT("Pau Crespo (ca)"), roleTranslators);
-   AddCredit(wxT("Ale\u0161 To\u0161ovsk\u00FD (cs)"), roleTranslators);
-   AddCredit(wxT("Henrik Clausen (da)"), roleTranslators);
-   AddCredit(wxT("Christoph Kobe (de)"), roleTranslators);
-   AddCredit(wxT("Daniel Winzen (de)"), roleTranslators);
-   AddCredit(wxT("Karsten Zeller (de)"), roleTranslators);
-   AddCredit(wxT("Antonio Paniagua (es)"), roleTranslators);
-   AddCredit(wxT("Ezequiel Plaza (es)"), roleTranslators);
-   AddCredit(wxT("Waldo Ramirez (es)"), roleTranslators);
-   AddCredit(wxT("Xabier Aramendi (eu)"), roleTranslators);
-   AddCredit(wxT("Petri Vuorio (fi)"), roleTranslators);
-   AddCredit(wxT("Lionel Allorge (fr)"), roleTranslators);
-   AddCredit(wxT("Olivier Ballestraz (fr)"), roleTranslators);
-   AddCredit(wxT("Christian Brochec (fr)"), roleTranslators);
-   AddCredit(wxT("Fabrice Silva (fr)"), roleTranslators);
-   AddCredit(wxT("Micil Sheain Mhicil (ga)"), roleTranslators);
-   AddCredit(wxT("Xos\u00E9 Ant\u00F3n Vicente Rodr\u00EDguez (gl)"), roleTranslators);
-   AddCredit(wxT("M\u00E1rton Bal\u00E1zs (hu)"), roleTranslators);
-   AddCredit(wxT("Jozsef Herczeg (hu)"), roleTranslators);
-   AddCredit(wxT("Aldo Boccacci (it)"), roleTranslators);
-   AddCredit(wxT("Ohkubo Kohei (ja)"), roleTranslators);
-   AddCredit(wxT("\u0160ar\u016Bnas Gliebus (lt)"), roleTranslators);
-   AddCredit(wxT("Ilija Iliev (mk)"), roleTranslators);
-   AddCredit(wxT("Kevin Brubeck Unhammer (nb)"), roleTranslators);
-   AddCredit(wxT("Tino Meinen (nl)"), roleTranslators);
-   AddCredit(wxT("Tomasz Bandura (pl)"), roleTranslators);
-   AddCredit(wxT("Marek Mularczyk (pl)"), roleTranslators);
-   AddCredit(wxT("Sebastian Pacholski (pl)"), roleTranslators);
-   AddCredit(wxT("Cleber Tavano (pt_BR)"), roleTranslators);
-   AddCredit(wxT("Victor Westmann (pt_BR)"), roleTranslators);
-   AddCredit(wxT("Manuel Ciosici (ro)"), roleTranslators);
-   AddCredit(wxT("Yuri Ilyin (ru)"), roleTranslators);
-   AddCredit(wxT("Alexandre Prokoudine (ru)"), roleTranslators);
-   AddCredit(wxT("Joe Yeti (sk)"), roleTranslators);
-   AddCredit(wxT("Rok Hecl (sl)"), roleTranslators);
-   AddCredit(wxT("Martin Srebotnjak (sl)"), roleTranslators);
-   AddCredit(wxT("Lars Carlsson (sv)"), roleTranslators);
-   AddCredit(wxT("Kaya Zeren (tr)"), roleTranslators);
-   AddCredit(wxT("Maxim Dziumanenko (uk)"), roleTranslators);
-   AddCredit(wxT("XiaoXi Liu (zh_CN)"), roleTranslators);
-   AddCredit(wxT("Chido (zh_TW)"), roleTranslators);
-   AddCredit(wxT("Panming Zhong (zh_TW)"), roleTranslators);
-#endif
+   // Website and Graphics
+   AddCredit(wxString(wxT("Shinta Carolinasari, ")) + _("web developer"), roleGraphics);
+   AddCredit(wxString(wxT("Bayu Rizaldhan Rayes, ")) + _("graphics"), roleGraphics);
+
    // Libraries
 
-   AddCredit(wxT("[[http://www.jclark.com/xml/expat.html|expat]]"), roleLibrary);
-   AddCredit(wxT("[[http://xiph.org/flac/|FLAC]]"), roleLibrary);
-   AddCredit(wxT("iAVC"), roleLibrary);
+   AddCredit(wxT("[[https://libexpat.github.io/|expat]]"), roleLibrary);
+   AddCredit(wxT("[[https://xiph.org/flac/|FLAC]]"), roleLibrary);
    AddCredit(wxT("[[http://lame.sourceforge.net/|LAME]]"), roleLibrary);
-   AddCredit(wxT("[[http://www.underbit.com/products/mad/|libmad]]"), roleLibrary);
+   AddCredit(wxT("[[https://www.underbit.com/products/mad/|libmad]]"), roleLibrary);
    AddCredit(wxT("[[http://www.mega-nerd.com/libsndfile/|libsndfile]]"), roleLibrary);
-   AddCredit(wxT("[[http://sourceforge.net/p/soxr/wiki/Home/|libsoxr]]"), roleLibrary);
+   AddCredit(wxT("[[https://sourceforge.net/p/soxr/wiki/Home/|libsoxr]]"), roleLibrary);
    AddCredit(wxT("[[http://lv2plug.in/|lv2]] (") + _("incorporating") + wxT(" lilv, msinttypes, serd, sord and sratom)"), roleLibrary);
    AddCredit(wxT("[[https://www.cs.cmu.edu/~music/nyquist/|Nyquist]]"), roleLibrary);
-   AddCredit(wxT("[[http://vorbis.com/|Ogg Vorbis]]"), roleLibrary);
+   AddCredit(wxT("[[https://xiph.org/vorbis/|Ogg Vorbis]]"), roleLibrary);
    AddCredit(wxT("[[http://www.portaudio.com/|PortAudio]]"), roleLibrary);
-   AddCredit(wxT("[[http://sourceforge.net/apps/trac/portmedia/wiki/portsmf/|portsmf]]"), roleLibrary);
+   AddCredit(wxT("[[http://www.portmedia.sourceforge.net/portmidi/|PortMidi]]"), roleLibrary);
+   AddCredit(wxT("[[https://sourceforge.net/p/portmedia/wiki/portsmf/|portsmf]]"), roleLibrary);
    AddCredit(wxT("[[http://sbsms.sourceforge.net/|sbsms]]"), roleLibrary);
-   AddCredit(wxT("[[http://www.surina.net/soundtouch/|SoundTouch]]"), roleLibrary);
+   AddCredit(wxT("[[https://www.surina.net/soundtouch/|SoundTouch]]"), roleLibrary);
    AddCredit(wxT("[[http://www.twolame.org/|TwoLAME]]"), roleLibrary);
    AddCredit(wxT("[[http://www.vamp-plugins.org/|Vamp]]"), roleLibrary);
-   AddCredit(wxT("[[http://wxwidgets.org/|wxWidgets]]"), roleLibrary);
+   AddCredit(wxT("[[https://wxwidgets.org/|wxWidgets]]"), roleLibrary);
 
    // Thanks
 
@@ -300,6 +262,7 @@ AboutDialog::AboutDialog(wxWindow * parent)
 
    SetName(GetTitle());
    this->SetBackgroundColour(theTheme.Colour( clrAboutBoxBackground ));
+   //this->SetBackgroundColour(theTheme.Colour( clrMedium ));
    icon = NULL;
    ShuttleGui S( this, eIsCreating );
    S.StartNotebook();
@@ -323,20 +286,28 @@ void AboutDialog::PopulateAudacityPage( ShuttleGui & S )
 {
    CreateCreditsList();
 
-   wxString par1Str = _(
-"Audacity is a free program written by a worldwide team of [[http://www.audacityteam.org/about/credits|volunteers]]. \
-Audacity is [[http://www.audacityteam.org/download|available]] for Windows, Mac, and GNU/Linux (and other Unix-like systems).");
+   wxString par1Str = 
+// DA: Says that it is a customised version.
+#ifdef EXPERIMENTAL_DA
+      wxT(
+"Audacity, which this is a customised version of, is a free program written by a worldwide team of [[https://www.audacityteam.org/about/credits|volunteers]]. \
+Audacity is [[https://www.audacityteam.org/download|available]] for Windows, Mac, and GNU/Linux (and other Unix-like systems).");
+#else
+      _(
+"Audacity is a free program written by a worldwide team of [[https://www.audacityteam.org/about/credits|volunteers]]. \
+Audacity is [[https://www.audacityteam.org/download|available]] for Windows, Mac, and GNU/Linux (and other Unix-like systems).");
+#endif
 
    // This trick here means that the English language version won't mention using
    // English, whereas all translated versions will.
    wxString par2StrUntranslated = wxT(
-"If you find a bug or have a suggestion for us, please write, in English, to our [[mailto:feedback@audacityteam.org|feedback address]]. \
-For help, view the tips and tricks on our [[http://wiki.audacityteam.org/|wiki]] or \
-visit our [[http://forum.audacityteam.org/|forum]].");
+"If you find a bug or have a suggestion for us, please write, in English, to our [[https://forum.audacityteam.org/|forum]]. \
+For help, view the tips and tricks on our [[https://wiki.audacityteam.org/|wiki]] or \
+visit our [[https://forum.audacityteam.org/|forum]].");
    wxString par2Str = _(
-"If you find a bug or have a suggestion for us, please write, in English, to our [[mailto:feedback@audacityteam.org|feedback address]]. \
-For help, view the tips and tricks on our [[http://wiki.audacityteam.org/|wiki]] or \
-visit our [[http://forum.audacityteam.org/|forum]].");
+"If you find a bug or have a suggestion for us, please write, in English, to our [[https://forum.audacityteam.org/|forum]]. \
+For help, view the tips and tricks on our [[https://wiki.audacityteam.org/|wiki]] or \
+visit our [[https://forum.audacityteam.org/|forum]].");
 
    if( par2Str == par2StrUntranslated )
       par2Str.Replace( wxT(", in English,"), wxT("") );
@@ -351,18 +322,35 @@ visit our [[http://forum.audacityteam.org/|forum]].");
    {
       translatorCredits = _("translator_credits") + wxT("<br>");
    }
-   wxString localeStr = wxLocale::GetSystemEncodingName();
 
    wxString creditStr = FormatHtmlText(
-      wxString( wxT("<center>")) +
-      wxT("<h3>Audacity ") + wxString(AUDACITY_VERSION_STRING) + wxT("</center></h3>") +
-      _("Free, open source, cross-platform software for recording and editing sounds.") +
-      wxT(" [[http://www.audacityteam.org/|http://www.audacityteam.org/]]") +
-      wxT("<p><br>") + par1Str +
-      wxT("<p>") + par2Str +
+      wxString( wxT("<center>") ) +
+// DA: Description and provenance in About box
+#ifdef EXPERIMENTAL_DA
+      #undef _
+      #define _(s) wxGetTranslation((s))
+      wxT("<h3>DarkAudacity ") + wxString(AUDACITY_VERSION_STRING) + wxT("</center></h3>") +
+      wxT("Customised version of the Audacity free, open source, cross-platform software " ) +
+      wxT("for recording and editing sounds.") +
+      wxT("<p><br>&nbsp; &nbsp; <b>Audacity<sup>&reg;</sup></b> software is copyright &copy; 1999-2018 Audacity Team.<br>") +
+      wxT("&nbsp; &nbsp; The name <b>Audacity</b> is a registered trademark of Dominic Mazzoni.<br><br>") +
+
+#else
+      _("<h3>Audacity ") + wxString(AUDACITY_VERSION_STRING) + wxT("</center></h3>") +
+      _("Audacity the free, open source, cross-platform software for recording and editing sounds.") +
+#endif
+
+      //wxT("<p><br>") + par1Str +
+      //wxT("<p>") + par2Str +
       wxT("<h3>") + _("Credits") + wxT("</h3>") + wxT("<p>") +
 
-      wxT("<p><b>") + wxString::Format(_("Audacity Team Members")) + wxT("</b><br><br>") +
+// DA: Customisation credit
+#ifdef EXPERIMENTAL_DA
+      wxT("<p><b>") + wxString::Format(_("DarkAudacity Customisation")) + wxT("</b><br>") +
+      wxT("James Crook, art, coding &amp; design<br>") +
+#endif
+
+      wxT("<p><b>") + _("Audacity Team Members") + wxT("</b><br>") +
       GetCreditsByRole(roleTeamMember) +
 
       wxT("<p><b> ") + _("Emeritus:") + wxT("</b><br>") +
@@ -372,31 +360,39 @@ visit our [[http://forum.audacityteam.org/|forum]].");
       wxT("<p><b>") + _("Contributors") + wxT("</b><br>") +
       GetCreditsByRole(roleContributor) +
 
-      wxT("<p><b>") + _("Translators") + wxT("</b><br>") +
-      translatorCredits + 
-      GetCreditsByRole(roleTranslators) +
+      wxT("<p><b>") + _("Website and Graphics") + wxT("</b><br>") +
+      GetCreditsByRole(roleGraphics) +
+
+      (translatorCredits.empty()
+         ? wxT("")
+         : (wxT("<p><b>") + _("Translators") + wxT("</b><br>") +
+            translatorCredits)) +
 
       wxT("<p><b>") +  _("Libraries") + wxT("</b><br>") +
-      wxT("Audacity includes code from the following projects:") + wxT("<br><br>") +
+      _("Audacity includes code from the following projects:") + wxT("<br><br>") +
       GetCreditsByRole(roleLibrary) +
 
       wxT("<p><b>") +  _("Special thanks:") + wxT("</b><br>") +
       GetCreditsByRole(roleThanks) +
 
-      wxT("<p><br>") + _("<b>Audacity<sup>&reg;</sup></b> software is copyright")+
-      wxT("&copy; 1999-2017 Audacity Team.<br>") +
-      _("The name <b>Audacity<sup>&reg;</sup></b> is a registered trademark of Dominic Mazzoni.") +
-      wxT("<p><br>")+_("Audacity website: [[http://www.audacityteam.org/|http://www.audacityteam.org/]]") +
-      wxT("</center>"));
+      wxT("<p><br>") + _("Audacity website: ") + wxT("[[https://www.audacityteam.org/|https://www.audacityteam.org/]]") +
 
+// DA: Link for DA url too
+#ifdef EXPERIMENTAL_DA
+      wxT("<br>DarkAudacity website: [[http://www.darkaudacity.com/|https://www.darkaudacity.com/]]") +
+#else
+      _("<p><br>&nbsp; &nbsp; <b>Audacity<sup>&reg;</sup></b> software is copyright &copy; 1999-2018 Audacity Team.<br>")
 
-   this->SetBackgroundColour(theTheme.Colour( clrAboutBoxBackground ));
+      +
 
+      _("&nbsp; &nbsp; The name <b>Audacity</b> is a registered trademark of Dominic Mazzoni.<br><br>") +
+#endif
 
-   // New way to add to About box....
-   S.StartNotebookPage( wxT("Audacity") );
+      wxT("</center>")
+   );
+
+   auto pPage = S.StartNotebookPage( _("Audacity") );
    S.StartVerticalLay(1);
-
    {
       //v For now, change to AudacityLogoWithName via old-fashioned way, not Theme.
       wxBitmap logo(AudacityLogoWithName_xpm); //v
@@ -406,6 +402,11 @@ visit our [[http://forum.audacityteam.org/|forum]].");
       // It also makes it easier to revert to full size if we decide to.
       const float fScale = 0.5f;// smaller size.
       wxImage RescaledImage(logo.ConvertToImage());
+      wxColour MainColour( 
+         RescaledImage.GetRed(1,1), 
+         RescaledImage.GetGreen(1,1), 
+         RescaledImage.GetBlue(1,1));
+      pPage->SetBackgroundColour(MainColour);
       // wxIMAGE_QUALITY_HIGH not supported by wxWidgets 2.6.1, or we would use it here.
       RescaledImage.Rescale((int)(LOGOWITHNAME_WIDTH * fScale), (int)(LOGOWITHNAME_HEIGHT *fScale));
       wxBitmap RescaledBitmap(RescaledImage);
@@ -451,14 +452,16 @@ void AboutDialog::PopulateInformationPage( ShuttleGui & S )
    // create a html pane in it to put the content in.
    wxString enabled = _("Enabled");
    wxString disabled = _("Disabled");
-   wxString blank = wxT("");
+   wxString blank;
 
    /* this builds up the list of information to go in the window in the string
     * informationStr */
    informationStr = wxT("<h2><center>");
    informationStr += _("Build Information");
    informationStr += wxT("</center></h2>\n");
+#ifndef EXPERIMENTAL_DA
    informationStr += VerCheckHtml();
+#endif
    // top level heading
    informationStr += wxT("<h3>");
    informationStr += _("File Format Support");
@@ -552,6 +555,12 @@ void AboutDialog::PopulateInformationPage( ShuttleGui & S )
    informationStr += _("Features");
    informationStr += wxT("</h3>\n<table>");  // start table of features
 
+#ifdef EXPERIMENTAL_DA
+   AddBuildinfoRow(&informationStr, wxT("Theme"), _("Dark Audacity Extras"), enabled);
+#else
+   AddBuildinfoRow(&informationStr, wxT("Theme"), _("Dark Audacity Extras"), disabled);
+#endif
+
    # if USE_NYQUIST
    AddBuildinfoRow(&informationStr, wxT("Nyquist"), _("Plug-in support"),
          enabled);
@@ -634,10 +643,31 @@ void AboutDialog::PopulateInformationPage( ShuttleGui & S )
    // Current date
    AddBuildinfoRow(&informationStr, _("Program build date: "), __TDATE__);
    AddBuildinfoRow(&informationStr, _("Commit Id:"), REV_IDENT );
+
+   // Not translated in 2.3.1.
+   wxString bits = (sizeof(void*) == 8) ? ", 64 bits" : "";
+
 #ifdef __WXDEBUG__
-   AddBuildinfoRow(&informationStr, _("Build type:"), _("Debug build"));
+   AddBuildinfoRow(&informationStr, _("Build type:"), wxString(_("Debug build"))+bits );
 #else
-   AddBuildinfoRow(&informationStr, _("Build type:"), _("Release build"));
+   AddBuildinfoRow(&informationStr, _("Build type:"), wxString(_("Release build"))+bits);
+#endif
+
+#ifdef _MSC_FULL_VER
+   AddBuildinfoRow(&informationStr, _("Compiler:"),
+	   wxString::Format(wxT("MSVC %02d.%02d.%05d.%02d"), _MSC_VER / 100, _MSC_VER % 100, _MSC_FULL_VER % 100000, _MSC_BUILD));
+#endif
+
+#ifdef __GNUC_PATCHLEVEL__
+#ifdef __MINGW32__
+   AddBuildinfoRow(&informationStr, _("Compiler:"), wxT("MinGW ") wxMAKE_VERSION_DOT_STRING_T(__GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__));
+#else
+   AddBuildinfoRow(&informationStr, _("Compiler:"), wxT("GCC ") wxMAKE_VERSION_DOT_STRING_T(__GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__));
+#endif
+#endif
+
+#ifdef __clang_version__
+   AddBuildinfoRow(&informationStr, _("Compiler:"), wxT("clang ") __clang_version__);
 #endif
 
    // Install prefix
@@ -972,11 +1002,7 @@ wxT("POSSIBILITY OF SUCH DAMAGES.\n"));
 
 void AboutDialog::AddCredit(wxString &&description, Role role)
 {
-#ifdef __AUDACITY_OLD_STD__
-   creditItems.push_back(AboutDialogCreditItem{ std::move(description), role });
-#else
    creditItems.emplace_back(std::move(description), role);
-#endif
 }
 
 wxString AboutDialog::GetCreditsByRole(AboutDialog::Role role)
@@ -994,7 +1020,7 @@ wxString AboutDialog::GetCreditsByRole(AboutDialog::Role role)
 
    // Strip last <br>, if any
    if (s.Right(4) == wxT("<br>"))
-      s = s.Left(s.Length() - 4);
+      s = s.Left(s.length() - 4);
 
    return s;
 }

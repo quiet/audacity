@@ -14,14 +14,14 @@
   it gets at a time.
 
   Your derived class only needs to implement
-  GetEffectName, GetEffectAction, and ProcessSimpleMono.
+  GetSymbol, GetEffectAction, and ProcessSimpleMono.
 
 *//*******************************************************************/
 
 
 #include "../Audacity.h"
-
 #include "SimpleMono.h"
+
 #include "../WaveTrack.h"
 
 #include <math.h>
@@ -32,10 +32,8 @@ bool EffectSimpleMono::Process()
    this->CopyInputTracks(); // Set up mOutputTracks.
    bool bGoodResult = true;
 
-   SelectedTrackListOfKindIterator iter(Track::Wave, mOutputTracks.get());
-   WaveTrack* pOutWaveTrack = (WaveTrack*)(iter.First());
    mCurTrackNum = 0;
-   while (pOutWaveTrack != NULL)
+   for( auto pOutWaveTrack : mOutputTracks->Selected< WaveTrack >() )
    {
       //Get start and end times from track
       double trackStart = pOutWaveTrack->GetStartTime();
@@ -66,8 +64,6 @@ bool EffectSimpleMono::Process()
          }
       }
 
-      //Iterate to the next track
-      pOutWaveTrack = (WaveTrack*)(iter.Next());
       mCurTrackNum++;
    }
 
@@ -88,7 +84,7 @@ bool EffectSimpleMono::ProcessOne(WaveTrack * track,
 
    //Initiate a processing buffer.  This buffer will (most likely)
    //be shorter than the length of the track being processed.
-   float *buffer = new float[track->GetMaxBlockSize()];
+   Floats buffer{ track->GetMaxBlockSize() };
 
    //Go through the track one buffer at a time. s counts which
    //sample the current buffer starts at.
@@ -100,19 +96,16 @@ bool EffectSimpleMono::ProcessOne(WaveTrack * track,
          limitSampleBufferSize( track->GetBestBlockSize(s), end - s );
 
       //Get the samples from the track and put them in the buffer
-      track->Get((samplePtr) buffer, floatSample, s, block);
+      track->Get((samplePtr) buffer.get(), floatSample, s, block);
 
       //Process the buffer.  If it fails, clean up and exit.
-      if (!ProcessSimpleMono(buffer, block)) {
-         delete[]buffer;
-
+      if (!ProcessSimpleMono(buffer.get(), block))
          //Return false because the effect failed.
          return false;
-      }
 
       //Processing succeeded. copy the newly-changed samples back
       //onto the track.
-      track->Set((samplePtr) buffer, floatSample, s, block);
+      track->Set((samplePtr) buffer.get(), floatSample, s, block);
 
       //Increment s one blockfull of samples
       s += block;
@@ -120,14 +113,9 @@ bool EffectSimpleMono::ProcessOne(WaveTrack * track,
       //Update the Progress meter
       if (TrackProgress(mCurTrackNum,
                         (s - start).as_double() /
-                        len)) {
-         delete[]buffer;
+                        len))
          return false;
-      }
    }
-
-   //Clean up the buffer
-   delete[]buffer;
 
    //Return true because the effect processing succeeded.
    return true;

@@ -22,18 +22,101 @@
 *//*******************************************************************/
 
 #include "../Audacity.h"
-
 #include "AButton.h"
+
 #include "../AColor.h"
 
+#include <wx/setup.h> // for wxUSE_* macros
+
+#include <wx/app.h>
 #include <wx/dcclient.h>
 #include <wx/dcmemory.h>
 #include <wx/dcbuffer.h>
+#include <wx/eventfilter.h>
 #include <wx/image.h>
+#include <wx/timer.h>
 
 //This is needed for tooltips
 #include "../Project.h"
 #include <wx/tooltip.h>
+
+#if wxUSE_ACCESSIBILITY
+#include "WindowAccessible.h"
+
+class AButtonAx final : public WindowAccessible
+{
+public:
+   AButtonAx(wxWindow * window);
+
+   virtual ~ AButtonAx();
+
+   // Performs the default action. childId is 0 (the action for this object)
+   // or > 0 (the action for a child).
+   // Return wxACC_NOT_SUPPORTED if there is no default action for this
+   // window (e.g. an edit control).
+   wxAccStatus DoDefaultAction(int childId) override;
+
+   // Retrieves the address of an IDispatch interface for the specified child.
+   // All objects must support this property.
+   wxAccStatus GetChild(int childId, wxAccessible** child) override;
+
+   // Gets the number of children.
+   wxAccStatus GetChildCount(int* childCount) override;
+
+   // Gets the default action for this object (0) or > 0 (the action for a child).
+   // Return wxACC_OK even if there is no action. actionName is the action, or the empty
+   // string if there is no action.
+   // The retrieved string describes the action that is performed on an object,
+   // not what the object does as a result. For example, a toolbar button that prints
+   // a document has a default action of "Press" rather than "Prints the current document."
+   wxAccStatus GetDefaultAction(int childId, wxString *actionName) override;
+
+   // Returns the description for this object or a child.
+   wxAccStatus GetDescription(int childId, wxString *description) override;
+
+   // Gets the window with the keyboard focus.
+   // If childId is 0 and child is NULL, no object in
+   // this subhierarchy has the focus.
+   // If this object has the focus, child should be 'this'.
+   wxAccStatus GetFocus(int *childId, wxAccessible **child) override;
+
+   // Returns help text for this object or a child, similar to tooltip text.
+   wxAccStatus GetHelpText(int childId, wxString *helpText) override;
+
+   // Returns the keyboard shortcut for this object or child.
+   // Return e.g. ALT+K
+   wxAccStatus GetKeyboardShortcut(int childId, wxString *shortcut) override;
+
+   // Returns the rectangle for this object (id = 0) or a child element (id > 0).
+   // rect is in screen coordinates.
+   wxAccStatus GetLocation(wxRect& rect, int elementId) override;
+
+   // Gets the name of the specified object.
+   wxAccStatus GetName(int childId, wxString *name) override;
+
+   // Returns a role constant.
+   wxAccStatus GetRole(int childId, wxAccRole *role) override;
+
+   // Gets a variant representing the selected children
+   // of this object.
+   // Acceptable values:
+   // - a null variant (IsNull() returns TRUE)
+   // - a list variant (GetType() == wxT("list"))
+   // - an integer representing the selected child element,
+   //   or 0 if this object is selected (GetType() == wxT("long"))
+   // - a "void*" pointer to a wxAccessible child object
+   wxAccStatus GetSelections(wxVariant *selections) override;
+
+   // Returns a state constant.
+   wxAccStatus GetState(int childId, long* state) override;
+
+   // Returns a localized string representing the value for the object
+   // or child.
+   wxAccStatus GetValue(int childId, wxString* strValue) override;
+
+};
+
+#endif // wxUSE_ACCESSIBILITY
 
 BEGIN_EVENT_TABLE(AButton, wxWindow)
    EVT_MOUSE_EVENTS(AButton::OnMouseEvent)
@@ -49,72 +132,33 @@ END_EVENT_TABLE()
 // LL:  An alternative to this might be to just use the wxEVT_KILL_FOCUS
 //      or wxEVT_ACTIVATE events.
 class AButton::Listener final
-   : public wxEvtHandler
+   : public wxEventFilter
 {
 public:
    Listener (AButton *button);
    ~Listener();
 
-   void OnKeyDown(wxKeyEvent & event);
-   void OnKeyUp(wxKeyEvent & event);
-   void OnTimer(wxTimerEvent & event);
+   int FilterEvent(wxEvent &event) override;
 
-   DECLARE_CLASS(AButton::Listener)
-   DECLARE_EVENT_TABLE()
+   void OnEvent();
 
 private:
    AButton *mButton;
-   wxTimer mShiftKeyTimer;
 };
-
-IMPLEMENT_CLASS(AButton::Listener, wxEvtHandler);
-
-BEGIN_EVENT_TABLE(AButton::Listener, wxEvtHandler)
-   EVT_TIMER(wxID_ANY, AButton::Listener::OnTimer)
-END_EVENT_TABLE()
 
 AButton::Listener::Listener (AButton *button)
 : mButton(button)
 {
-   mShiftKeyTimer.SetOwner(this);
-
-   wxTheApp->Connect( wxEVT_KEY_DOWN,
-                      wxKeyEventHandler( AButton::Listener::OnKeyDown ),
-                      NULL,
-                      this );
-
-   wxTheApp->Connect( wxEVT_KEY_UP,
-                      wxKeyEventHandler( AButton::Listener::OnKeyUp ),
-                      NULL,
-                      this );
+   wxEvtHandler::AddFilter(this);
 }
 
 AButton::Listener::~Listener ()
 {
-   wxTheApp->Disconnect( wxEVT_KEY_DOWN,
-                         wxKeyEventHandler( AButton::Listener::OnKeyDown ),
-                         NULL,
-                         this );
-
-   wxTheApp->Disconnect( wxEVT_KEY_UP,
-                         wxKeyEventHandler( AButton::Listener::OnKeyUp ),
-                         NULL,
-                         this );
+   wxEvtHandler::RemoveFilter(this);
 }
 
-void AButton::Listener::OnKeyDown(wxKeyEvent & event)
+void AButton::Listener::OnEvent()
 {
-   // Really, it's all the same check for changes of key states.
-   OnKeyUp(event);
-
-   // See comments in OnTimer()
-   mShiftKeyTimer.Start(100);
-}
-
-void AButton::Listener::OnKeyUp(wxKeyEvent & event)
-{
-   event.Skip();
-
    if (!mButton->IsDown())
    {
       int idx = 0;
@@ -134,22 +178,17 @@ void AButton::Listener::OnKeyUp(wxKeyEvent & event)
    }
 }
 
-void AButton::Listener::OnTimer(wxTimerEvent & event)
+int AButton::Listener::FilterEvent(wxEvent &event)
 {
-   event.Skip();
-
-   // bug 307 fix:
-   // Shift key-up events get swallowed if a command with a Shift in its keyboard
-   // shortcut opens a dialog, and OnKeyUp() doesn't get called.
-   // With CTRL now causing the button to change appearance, presumably similar
-   // can happen with that key.
-   if (!wxGetKeyState(WXK_SHIFT) ||
-      !wxGetKeyState(WXK_CONTROL))
-   {
-      wxKeyEvent dummy;
-      this->OnKeyUp(dummy);
-      mShiftKeyTimer.Stop();
-   }
+   if (event.GetEventType() == wxEVT_KEY_DOWN ||
+       event.GetEventType() == wxEVT_KEY_UP)
+      OnEvent();
+   else if (event.GetEventType() == wxEVT_SET_FOCUS)
+      // A modal dialog might have eaten the modifier key-up with its own
+      // filter before we saw it; this is adequate to fix the button image
+      // when the dialog disappears.
+      OnEvent();
+   return Event_Skip;
 }
 
 AButton::AButton(wxWindow * parent,
@@ -159,13 +198,14 @@ AButton::AButton(wxWindow * parent,
                  wxImage up,
                  wxImage over,
                  wxImage down,
+                 wxImage overDown,
                  wxImage dis,
                  bool toggle):
    wxWindow()
 {
    Init(parent, id, pos, size,
         ImageRoll(up), ImageRoll(over),
-        ImageRoll(down), ImageRoll(dis),
+        ImageRoll(down), ImageRoll(overDown), ImageRoll(dis),
         toggle);
 }
 
@@ -176,12 +216,13 @@ AButton::AButton(wxWindow * parent,
                  ImageRoll up,
                  ImageRoll over,
                  ImageRoll down,
+                 ImageRoll overDown,
                  ImageRoll dis,
                  bool toggle):
    wxWindow()
 {
    Init(parent, id, pos, size,
-        up, over, down, dis,
+        up, over, down, overDown, dis,
         toggle);
 }
 
@@ -198,6 +239,7 @@ void AButton::Init(wxWindow * parent,
                    ImageRoll up,
                    ImageRoll over,
                    ImageRoll down,
+                   ImageRoll overDown,
                    ImageRoll dis,
                    bool toggle)
 {
@@ -220,11 +262,11 @@ void AButton::Init(wxWindow * parent,
    mImages[0].mArr[0] = up;
    mImages[0].mArr[1] = over;
    mImages[0].mArr[2] = down;
-   mImages[0].mArr[3] = dis;
+   mImages[0].mArr[3] = overDown;
+   mImages[0].mArr[4] = dis;
 
    mAlternateIdx = 0;
 
-   mButtonIsFocused = false;
    mFocusRect = GetClientRect().Deflate( 3, 3 );
    mForceFocusRect = false;
 
@@ -255,6 +297,7 @@ void AButton::SetAlternateImages(unsigned idx,
                                  wxImage up,
                                  wxImage over,
                                  wxImage down,
+                                 wxImage overDown,
                                  wxImage dis)
 {
    if (1 + idx > mImages.size())
@@ -262,13 +305,15 @@ void AButton::SetAlternateImages(unsigned idx,
    mImages[idx].mArr[0] = ImageRoll(up);
    mImages[idx].mArr[1] = ImageRoll(over);
    mImages[idx].mArr[2] = ImageRoll(down);
-   mImages[idx].mArr[3] = ImageRoll(dis);
+   mImages[idx].mArr[3] = ImageRoll(overDown);
+   mImages[idx].mArr[4] = ImageRoll(dis);
 }
 
 void AButton::SetAlternateImages(unsigned idx,
                                  ImageRoll up,
                                  ImageRoll over,
                                  ImageRoll down,
+                                 ImageRoll overDown,
                                  ImageRoll dis)
 {
    if (1 + idx > mImages.size())
@@ -276,7 +321,8 @@ void AButton::SetAlternateImages(unsigned idx,
    mImages[idx].mArr[0] = up;
    mImages[idx].mArr[1] = over;
    mImages[idx].mArr[2] = down;
-   mImages[idx].mArr[3] = dis;
+   mImages[idx].mArr[3] = overDown;
+   mImages[idx].mArr[4] = dis;
 }
 
 void AButton::SetAlternateIdx(unsigned idx)
@@ -313,11 +359,11 @@ AButton::AButtonState AButton::GetState()
          if (mIsClicking) {
             state = mButtonIsDown ? AButtonUp : AButtonDown;
             if (mUseDisabledAsDownHiliteImage) {
-               state = mButtonIsDown ? AButtonOver : AButtonDis;
+               state = mButtonIsDown ? AButtonOverDown : AButtonDis;
             }
          }
          else {
-            state = mButtonIsDown ? AButtonDown : AButtonOver;
+            state = mButtonIsDown ? AButtonOverDown : AButtonOver;
             if (mUseDisabledAsDownHiliteImage) {
                state = mButtonIsDown ? AButtonDis : AButtonOver;
             }
@@ -328,17 +374,17 @@ AButton::AButtonState AButton::GetState()
             state = mButtonIsDown ? AButtonOver : AButtonDown;
          }
          else {
-            state = mButtonIsDown ? AButtonDown : AButtonOver;
+            state = mButtonIsDown ? AButtonOverDown : AButtonOver;
          }
       }
    }
    else {
-      if (mToggle) {
+      //if (mToggle) {
          state = mButtonIsDown ? AButtonDown : AButtonUp;
-      }
-      else {
-         state = mButtonIsDown ? AButtonDown : AButtonUp;
-      }
+      //}
+      //else {
+         //state = mButtonIsDown ? AButtonDown : AButtonUp;
+      //}
    }
 
    return state;
@@ -352,7 +398,7 @@ void AButton::OnPaint(wxPaintEvent & WXUNUSED(event))
 
    mImages[mAlternateIdx].mArr[buttonState].Draw(dc, GetClientRect());
 
-   if( mButtonIsFocused )
+   if( this == wxWindow::FindFocus() )
    {
       AColor::DrawFocus( dc, mFocusRect );
    }
@@ -380,11 +426,12 @@ bool AButton::HasAlternateImages(unsigned idx)
       return false;
 
    const ImageArr &images = mImages[idx];
-   const ImageRoll (&arr)[4] = images.mArr;
+   const ImageRoll (&arr)[5] = images.mArr;
    return (arr[0].Ok() &&
            arr[1].Ok() &&
            arr[2].Ok() &&
-           arr[3].Ok());
+           arr[3].Ok() &&
+           arr[4].Ok());
 }
 
 void AButton::OnMouseEvent(wxMouseEvent & event)
@@ -494,6 +541,8 @@ void AButton::OnKeyDown(wxKeyEvent & event)
       break;
    case WXK_RETURN:
    case WXK_NUMPAD_ENTER:
+      if( !mEnabled )
+         break;
       mWasShiftDown = event.ShiftDown();
       mWasControlDown = event.ControlDown();
       Click();
@@ -505,13 +554,11 @@ void AButton::OnKeyDown(wxKeyEvent & event)
 
 void AButton::OnSetFocus(wxFocusEvent & WXUNUSED(event))
 {
-   mButtonIsFocused = true;
    Refresh( false );
 }
 
 void AButton::OnKillFocus(wxFocusEvent & WXUNUSED(event))
 {
-   mButtonIsFocused = false;
    Refresh( false );
 }
 
@@ -534,7 +581,13 @@ void AButton::Enable()
 
 void AButton::Disable()
 {
+   // Bug 1565: Tooltips not showing on disabled buttons.
+   // The fix is to NOT tell windows that the button is disabled.
+   // The button's appearance will still change to show it is disabled
+   // since we control that rather than windows.
+#ifndef __WXMSW__
    wxWindow::Enable(false);
+#endif
    mEnabled = false;
    if (GetCapture()==this)
       ReleaseMouse();
@@ -543,25 +596,31 @@ void AButton::Disable()
 
 void AButton::PushDown()
 {
-   mButtonIsDown = true;
-   this->Refresh(false);
+   if (!mButtonIsDown) {
+      mButtonIsDown = true;
+      this->Refresh(false);
+   }
 }
 
 void AButton::PopUp()
 {
-   mButtonIsDown = false;
+   if (mButtonIsDown) {
+      mButtonIsDown = false;
+
+      this->Refresh(false);
+   }
 
    if (GetCapture()==this)
       ReleaseMouse();
-
-   this->Refresh(false);
 }
 
 void AButton::Click()
 {
    wxCommandEvent event(wxEVT_COMMAND_BUTTON_CLICKED, GetId());
    event.SetEventObject(this);
-   GetEventHandler()->ProcessEvent(event);
+   // Be sure to use SafelyProcessEvent so that exceptions do not propagate
+   // out of DoDefaultAction
+   GetEventHandler()->SafelyProcessEvent(event);
 }
 
 void AButton::SetShift(bool shift)
@@ -582,7 +641,7 @@ auto AButton::TemporarilyAllowFocus() -> TempAllowFocus {
 #if wxUSE_ACCESSIBILITY
 
 AButtonAx::AButtonAx( wxWindow *window ):
-   wxWindowAccessible( window )
+   WindowAccessible( window )
 {
 }
 
@@ -648,7 +707,7 @@ wxAccStatus AButtonAx::GetDefaultAction(int WXUNUSED(childId), wxString* actionN
 // Returns the description for this object or a child.
 wxAccStatus AButtonAx::GetDescription( int WXUNUSED(childId), wxString *description )
 {
-   description->Clear();
+   description->clear();
 
    return wxACC_OK;
 }
@@ -679,7 +738,7 @@ wxAccStatus AButtonAx::GetHelpText( int WXUNUSED(childId), wxString *helpText )
 
    return wxACC_OK;
 #else
-   helpText->Clear();
+   helpText->clear();
 
    return wxACC_NOT_SUPPORTED;
 #endif
@@ -689,7 +748,7 @@ wxAccStatus AButtonAx::GetHelpText( int WXUNUSED(childId), wxString *helpText )
 // Return e.g. ALT+K
 wxAccStatus AButtonAx::GetKeyboardShortcut( int WXUNUSED(childId), wxString *shortcut )
 {
-   shortcut->Clear();
+   shortcut->clear();
 
    return wxACC_OK;
 }
@@ -712,12 +771,12 @@ wxAccStatus AButtonAx::GetName(int WXUNUSED(childId), wxString* name)
    AButton *ab = wxDynamicCast( GetWindow(), AButton );
 
    *name = ab->GetName();
-   if( name->IsEmpty() )
+   if( name->empty() )
    {
       *name = ab->GetLabel();
    }
 
-   if( name->IsEmpty() )
+   if( name->empty() )
    {
       *name = _("Button");
    }
@@ -761,6 +820,11 @@ wxAccStatus AButtonAx::GetState(int WXUNUSED(childId), long* state)
          *state = wxACC_STATE_SYSTEM_HOTTRACKED | wxACC_STATE_SYSTEM_FOCUSABLE;
       break;
 
+      case AButton::AButtonOverDown:
+         *state = wxACC_STATE_SYSTEM_HOTTRACKED | wxACC_STATE_SYSTEM_PRESSED |
+            wxACC_STATE_SYSTEM_FOCUSABLE;
+      break;
+
       case AButton::AButtonDis:
          *state = wxACC_STATE_SYSTEM_UNAVAILABLE;
       break;
@@ -770,8 +834,6 @@ wxAccStatus AButtonAx::GetState(int WXUNUSED(childId), long* state)
       break;
    }
 
-   // Do not use mButtonIsFocused is not set until after this method
-   // is called.
    *state |= ( ab == wxWindow::FindFocus() ? wxACC_STATE_SYSTEM_FOCUSED : 0 );
 
    return wxACC_OK;

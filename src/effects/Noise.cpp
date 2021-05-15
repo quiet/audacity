@@ -24,6 +24,7 @@
 #include <wx/valgen.h>
 
 #include "../Prefs.h"
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../widgets/valnum.h"
 
@@ -32,21 +33,22 @@ enum kTypes
    kWhite,
    kPink,
    kBrownian,
-   kNumTypes
+   nTypes
 };
 
-static const wxChar *kTypeStrings[kNumTypes] =
+static const EnumValueSymbol kTypeStrings[nTypes] =
 {
-   XO("White"),
-   XO("Pink"),
-   XO("Brownian")
+   // These are acceptable dual purpose internal/visible names
+   { XO("White") },
+   { XO("Pink") },
+   { XO("Brownian") }
 };
 
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name    Type     Key               Def      Min   Max            Scale
-Param( Type,   int,     XO("Type"),       kWhite,  0,    kNumTypes - 1, 1  );
-Param( Amp,    double,  XO("Amplitude"),  0.8,     0.0,  1.0,           1  );
+Param( Type,   int,     wxT("Type"),       kWhite,  0,    nTypes - 1, 1  );
+Param( Amp,    double,  wxT("Amplitude"),  0.8,     0.0,  1.0,           1  );
 
 //
 // EffectNoise
@@ -66,19 +68,24 @@ EffectNoise::~EffectNoise()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectNoise::GetSymbol()
+ComponentInterfaceSymbol EffectNoise::GetSymbol()
 {
    return NOISE_PLUGIN_SYMBOL;
 }
 
 wxString EffectNoise::GetDescription()
 {
-   return XO("Generates one of three different types of noise");
+   return _("Generates one of three different types of noise");
 }
 
-// EffectIdentInterface implementation
+wxString EffectNoise::ManualPage()
+{
+   return wxT("Noise");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectNoise::GetType()
 {
@@ -156,18 +163,23 @@ size_t EffectNoise::ProcessBlock(float **WXUNUSED(inbuf), float **outbuf, size_t
 
    return size;
 }
+bool EffectNoise::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_ENUM_PARAM( mType, Type, kTypeStrings, nTypes );
+   S.SHUTTLE_PARAM( mAmp, Amp );
+   return true;
+}
 
-bool EffectNoise::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectNoise::GetAutomationParameters(CommandParameters & parms)
 {
-   parms.Write(KEY_Type, kTypeStrings[mType]);
+   parms.Write(KEY_Type, kTypeStrings[mType].Internal());
    parms.Write(KEY_Amp, mAmp);
 
    return true;
 }
 
-bool EffectNoise::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectNoise::SetAutomationParameters(CommandParameters & parms)
 {
-   ReadAndVerifyEnum(Type, wxArrayString(kNumTypes, kTypeStrings));
+   ReadAndVerifyEnum(Type, kTypeStrings, nTypes);
    ReadAndVerifyDouble(Amp);
 
    mType = Type;
@@ -208,35 +220,28 @@ bool EffectNoise::Startup()
 
 void EffectNoise::PopulateOrExchange(ShuttleGui & S)
 {
-   wxASSERT(kNumTypes == WXSIZEOF(kTypeStrings));
-
-   wxArrayString typeChoices;
-   for (int i = 0; i < kNumTypes; i++)
-   {
-      typeChoices.Add(wxGetTranslation(kTypeStrings[i]));
-   }
+   wxASSERT(nTypes == WXSIZEOF(kTypeStrings));
 
    S.StartMultiColumn(2, wxCENTER);
    {
-      S.AddChoice(_("Noise type:"), wxT(""), &typeChoices)->SetValidator(wxGenericValidator(&mType));
+      auto typeChoices = LocalizedStrings(kTypeStrings, nTypes);
+      S.AddChoice(_("Noise type:"), typeChoices)
+         ->SetValidator(wxGenericValidator(&mType));
 
-      FloatingPointValidator<double> vldAmp(6, &mAmp, NUM_VAL_NO_TRAILING_ZEROES);
+      FloatingPointValidator<double> vldAmp(6, &mAmp, NumValidatorStyle::NO_TRAILING_ZEROES);
       vldAmp.SetRange(MIN_Amp, MAX_Amp);
       S.AddTextBox(_("Amplitude (0-1):"), wxT(""), 12)->SetValidator(vldAmp);
 
       S.AddPrompt(_("Duration:"));
       mNoiseDurationT = safenew
-         NumericTextCtrl(NumericConverter::TIME,
-                         S.GetParent(),
-                         wxID_ANY,
+         NumericTextCtrl(S.GetParent(), wxID_ANY,
+                         NumericConverter::TIME,
                          GetDurationFormat(),
                          GetDuration(),
                          mProjectRate,
-                         wxDefaultPosition,
-                         wxDefaultSize,
-                         true);
+                         NumericTextCtrl::Options{}
+                            .AutoPos(true));
       mNoiseDurationT->SetName(_("Duration"));
-      mNoiseDurationT->EnableMenu();
       S.AddWindow(mNoiseDurationT, wxALIGN_LEFT | wxALIGN_CENTER_VERTICAL | wxALL);
    }
    S.EndMultiColumn();

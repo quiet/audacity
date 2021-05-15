@@ -2,7 +2,7 @@
 
   Audacity: A Digital Audio Editor
 
-  ErrorDialog.h
+  HelpSystem.h
 
   Jimmy Johnson
   James Crook
@@ -13,8 +13,9 @@
 #define __AUDACITY_HELPSYSTEM__
 
 #include "../Audacity.h"
+
 #include <wx/defs.h>
-#include <wx/window.h>
+#include "wxPanelWrapper.h" // to inherit
 
 class AudacityProject;
 
@@ -57,10 +58,13 @@ public:
    /// file names containing a '#' are not (on any platform).
    /// @param bModal Whether the resulting dialogue should be modal or not.
    /// Default is modeless dialogue
-   static void ShowHelpDialog(wxWindow *parent,
+   /// @param alwaysDefaultBrowser Force use of default web browser.
+   /// Default allows built in browser for local files.
+   static void ShowHelp(wxWindow *parent,
                      const wxString &localFileName,
                      const wxString &remoteURL,
-                     bool bModal = false);
+                     bool bModal = false,
+                     bool alwaysDefaultBrowser = false);
 
    /// Displays a page from the Audacity manual  in your browser, if
    /// it's available locally, OR else links to the internet.
@@ -69,7 +73,7 @@ public:
    /// converted file name used for offline and released manuals.
    /// @param bModal Whether the resulting dialogue should be modal or not.
    /// Default is modeless dialogue
-   static void ShowHelpDialog(wxWindow *parent,
+   static void ShowHelp(wxWindow *parent,
                      const wxString &PageName,
                      bool bModal = false);
 
@@ -96,6 +100,37 @@ public:
    /// obtain the file name in the local and release web copies of the manual
    static const wxString ReleaseSuffix;
 
+};
+
+class ShuttleGui;
+
+/** @brief Class which makes a dialog for displaying quick fixes to common issues.
+ *
+ * This class originated with the 'Stuck in a mode' problem, where far too many
+ * users get into a mode without realising, and don't know how to get out.
+ * It is a band-aid, and we should do more towards a full and proper solution
+ * where there are fewer special modes, and they don't persisit.
+ */
+class QuickFixDialog : public wxDialogWrapper
+{
+public: 
+   QuickFixDialog(wxWindow * pParent);
+   void Populate();
+   void PopulateOrExchange(ShuttleGui & S);
+   void AddStuck( ShuttleGui & S, bool & bBool, wxString Pref,  wxString Prompt, wxString Help );
+
+   void OnOk(wxCommandEvent &event);
+   void OnCancel(wxCommandEvent &event);
+   void OnHelp(wxCommandEvent &event);
+   void OnFix(wxCommandEvent &event);
+
+   wxString StringFromEvent( wxCommandEvent &event );
+
+   int mItem;
+   bool mbSyncLocked;
+   bool mbInSnapTo;
+   bool mbSoundActivated;
+   DECLARE_EVENT_TABLE()
 };
 
 #endif // __AUDACITY_HELPSYSTEM__

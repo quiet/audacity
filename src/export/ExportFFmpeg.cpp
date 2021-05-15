@@ -19,13 +19,14 @@ function.
 *//*******************************************************************/
 
 
-#include "../Audacity.h"   // keep ffmpeg before wx because they interact
+#include "../Audacity.h"   // keep ffmpeg before wx because they interact // for USE_* macros
+#include "ExportFFmpeg.h"
+
 #include "../FFmpeg.h"     // and Audacity.h before FFmpeg for config*.h
 
 #include <wx/choice.h>
 #include <wx/intl.h>
 #include <wx/timer.h>
-#include <wx/msgdlg.h>
 #include <wx/progdlg.h>
 #include <wx/string.h>
 #include <wx/textctrl.h>
@@ -41,13 +42,14 @@ function.
 #include "../Project.h"
 #include "../Tags.h"
 #include "../Track.h"
+#include "../widgets/ErrorDialog.h"
+#include "../widgets/ProgressDialog.h"
 
 #include "Export.h"
-#include "ExportFFmpeg.h"
 
 #include "ExportFFmpegDialogs.h"
 
-#if defined(WIN32)
+#if defined(WIN32) && _MSC_VER < 1900
 #define snprintf _snprintf
 #endif
 
@@ -63,7 +65,7 @@ static bool CheckFFmpegPresence(bool quiet = false)
    {
       if (!quiet)
       {
-         wxMessageBox(_("Properly configured FFmpeg is required to proceed.\nYou can configure it at Preferences > Libraries."));
+         AudacityMessageBox(_("Properly configured FFmpeg is required to proceed.\nYou can configure it at Preferences > Libraries."));
       }
       result = false;
    }
@@ -122,7 +124,7 @@ public:
 
    /// Creates options panel
    ///\param format - index of export type
-   wxWindow *OptionsCreate(wxWindow *parent, int format);
+   wxWindow *OptionsCreate(wxWindow *parent, int format) override;
 
    /// Check whether or not current project sample rate is compatible with the export codec
    bool CheckSampleRate(int rate, int lowrate, int highrate, const int *sampRates);
@@ -140,7 +142,8 @@ public:
    ///\param metadata tags to write into file
    ///\param subformat index of export type
    ///\return true if export succeded
-   int Export(AudacityProject *project,
+   ProgressResult Export(AudacityProject *project,
+      std::unique_ptr<ProgressDialog> &pDialog,
       unsigned channels,
       const wxString &fName,
       bool selectedOnly,
@@ -165,7 +168,7 @@ private:
    unsigned          mChannels{};
    bool              mSupportsUTF8{};
 
-   // Smart pointer fields, their order is the reverse in which they are reset in Finalize():
+   // Smart pointer fields, their order is the reverse in which they are reset in FreeResources():
    AVFifoBufferHolder   mEncAudioFifo;          // FIFO to write incoming audio samples into
    AVMallocHolder<int16_t> mEncAudioFifoOutBuf;  // buffer to read _out_ of the FIFO into
    AVFormatContextHolder mEncFormatCtx;        // libavformat's context for our output file
@@ -223,10 +226,10 @@ ExportFFmpeg::ExportFFmpeg()
       }
 
       SetMaxChannels(ExportFFmpegOptions::fmts[newfmt].maxchannels,fmtindex);
-      SetDescription(ExportFFmpegOptions::fmts[newfmt].description,fmtindex);
+      SetDescription(ExportFFmpegOptions::fmts[newfmt].Description(), fmtindex);
 
       int canmeta = ExportFFmpegOptions::fmts[newfmt].canmetadata;
-      if (canmeta && (canmeta == AV_VERSION_INT(-1,-1,-1) || canmeta <= avfver))
+      if (canmeta && (canmeta == AV_CANMETA || canmeta <= avfver))
       {
          SetCanMetaData(true,fmtindex);
       }
@@ -279,7 +282,7 @@ bool ExportFFmpeg::Init(const char *shortname, AudacityProject *project, const T
    // and the default video/audio codecs that the format uses.
    if ((mEncFormatDesc = av_guess_format(shortname, OSINPUT(mName), NULL)) == NULL)
    {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't determine format description for file \"%s\"."), mName.c_str()),
+      AudacityMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't determine format description for file \"%s\"."), mName),
                    _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
       return false;
    }
@@ -288,7 +291,7 @@ bool ExportFFmpeg::Init(const char *shortname, AudacityProject *project, const T
    mEncFormatCtx.reset(avformat_alloc_context());
    if (!mEncFormatCtx)
    {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't allocate output format context.")),
+      AudacityMessageBox(_("FFmpeg : ERROR - Can't allocate output format context."),
                    _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
       return false;
    }
@@ -301,7 +304,7 @@ bool ExportFFmpeg::Init(const char *shortname, AudacityProject *project, const T
    // At the moment Audacity can export only one audio stream
    if ((mEncAudioStream = avformat_new_stream(mEncFormatCtx.get(), NULL)) == NULL)
    {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't add audio stream to output file \"%s\"."), mName.c_str()),
+      AudacityMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't add audio stream to output file \"%s\"."), mName),
                    _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
       return false;
    }
@@ -326,7 +329,7 @@ bool ExportFFmpeg::Init(const char *shortname, AudacityProject *project, const T
    {
       if ((err = ufile_fopen(&mEncFormatCtx->pb, mName, AVIO_FLAG_WRITE)) < 0)
       {
-         wxMessageBox(wxString::Format(wxT("FFmpeg : ERROR - Can't open output file \"%s\" to write. Error code is %d."), mName.c_str(), err),
+         AudacityMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't open output file \"%s\" to write. Error code is %d."), mName, err),
                       _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
          return false;
       }
@@ -352,12 +355,12 @@ bool ExportFFmpeg::Init(const char *shortname, AudacityProject *project, const T
    // Write headers to the output file.
    if ((err = avformat_write_header(mEncFormatCtx.get(), NULL)) < 0)
    {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't write headers to output file \"%s\". Error code is %d."), mName.c_str(),err),
+      AudacityMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't write headers to output file \"%s\". Error code is %d."), mName,err),
                    _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
       return false;
    }
 
-   // Only now, we can keep all the resources until Finalize().
+   // Only now, we can keep all the resources until after Finalize().
    // Cancel the local cleanup.
    cleanup.release();
 
@@ -464,12 +467,13 @@ bool ExportFFmpeg::InitCodecs(AudacityProject *project)
 
    if (mEncAudioCodecCtx->global_quality >= 0)
    {
-      mEncAudioCodecCtx->flags |= CODEC_FLAG_QSCALE;
+      mEncAudioCodecCtx->flags |= AV_CODEC_FLAG_QSCALE;
    }
    else mEncAudioCodecCtx->global_quality = 0;
    mEncAudioCodecCtx->global_quality = mEncAudioCodecCtx->global_quality * FF_QP2LAMBDA;
    mEncAudioCodecCtx->sample_rate = mSampleRate;
    mEncAudioCodecCtx->channels = mChannels;
+   mEncAudioCodecCtx->channel_layout = av_get_default_channel_layout(mChannels);
    mEncAudioCodecCtx->time_base.num = 1;
    mEncAudioCodecCtx->time_base.den = mEncAudioCodecCtx->sample_rate;
    mEncAudioCodecCtx->sample_fmt = AV_SAMPLE_FMT_S16;
@@ -492,7 +496,7 @@ bool ExportFFmpeg::InitCodecs(AudacityProject *project)
    // Is the required audio codec compiled into libavcodec?
    if (codec == NULL)
    {
-      wxMessageBox(wxString::Format(_("FFmpeg cannot find audio codec 0x%x.\nSupport for this codec is probably not compiled in."), (unsigned int) mEncAudioCodecCtx->codec_id),
+      AudacityMessageBox(wxString::Format(_("FFmpeg cannot find audio codec 0x%x.\nSupport for this codec is probably not compiled in."), (unsigned int) mEncAudioCodecCtx->codec_id),
                    _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
       return false;
    }
@@ -518,14 +522,14 @@ bool ExportFFmpeg::InitCodecs(AudacityProject *project)
 
    if (mEncFormatCtx->oformat->flags & AVFMT_GLOBALHEADER)
    {
-      mEncAudioCodecCtx->flags |= CODEC_FLAG_GLOBAL_HEADER;
-      mEncFormatCtx->flags |= CODEC_FLAG_GLOBAL_HEADER;
+      mEncAudioCodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+      mEncFormatCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
    }
 
    // Open the codec.
    if (avcodec_open2(mEncAudioCodecCtx.get(), codec, &options) < 0)
    {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't open audio codec 0x%x."),mEncAudioCodecCtx->codec_id),
+      AudacityMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't open audio codec 0x%x."),mEncAudioCodecCtx->codec_id),
                    _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
       return false;
    }
@@ -546,14 +550,17 @@ bool ExportFFmpeg::InitCodecs(AudacityProject *project)
    mEncAudioFifoOutBuf.reset(static_cast<int16_t*>(av_malloc(mEncAudioFifoOutBufSiz)));
    if (!mEncAudioFifoOutBuf)
    {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't allocate buffer to read into from audio FIFO.")),
-                   _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+      AudacityMessageBox(
+         _("FFmpeg : ERROR - Can't allocate buffer to read into from audio FIFO."),
+         _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+      );
       return false;
    }
 
    return true;
 }
 
+// Returns 0 if no more output, 1 if more output, negative if error
 static int encode_audio(AVCodecContext *avctx, AVPacket *pkt, int16_t *audio_samples, int nb_samples)
 {
    // Assume *pkt is already initialized.
@@ -576,22 +583,28 @@ static int encode_audio(AVCodecContext *avctx, AVPacket *pkt, int16_t *audio_sam
       buffer_size = av_samples_get_buffer_size(NULL, avctx->channels, frame->nb_samples,
                                               avctx->sample_fmt, 0);
       if (buffer_size < 0) {
-         wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Could not get sample buffer size")),
-                      _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+         AudacityMessageBox(
+            _("FFmpeg : ERROR - Could not get sample buffer size"),
+            _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+         );
          return buffer_size;
       }
       samples.reset(static_cast<uint8_t*>(av_malloc(buffer_size)));
       if (!samples) {
-         wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Could not allocate bytes for samples buffer")),
-                      _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+         AudacityMessageBox(
+            _("FFmpeg : ERROR - Could not allocate bytes for samples buffer"),
+            _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+         );
          return AVERROR(ENOMEM);
       }
       /* setup the data pointers in the AVFrame */
       ret = avcodec_fill_audio_frame(frame.get(), avctx->channels, avctx->sample_fmt,
                                   samples.get(), buffer_size, 0);
       if (ret < 0) {
-         wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Could not setup audio frame")),
-                      _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+         AudacityMessageBox(
+            _("FFmpeg : ERROR - Could not setup audio frame"),
+            _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+         );
          return ret;
       }
 
@@ -638,8 +651,10 @@ static int encode_audio(AVCodecContext *avctx, AVPacket *pkt, int16_t *audio_sam
 
    ret = avcodec_encode_audio2(avctx, pkt, frame.get(), &got_output);
    if (ret < 0) {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - encoding frame failed")),
-                   _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+      AudacityMessageBox(
+         _("FFmpeg : ERROR - encoding frame failed"),
+         _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+      );
       return ret;
    }
 
@@ -651,93 +666,99 @@ static int encode_audio(AVCodecContext *avctx, AVPacket *pkt, int16_t *audio_sam
 
 bool ExportFFmpeg::Finalize()
 {
-   int nEncodedBytes;
-
    // Flush the audio FIFO and encoder.
    for (;;)
    {
-      {
-         AVPacketEx pkt;
-         int nFifoBytes = av_fifo_size(mEncAudioFifo.get()); // any bytes left in audio FIFO?
+      AVPacketEx pkt;
+      const int nFifoBytes = av_fifo_size(mEncAudioFifo.get()); // any bytes left in audio FIFO?
+      int encodeResult = 0;
 
-         nEncodedBytes = 0;
-         int nAudioFrameSizeOut = default_frame_size * mEncAudioCodecCtx->channels * sizeof(int16_t);
+      // Flush the audio FIFO first if necessary. It won't contain a _full_ audio frame because
+      // if it did we'd have pulled it from the FIFO during the last encodeAudioFrame() call
+      if (nFifoBytes > 0)
+      {
+         const int nAudioFrameSizeOut = default_frame_size * mEncAudioCodecCtx->channels * sizeof(int16_t);
 
          if (nAudioFrameSizeOut > mEncAudioFifoOutBufSiz || nFifoBytes > mEncAudioFifoOutBufSiz) {
-            wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Too much remaining data.")),
-               _("FFmpeg Error"), wxOK | wxCENTER | wxICON_EXCLAMATION);
+            AudacityMessageBox(
+               _("FFmpeg : ERROR - Too much remaining data."),
+               _("FFmpeg Error"), wxOK | wxCENTER | wxICON_EXCLAMATION
+            );
             return false;
          }
 
-         // Flush the audio FIFO first if necessary. It won't contain a _full_ audio frame because
-         // if it did we'd have pulled it from the FIFO during the last encodeAudioFrame() call -
-         // the encoder must support short/incomplete frames for this to work.
-         if (nFifoBytes > 0)
+         // We have an incomplete buffer of samples left, encode it.
+         // If codec supports CODEC_CAP_SMALL_LAST_FRAME, we can feed it with smaller frame
+         // Or if frame_size is 1, then it's some kind of PCM codec, they don't have frames and will be fine with the samples
+         // Otherwise we'll send a full frame of audio + silence padding to ensure all audio is encoded
+         int frame_size = default_frame_size;
+         if (mEncAudioCodecCtx->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME ||
+             frame_size == 1)
+            frame_size = nFifoBytes / (mEncAudioCodecCtx->channels * sizeof(int16_t));
+
+         wxLogDebug(wxT("FFmpeg : Audio FIFO still contains %d bytes, writing %d sample frame ..."),
+            nFifoBytes, frame_size);
+
+         // Fill audio buffer with zeroes. If codec tries to read the whole buffer,
+         // it will just read silence. If not - who cares?
+         memset(mEncAudioFifoOutBuf.get(), 0, mEncAudioFifoOutBufSiz);
+         //const AVCodec *codec = mEncAudioCodecCtx->codec;
+
+         // Pull the bytes out from the FIFO and feed them to the encoder.
+         if (av_fifo_generic_read(mEncAudioFifo.get(), mEncAudioFifoOutBuf.get(), nFifoBytes, NULL) == 0)
          {
-            // Fill audio buffer with zeroes. If codec tries to read the whole buffer,
-            // it will just read silence. If not - who cares?
-            memset(mEncAudioFifoOutBuf.get(), 0, mEncAudioFifoOutBufSiz);
-            const AVCodec *codec = mEncAudioCodecCtx->codec;
-
-            // We have an incomplete buffer of samples left.  Is it OK to encode it?
-            // If codec supports CODEC_CAP_SMALL_LAST_FRAME, we can feed it with smaller frame
-            // Or if codec is FLAC, feed it anyway (it doesn't have CODEC_CAP_SMALL_LAST_FRAME, but it works)
-            // Or if frame_size is 1, then it's some kind of PCM codec, they don't have frames and will be fine with the samples
-            // Or if user configured the exporter to pad with silence, then we'll send audio + silence as a frame.
-            if ((codec->capabilities & (CODEC_CAP_SMALL_LAST_FRAME | CODEC_CAP_VARIABLE_FRAME_SIZE))
-               || mEncAudioCodecCtx->frame_size <= 1
-               || gPrefs->Read(wxT("/FileFormats/OverrideSmallLastFrame"), true)
-               )
-            {
-               int frame_size = default_frame_size;
-
-               // The last frame is going to contain a smaller than usual number of samples.
-               // For codecs without CODEC_CAP_SMALL_LAST_FRAME use normal frame size
-               if (codec->capabilities & (CODEC_CAP_SMALL_LAST_FRAME | CODEC_CAP_VARIABLE_FRAME_SIZE))
-                  frame_size = nFifoBytes / (mEncAudioCodecCtx->channels * sizeof(int16_t));
-
-               wxLogDebug(wxT("FFmpeg : Audio FIFO still contains %d bytes, writing %d sample frame ..."),
-                  nFifoBytes, frame_size);
-
-               // Pull the bytes out from the FIFO and feed them to the encoder.
-               if (av_fifo_generic_read(mEncAudioFifo.get(), mEncAudioFifoOutBuf.get(), nFifoBytes, NULL) == 0)
-               {
-                  nEncodedBytes = encode_audio(mEncAudioCodecCtx.get(), &pkt, mEncAudioFifoOutBuf.get(), frame_size);
-               }
-            }
+            encodeResult = encode_audio(mEncAudioCodecCtx.get(), &pkt, mEncAudioFifoOutBuf.get(), frame_size);
+         }
+         else
+         {
+            wxLogDebug(wxT("FFmpeg : Reading from Audio FIFO failed, aborting"));
+            // TODO: more precise message
+            AudacityMessageBox(_("Unable to export"));
+            return false;
          }
       }
-
-      // Now flush the encoder.
+      else
       {
-         AVPacketEx pkt;
-         if (nEncodedBytes <= 0)
-            nEncodedBytes = encode_audio(mEncAudioCodecCtx.get(), &pkt, NULL, 0);
+         // Fifo is empty, flush encoder. May be called multiple times.
+         encodeResult = encode_audio(mEncAudioCodecCtx.get(), &pkt, NULL, 0);
+      }
 
-         if (nEncodedBytes <= 0)
-            break;
+      if (encodeResult < 0) {
+         // TODO: more precise message
+         AudacityMessageBox(_("Unable to export"));
+         return false;
+      }
+      else if (encodeResult == 0)
+         break;
 
-         pkt.stream_index = mEncAudioStream->index;
+      // We have a packet, send to the muxer
+      pkt.stream_index = mEncAudioStream->index;
 
-         // Set presentation time of frame (currently in the codec's timebase) in the stream timebase.
-         if (pkt.pts != int64_t(AV_NOPTS_VALUE))
-            pkt.pts = av_rescale_q(pkt.pts, mEncAudioCodecCtx->time_base, mEncAudioStream->time_base);
-         if (pkt.dts != int64_t(AV_NOPTS_VALUE))
-            pkt.dts = av_rescale_q(pkt.dts, mEncAudioCodecCtx->time_base, mEncAudioStream->time_base);
+      // Set presentation time of frame (currently in the codec's timebase) in the stream timebase.
+      if (pkt.pts != int64_t(AV_NOPTS_VALUE))
+         pkt.pts = av_rescale_q(pkt.pts, mEncAudioCodecCtx->time_base, mEncAudioStream->time_base);
+      if (pkt.dts != int64_t(AV_NOPTS_VALUE))
+         pkt.dts = av_rescale_q(pkt.dts, mEncAudioCodecCtx->time_base, mEncAudioStream->time_base);
+      if (pkt.duration)
+         pkt.duration = av_rescale_q(pkt.duration, mEncAudioCodecCtx->time_base, mEncAudioStream->time_base);
 
-         if (av_interleaved_write_frame(mEncFormatCtx.get(), &pkt) != 0)
-         {
-            wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Couldn't write last audio frame to output file.")),
-               _("FFmpeg Error"), wxOK | wxCENTER | wxICON_EXCLAMATION);
-            break;
-         }
+      if (av_interleaved_write_frame(mEncFormatCtx.get(), &pkt) != 0)
+      {
+         AudacityMessageBox(
+            _("FFmpeg : ERROR - Couldn't write last audio frame to output file."),
+            _("FFmpeg Error"), wxOK | wxCENTER | wxICON_EXCLAMATION
+         );
+         return false;
       }
    }
 
    // Write any file trailers.
-   av_write_trailer(mEncFormatCtx.get());
+   if (av_write_trailer(mEncFormatCtx.get()) != 0) {
+      // TODO: more precise message
+      AudacityMessageBox(_("Unable to export"));
+      return false;
+   }
 
-   FreeResources();
    return true;
 }
 
@@ -769,34 +790,40 @@ bool ExportFFmpeg::EncodeAudioFrame(int16_t *pFrame, size_t frameSize)
 
    nBytesToWrite = frameSize;
    pRawSamples  = (uint8_t*)pFrame;
-   av_fifo_realloc2(mEncAudioFifo.get(), av_fifo_size(mEncAudioFifo.get()) + frameSize);
+   if (av_fifo_realloc2(mEncAudioFifo.get(), av_fifo_size(mEncAudioFifo.get()) + frameSize) < 0)
+      return false;
 
    // Put the raw audio samples into the FIFO.
    ret = av_fifo_generic_write(mEncAudioFifo.get(), pRawSamples, nBytesToWrite,NULL);
 
-   wxASSERT(ret == nBytesToWrite);
+   if(ret != nBytesToWrite)
+      return false;
 
    if (nAudioFrameSizeOut > mEncAudioFifoOutBufSiz) {
-      wxMessageBox(wxString::Format(_("FFmpeg : ERROR - nAudioFrameSizeOut too large.")),
-                   _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+      AudacityMessageBox(
+         _("FFmpeg : ERROR - nAudioFrameSizeOut too large."),
+         _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+      );
       return false;
    }
 
    // Read raw audio samples out of the FIFO in nAudioFrameSizeOut byte-sized groups to encode.
-   while ((ret = av_fifo_size(mEncAudioFifo.get())) >= nAudioFrameSizeOut)
+   while ( av_fifo_size(mEncAudioFifo.get()) >= nAudioFrameSizeOut)
    {
       ret = av_fifo_generic_read(mEncAudioFifo.get(), mEncAudioFifoOutBuf.get(), nAudioFrameSizeOut, NULL);
 
       AVPacketEx pkt;
 
-      int ret= encode_audio(mEncAudioCodecCtx.get(),
+      ret= encode_audio(mEncAudioCodecCtx.get(),
          &pkt,                          // out
          mEncAudioFifoOutBuf.get(), // in
          default_frame_size);
       if (ret < 0)
       {
-         wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Can't encode audio frame.")),
-                      _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+         AudacityMessageBox(
+            _("FFmpeg : ERROR - Can't encode audio frame."),
+            _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+         );
          return false;
       }
       if (ret == 0)
@@ -814,8 +841,10 @@ bool ExportFFmpeg::EncodeAudioFrame(int16_t *pFrame, size_t frameSize)
       // Write the encoded audio frame to the output file.
       if ((ret = av_interleaved_write_frame(mEncFormatCtx.get(), &pkt)) < 0)
       {
-         wxMessageBox(wxString::Format(_("FFmpeg : ERROR - Failed to write audio frame to file.")),
-                      _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION);
+         AudacityMessageBox(
+            _("FFmpeg : ERROR - Failed to write audio frame to file."),
+            _("FFmpeg Error"), wxOK|wxCENTER|wxICON_EXCLAMATION
+         );
          return false;
       }
    }
@@ -823,39 +852,51 @@ bool ExportFFmpeg::EncodeAudioFrame(int16_t *pFrame, size_t frameSize)
 }
 
 
-int ExportFFmpeg::Export(AudacityProject *project,
-                       unsigned channels, const wxString &fName,
-                       bool selectionOnly, double t0, double t1, MixerSpec *mixerSpec, const Tags *metadata, int subformat)
+ProgressResult ExportFFmpeg::Export(AudacityProject *project,
+   std::unique_ptr<ProgressDialog> &pDialog,
+   unsigned channels, const wxString &fName,
+   bool selectionOnly, double t0, double t1,
+   MixerSpec *mixerSpec, const Tags *metadata, int subformat)
 {
    if (!CheckFFmpegPresence())
-      return false;
+      return ProgressResult::Cancelled;
    mChannels = channels;
    // subformat index may not correspond directly to fmts[] index, convert it
    mSubFormat = AdjustFormatIndex(subformat);
    if (channels > ExportFFmpegOptions::fmts[mSubFormat].maxchannels)
    {
-      wxMessageBox(
+      AudacityMessageBox(
          wxString::Format(
                _("Attempted to export %d channels, but maximum number of channels for selected output format is %d"),
                channels,
                ExportFFmpegOptions::fmts[mSubFormat].maxchannels),
             _("Error"));
-      return false;
+      return ProgressResult::Cancelled;
    }
    mName = fName;
    const TrackList *tracks = project->GetTracks();
    bool ret = true;
 
-   if (mSubFormat >= FMT_LAST) return false;
+   if (mSubFormat >= FMT_LAST) {
+      // TODO: more precise message
+      AudacityMessageBox(_("Unable to export"));
+      return ProgressResult::Cancelled;
+   }
 
    wxString shortname(ExportFFmpegOptions::fmts[mSubFormat].shortname);
    if (mSubFormat == FMT_OTHER)
       shortname = gPrefs->Read(wxT("/FileFormats/FFmpegFormat"),wxT("matroska"));
    ret = Init(shortname.mb_str(),project, metadata, subformat);
+   auto cleanup = finally ( [&] { FreeResources(); } );
 
-   if (!ret) return false;
+   if (!ret) {
+      // TODO: more precise message
+      AudacityMessageBox(_("Unable to export"));
+      return ProgressResult::Cancelled;
+   }
 
-   int pcmBufferSize = 1024;
+   size_t pcmBufferSize = 1024;
+
    const WaveTrackConstArray waveTracks =
       tracks->GetWaveTrackConstArray(selectionOnly, false);
    auto mixer = CreateMixer(waveTracks,
@@ -864,14 +905,17 @@ int ExportFFmpeg::Export(AudacityProject *project,
       channels, pcmBufferSize, true,
       mSampleRate, int16Sample, true, mixerSpec);
 
-   int updateResult = eProgressSuccess;
+   auto updateResult = ProgressResult::Success;
    {
-      ProgressDialog progress(wxFileName(fName).GetName(),
-         selectionOnly ?
-         wxString::Format(_("Exporting selected audio as %s"), ExportFFmpegOptions::fmts[mSubFormat].description) :
-         wxString::Format(_("Exporting entire file as %s"), ExportFFmpegOptions::fmts[mSubFormat].description));
+      InitProgress( pDialog, wxFileName(fName).GetName(),
+         selectionOnly
+            ? wxString::Format(_("Exporting selected audio as %s"),
+               ExportFFmpegOptions::fmts[mSubFormat].Description())
+            : wxString::Format(_("Exporting the audio as %s"),
+               ExportFFmpegOptions::fmts[mSubFormat].Description()) );
+      auto &progress = *pDialog;
 
-      while (updateResult == eProgressSuccess) {
+      while (updateResult == ProgressResult::Success) {
          auto pcmNumSamples = mixer->Process(pcmBufferSize);
 
          if (pcmNumSamples == 0)
@@ -879,13 +923,28 @@ int ExportFFmpeg::Export(AudacityProject *project,
 
          short *pcmBuffer = (short *)mixer->GetBuffer();
 
-         EncodeAudioFrame(pcmBuffer, (pcmNumSamples)*sizeof(int16_t)*mChannels);
+         if (!EncodeAudioFrame(
+            pcmBuffer, (pcmNumSamples)*sizeof(int16_t)*mChannels)) {
+            // TODO: more precise message, and fix redundancy with messages
+            // already given on some of the failure paths of the above call
+            AudacityMessageBox(_("Unable to export"));
+            updateResult = ProgressResult::Cancelled;
+            break;
+         }
 
          updateResult = progress.Update(mixer->MixGetCurrentTime() - t0, t1 - t0);
       }
    }
 
-   Finalize();
+   if ( updateResult != ProgressResult::Cancelled )
+      if ( !Finalize() ) // Finalize makes its own messages
+         return ProgressResult::Cancelled;
+
+   if ( mUfileCloser.close() != 0 ) {
+      // TODO: more precise message
+      AudacityMessageBox(_("Unable to export"));
+      return ProgressResult::Cancelled;
+   }
 
    return updateResult;
 }
@@ -951,10 +1010,10 @@ int ExportFFmpeg::AskResample(int bitrate, int rate, int lowrate, int highrate, 
          S.StartHorizontalLay(wxALIGN_CENTER, false);
          {
             if (bitrate == 0) {
-               text.Printf(_("The project sample rate (%d) is not supported by the current output\nfile format.  "), rate);
+               text.Printf(_("The project sample rate (%d) is not supported by the current output\nfile format. "), rate);
             }
             else {
-               text.Printf(_("The project sample rate (%d) and bit rate (%d kbps) combination is not\nsupported by the current output file format.  "), rate, bitrate/1024);
+               text.Printf(_("The project sample rate (%d) and bit rate (%d kbps) combination is not\nsupported by the current output file format. "), rate, bitrate/1024);
             }
 
             text += _("You may resample to one of the rates below.");
@@ -962,32 +1021,30 @@ int ExportFFmpeg::AskResample(int bitrate, int rate, int lowrate, int highrate, 
          }
          S.EndHorizontalLay();
 
-         wxArrayString choices;
-         wxString selected = wxT("");
+         wxArrayStringEx choices;
+         int selected = -1;
          for (int i = 0; sampRates[i] > 0; i++)
          {
             int label = sampRates[i];
             if (label >= lowrate && label <= highrate)
             {
                wxString name = wxString::Format(wxT("%d"),label);
-               choices.Add(name);
+               choices.push_back(name);
                if (label <= rate)
                {
-                  selected = name;
+                  selected = i;
                }
             }
          }
 
-         if (selected.IsEmpty())
-         {
-            selected = choices[0];
-         }
+         if (selected == -1)
+            selected = 0;
 
          S.StartHorizontalLay(wxALIGN_CENTER, false);
          {
             choice = S.AddChoice(_("Sample Rates"),
-                                 selected,
-                                 &choices);
+                                 choices,
+                                 selected);
          }
          S.EndHorizontalLay();
       }
@@ -1038,9 +1095,9 @@ wxWindow *ExportFFmpeg::OptionsCreate(wxWindow *parent, int format)
    return ExportPlugin::OptionsCreate(parent, format);
 }
 
-movable_ptr<ExportPlugin> New_ExportFFmpeg()
+std::unique_ptr<ExportPlugin> New_ExportFFmpeg()
 {
-   return make_movable<ExportFFmpeg>();
+   return std::make_unique<ExportFFmpeg>();
 }
 
 #endif

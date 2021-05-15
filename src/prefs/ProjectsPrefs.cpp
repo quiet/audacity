@@ -17,6 +17,7 @@ handling.
 *//*******************************************************************/
 
 #include "../Audacity.h"
+#include "ProjectsPrefs.h"
 
 #include <wx/defs.h>
 #include <wx/textctrl.h>
@@ -24,12 +25,12 @@ handling.
 #include "../Prefs.h"
 #include "../ShuttleGui.h"
 
-#include "ProjectsPrefs.h"
+#include "../Internat.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 
-ProjectsPrefs::ProjectsPrefs(wxWindow * parent)
-:   PrefsPanel(parent,
+ProjectsPrefs::ProjectsPrefs(wxWindow * parent, wxWindowID winid)
+:   PrefsPanel(parent, winid,
    /* i18n-hint: (noun) i.e Audacity projects. */
                _("Projects"))
 {
@@ -38,6 +39,21 @@ ProjectsPrefs::ProjectsPrefs(wxWindow * parent)
 
 ProjectsPrefs::~ProjectsPrefs()
 {
+}
+
+ComponentInterfaceSymbol ProjectsPrefs::GetSymbol()
+{
+   return PROJECTS_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString ProjectsPrefs::GetDescription()
+{
+   return _("Preferences for Projects");
+}
+
+wxString ProjectsPrefs::HelpPageName()
+{
+   return "Projects_Preferences";
 }
 
 /// Creates the dialog and its contents.
@@ -54,25 +70,30 @@ void ProjectsPrefs::Populate()
 
 void ProjectsPrefs::PopulateOrExchange(ShuttleGui & S)
 {
-   S.SetBorder(2);
-
+   S.SetBorder(2);   
+   S.StartScroller();
+#ifndef EXPERIMENTAL_DA 
+// DA always copies.  Using a reference is dangerous.  
    S.StartStatic(_("When saving a project that depends on other audio files"));
    {
       S.StartRadioButtonGroup(wxT("/FileFormats/SaveProjectWithDependencies"), wxT("ask"));
       {
-         S.TieRadioButton(_("&Always copy all audio into project (safest)"),
+         S.TieRadioButton(_("&Copy audio into project"),
                           wxT("copy"));
-         S.TieRadioButton(_("Do &not copy any audio"),
+         S.TieRadioButton(_("Do &not copy"),
                           wxT("never"));
-         S.TieRadioButton(_("As&k user"),
+         S.TieRadioButton(_("As&k"),
                           wxT("ask"));
       }
       S.EndRadioButtonGroup();
    }
    S.EndStatic();
+   S.EndScroller();
+#endif   
+
 }
 
-bool ProjectsPrefs::Apply()
+bool ProjectsPrefs::Commit()
 {
    ShuttleGui S(this, eIsSavingToPrefs);
    PopulateOrExchange(S);
@@ -80,8 +101,8 @@ bool ProjectsPrefs::Apply()
    return true;
 }
 
-PrefsPanel *ProjectsPrefsFactory::Create(wxWindow *parent)
+PrefsPanel *ProjectsPrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew ProjectsPrefs(parent);
+   return safenew ProjectsPrefs(parent, winid);
 }

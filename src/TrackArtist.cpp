@@ -21,110 +21,6 @@
  Roger Dannenberg</b> \n
 Oct 2010 \n
 
-This is a brief guide to Audacity redisplay -- it may not be complete. It
-is my attempt to understand the complicated graphics strategy.
-
-One basic idea is that redrawing waveforms is rather slow, so Audacity
-saves waveform images in bitmaps to make redrawing faster. In particular,
-during audio playback (and recording), the vertical time indicator is
-drawn over the waveform about 20 times per second. To avoid unnecessary
-computation, the indicator is erased by copying a column of pixels from
-a bitmap image of the waveform. Notice that this implies a two-stage
-process: first, waveforms are drawn to the bitmp; then, the bitmap
-(or pieces of it) are copied to the screen, perhaps along with other
-graphics.
-
-The bitmap is for the entire track panel, i.e. multiple tracks, and
-includes things like the Gain and Pan slders to the left of the
-waveform images.
-
-The screen update uses a mixture of direct drawing and indirect paint
-events. The "normal" way to update a graphical display is to call
-the Refresh() method when something invalidates the screen. Later, the
-system calls OnPaint(), which the application overrides to (re)draw the
-screen. In wxWidgets, you can also draw directly to the screen without
-calling Refresh() and without waiting for OnPaint() to be called.
-
-I would expect there to be a 2-level invalidation scheme: Some changes
-invalidate the bitmap, forcing a bitmap redraw *and* a screen redraw.
-Other changes merely update the screen using pre-existing bitmaps. In
-Audacity, the "2-level" invalidation works like this: Anything
-that invalidates the bitmap calls TrackPanel::Refresh(), which
-has an eraseBackground parameter. This flag says to redraw the
-bitmap when OnPaint() is called. If eraseBackground is false, the
-existing bitmap can be used for waveform images. Audacity also
-draws directly to the screen to update the time indicator during
-playback. To move the indicator, one column of pixels is drawn to
-the screen to remove the indicator. Then the indicator is drawn at
-a NEW time location.
-
-The track panel consists of many components. The tree of calls that
-update the bitmap looks like this:
-
-\code
-TrackPanel::DrawTracks(), calls
-       TrackArtist::DrawTracks();
-       TrackPanel::DrawEverythingElse();
-               for each track,
-                       TrackPanel::DrawOutside();
-                               TrackPanel::DrawOutsideOfTrack();
-                               TrackPanel::DrawBordersAroundTrack();
-                               TrackPanel::DrawShadow();
-                               TrackInfo::DrawCloseBox();
-                               TrackInfo::DrawTitleBar();
-                               TrackInfo::DrawMinimize();
-                               TrackInfo::DrawBordersWithin();
-                               various TrackInfo sliders and buttons
-                       TrackArtist::DrawVRuler();
-               TrackPanel::DrawZooming();
-                       draws horizontal dashed lines during zoom-drag
-               TrackPanel::HighlightFocusedTrack();
-                       draws yellow highlight on selected track
-               draw snap guidelines if any
-\endcode
-
-After drawing the bitmap and blitting the bitmap to the screen,
-the following calls are (sometimes) made. To keep track of what has
-been drawn on screen over the bitmap images,
-\li \c mLastCursor is the position of the vertical line representing sel0,
-        the selected time position
-\li \c mLastIndicator is the position of the moving vertical line during
-        playback
-
-\code
-TrackPanel::DoDrawIndicator();
-        copy pixel column from bitmap to screen to erase indicator line
-        TrackPanel::DoDrawCursor(); [if mLastCursor == mLastIndicator]
-        TrackPanel::DisplaySelection();
-        AdornedRulerPanel::DrawIndicator(); [not part of TrackPanel graphics]
-        draw indicator on each track
-TrackPanel::DoDrawCursor();
-        draw cursor on each track  [at selectedRegion.t0()]
-        AdornedRulerPanel::DrawCursor(); [not part of TrackPanel graphics]
-        TrackPanel::DisplaySelection();
-\endcode
-
-To move the indicator, TrackPanel::OnTimer() calls the following, using
-a drawing context (DC) for the screen. (Refresh is not called to create
-an OnPaint event. Instead, drawing is direct to the screen.)
-\code
-TrackPanel::DrawIndicator();
-        TrackPanel::DoDrawIndicator();
-\endcode
-
-Notice that TrackPanel::DrawZooming(), TrackPanel::HighlightFocusedTrack(),
-and snap guidelines could be drawn directly to the screen rather than to
-the bitmap, generally eliminating redraw work.
-
-One problem is slider udpates. Sliders are in the left area of the track
-panel. They are not wxWindows like wxSliders, but instead are just drawn
-on the TrackPanel. When slider state changes, *all* tracks do a full
-refresh, including recomputing the backing store. It would make more sense
-to just invalidate the region containing the slider. However, doing that
-would require either incrementally updating the bitmap (not currently done),
-or maintaining the sliders and other track info on the screen and not in
-the bitmap.
-
 In my opinion, the bitmap should contain only the waveform, note, and
 label images along with gray selection highlights. The track info
 (sliders, buttons, title, etc.), track selection highlight, cursor, and
@@ -142,14 +38,17 @@ audio tracks.
 
 *//*******************************************************************/
 
-#include "Audacity.h"
+#include "Audacity.h" // for USE_* macros and HAVE_ALLOCA_H
 #include "TrackArtist.h"
-#include "AudacityApp.h"
+
+#include "Experimental.h"
+
 #include "float_cast.h"
 
 #include <math.h>
 #include <float.h>
 #include <limits>
+#include <wx/utils.h>
 
 #ifdef HAVE_ALLOCA_H
 #include <alloca.h>
@@ -174,19 +73,23 @@ audio tracks.
 #include "BlockFile.h"
 #include "Envelope.h"
 #include "NumberScale.h"
+#include "WaveClip.h"
 #include "WaveTrack.h"
 #include "LabelTrack.h"
 #include "TimeTrack.h"
 #include "Prefs.h"
 #include "prefs/GUISettings.h"
 #include "prefs/SpectrogramSettings.h"
+#include "prefs/TracksPrefs.h"
 #include "prefs/WaveformSettings.h"
 #include "Spectrum.h"
+#include "TrackPanel.h"
 #include "ViewInfo.h"
 #include "widgets/Ruler.h"
 #include "Theme.h"
 #include "AllThemeResources.h"
-#include "Experimental.h"
+#include "TrackPanelDrawingContext.h"
+
 
 #undef PROFILE_WAVEFORM
 #ifdef PROFILE_WAVEFORM
@@ -235,56 +138,30 @@ namespace {
 }
 #endif
 
-#ifdef USE_MIDI
-/*
-const int octaveHeight = 62;
-const int blackPos[5] = { 6, 16, 32, 42, 52 };
-const int whitePos[7] = { 0, 9, 17, 26, 35, 44, 53 };
-const int notePos[12] = { 1, 6, 11, 16, 21, 27,
-                        32, 37, 42, 47, 52, 57 };
-
-// map pitch number to window coordinate of the *top* of the note
-// Note the "free" variable bottom, which is assumed to be a local
-// variable set to the offset of pitch 0 relative to the window
-#define IPITCH_TO_Y(t, p) (bottom - ((p) / 12) * octaveHeight - \
-                          notePos[(p) % 12] - (t)->GetPitchHeight())
-
-// GetBottom is called from a couple of places to compute the hypothetical
-// coordinate of the bottom of pitch 0 in window coordinates. See
-// IPITCH_TO_Y above, which computes coordinates relative to GetBottom()
-// Note the -NOTE_MARGIN, which leaves a little margin to draw notes that
-// are out of bounds. I'm not sure why the -2 is necessary.
-int TrackArtist::GetBottom(NoteTrack *t, const wxRect &rect)
+TrackArtist::TrackArtist( TrackPanel *parent_ )
+   : parent( parent_ )
 {
-   int bottomNote = t->GetBottomNote();
-   int bottom = rect.y + rect.height - 2 - t->GetNoteMargin() +
-          ((bottomNote / 12) * octaveHeight + notePos[bottomNote % 12]);
-   return bottom;
-
-}
-*/
-#endif // USE_MIDI
-
-TrackArtist::TrackArtist()
-{
-   mInsetLeft   = 0;
-   mInsetTop    = 0;
-   mInsetRight  = 0;
-   mInsetBottom = 0;
-
    mdBrange = ENV_DB_RANGE;
    mShowClipping = false;
+   mSampleDisplay = 1;// Stem plots by default.
    UpdatePrefs();
 
-   SetColours();
+   SetColours(0);
    vruler = std::make_unique<Ruler>();
+
+   UpdatePrefs();
 }
 
 TrackArtist::~TrackArtist()
 {
 }
 
-void TrackArtist::SetColours()
+TrackArtist * TrackArtist::Get( TrackPanelDrawingContext &context )
+{
+   return static_cast< TrackArtist* >( context.pUserData );
+}
+
+void TrackArtist::SetColours( int iColorIndex)
 {
    theTheme.SetBrushColour( blankBrush,      clrBlank );
    theTheme.SetBrushColour( unselectedBrush, clrUnselected);
@@ -297,623 +174,702 @@ void TrackArtist::SetColours()
    theTheme.SetPenColour(   blankPen,        clrBlank);
    theTheme.SetPenColour(   unselectedPen,   clrUnselected);
    theTheme.SetPenColour(   selectedPen,     clrSelected);
-   theTheme.SetPenColour(   samplePen,       clrSample);
-   theTheme.SetPenColour(   selsamplePen,    clrSelSample);
    theTheme.SetPenColour(   muteSamplePen,   clrMuteSample);
    theTheme.SetPenColour(   odProgressDonePen, clrProgressDone);
    theTheme.SetPenColour(   odProgressNotYetPen, clrProgressNotYet);
-   theTheme.SetPenColour(   rmsPen,          clrRms);
-   theTheme.SetPenColour(   muteRmsPen,      clrMuteRms);
    theTheme.SetPenColour(   shadowPen,       clrShadow);
    theTheme.SetPenColour(   clippedPen,      clrClipped);
    theTheme.SetPenColour(   muteClippedPen,  clrMuteClipped);
    theTheme.SetPenColour(   blankSelectedPen,clrBlankSelected);
-}
 
-void TrackArtist::SetInset(int left, int top, int right, int bottom)
-{
-   mInsetLeft   = left;
-   mInsetTop    = top;
-   mInsetRight  = right;
-   mInsetBottom = bottom;
-}
+   theTheme.SetPenColour(   selsamplePen,    clrSelSample);
+   theTheme.SetPenColour(   muteRmsPen,      clrMuteRms);
 
-void TrackArtist::DrawTracks(TrackList * tracks,
-                             Track * start,
-                             wxDC & dc,
-                             wxRegion & reg,
-                             wxRect & rect,
-                             wxRect & clip,
-                             const SelectedRegion &selectedRegion,
-                             const ZoomInfo &zoomInfo,
-                             bool drawEnvelope,
-                             bool bigPoints,
-                             bool drawSliders)
-{
-   wxRect trackRect = rect;
-   wxRect stereoTrackRect;
-   TrackListIterator iter(tracks);
-   Track *t;
-
-   bool hasSolo = false;
-   for (t = iter.First(); t; t = iter.Next()) {
-      if (t->GetSolo()) {
-         hasSolo = true;
-         break;
-      }
-   }
-
-#if defined(DEBUG_CLIENT_AREA)
-   // Change the +0 to +1 or +2 to see the bounding box
-   mInsetLeft = 1+0; mInsetTop = 5+0; mInsetRight = 6+0; mInsetBottom = 2+0;
-
-   // This just shows what the passed in rectangles enclose
-   dc.SetPen(wxColour(*wxGREEN));
-   dc.SetBrush(*wxTRANSPARENT_BRUSH);
-   dc.DrawRectangle(rect);
-   dc.SetPen(wxColour(*wxBLUE));
-   dc.SetBrush(*wxTRANSPARENT_BRUSH);
-   dc.DrawRectangle(clip);
-#endif
-
-   gPrefs->Read(wxT("/GUI/ShowTrackNameInWaveform"), &mbShowTrackNameInWaveform, false);
-
-   t = iter.StartWith(start);
-   while (t) {
-      trackRect.y = t->GetY() - zoomInfo.vpos;
-      trackRect.height = t->GetHeight();
-
-      if (trackRect.y > clip.GetBottom() && !t->GetLinked()) {
-         break;
-      }
-
-#if defined(DEBUG_CLIENT_AREA)
-      // Filled rectangle to show the interior of the client area
-      wxRect zr = trackRect;
-      zr.x+=1; zr.y+=5; zr.width-=7; zr.height-=7;
-      dc.SetPen(*wxCYAN_PEN);
-      dc.SetBrush(*wxRED_BRUSH);
-      dc.DrawRectangle(zr);
-#endif
-
-      stereoTrackRect = trackRect;
-
-      // For various reasons, the code will break if we display one
-      // of a stereo pair of tracks but not the other - for example,
-      // if you try to edit the envelope of one track when its linked
-      // pair is off the screen, then it won't be able to edit the
-      // offscreen envelope.  So we compute the rect of the track and
-      // its linked partner, and see if any part of that rect is on-screen.
-      // If so, we draw both.  Otherwise, we can safely draw neither.
-
-      Track *link = t->GetLink();
-      if (link) {
-         if (t->GetLinked()) {
-            // If we're the first track
-            stereoTrackRect.height += link->GetHeight();
-         }
-         else {
-            // We're the second of two
-            stereoTrackRect.y -= link->GetHeight();
-            stereoTrackRect.height += link->GetHeight();
-         }
-      }
-#ifdef EXPERIMENTAL_OUTPUT_DISPLAY
-      if(MONO_WAVE_PAN(t)){
-         stereoTrackRect.height += t->GetHeight(true);
-         t->SetVirtualStereo(false);
-      }
-#endif
-
-      if (stereoTrackRect.Intersects(clip) && reg.Contains(stereoTrackRect)) {
-         wxRect rr = trackRect;
-         rr.x += mInsetLeft;
-         rr.y += mInsetTop;
-         rr.width -= (mInsetLeft + mInsetRight);
-         rr.height -= (mInsetTop + mInsetBottom);
-         DrawTrack(t, dc, rr,
-                   selectedRegion, zoomInfo,
-                   drawEnvelope, bigPoints, drawSliders, hasSolo);
-      }
-
-#ifdef EXPERIMENTAL_OUTPUT_DISPLAY
-      if(MONO_WAVE_PAN(t)){
-         trackRect.y = t->GetY(true) - zoomInfo.vpos;
-         trackRect.height = t->GetHeight(true);
-         stereoTrackRect = trackRect;
-         stereoTrackRect.y -= t->GetHeight();
-         stereoTrackRect.height += t->GetHeight();
-         t->SetVirtualStereo(true);
-         if (stereoTrackRect.Intersects(clip) && reg.Contains(stereoTrackRect)) {
-            wxRect rr = trackRect;
-            rr.x += mInsetLeft;
-            rr.y += mInsetTop;
-            rr.width -= (mInsetLeft + mInsetRight);
-            rr.height -= (mInsetTop + mInsetBottom);
-            DrawTrack(t, dc, rr, zoomInfo,
-                      drawEnvelope, bigPoints, drawSliders, hasSolo);
-         }
-      }
-#endif
-
-      t = iter.Next();
-   }
-}
-
-void TrackArtist::DrawTrack(const Track * t,
-                            wxDC & dc,
-                            const wxRect & rect,
-                            const SelectedRegion &selectedRegion,
-                            const ZoomInfo &zoomInfo,
-                            bool drawEnvelope,
-                            bool bigPoints,
-                            bool drawSliders,
-                            bool hasSolo)
-{
-   switch (t->GetKind()) {
-   case Track::Wave:
+   switch( iColorIndex %4 )
    {
-      const WaveTrack* wt = static_cast<const WaveTrack*>(t);
-      for (const auto &clip : wt->GetClips()) {
-         clip->ClearDisplayRect();
-      }
-
-      bool muted = (hasSolo || t->GetMute()) && !t->GetSolo();
-
-#if defined(__WXMAC__)
-      wxAntialiasMode aamode = dc.GetGraphicsContext()->GetAntialiasMode();
-      dc.GetGraphicsContext()->SetAntialiasMode(wxANTIALIAS_NONE);
-#endif
-
-      switch (wt->GetDisplay()) {
-      case WaveTrack::Waveform:
-         DrawWaveform(wt, dc, rect, selectedRegion, zoomInfo,
-                      drawEnvelope,  bigPoints, drawSliders, muted);
-         break;
-      case WaveTrack::Spectrum:
-         DrawSpectrum(wt, dc, rect, selectedRegion, zoomInfo);
-         break;
       default:
-         wxASSERT(false);
-      }
+      case 0:
+         theTheme.SetPenColour(   samplePen,       clrSample);
+         theTheme.SetPenColour(   rmsPen,          clrRms);
+         break;
+      case 1: // RED
+         samplePen.SetColour( wxColor( 160,10,10 ) );
+         rmsPen.SetColour( wxColor( 230,80,80 ) );
+         break;
+      case 2: // GREEN
+         samplePen.SetColour( wxColor( 35,110,35 ) );
+         rmsPen.SetColour( wxColor( 75,200,75 ) );
+         break;
+      case 3: //BLACK
+         samplePen.SetColour( wxColor( 0,0,0 ) );
+         rmsPen.SetColour( wxColor( 100,100,100 ) );
+         break;
 
-#if defined(__WXMAC__)
-      dc.GetGraphicsContext()->SetAntialiasMode(aamode);
-#endif
-
-      if (mbShowTrackNameInWaveform &&
-          // Exclude right channel of stereo track 
-          !(!wt->GetLinked() && wt->GetLink())) {
-         wxFont labelFont(12, wxSWISS, wxNORMAL, wxNORMAL);
-         dc.SetFont(labelFont);
-         dc.SetTextForeground(wxColour(255, 255, 0));
-         dc.DrawText (wt->GetName(), rect.x+10, rect.y);  // move right 10 pixels to avoid overwriting <- symbol
-      }
-      break;              // case Wave
-   }
-   #ifdef USE_MIDI
-   case Track::Note:
-   {
-      bool muted = (hasSolo || t->GetMute()) && !t->GetSolo();
-      DrawNoteTrack((NoteTrack *)t, dc, rect, selectedRegion, zoomInfo, muted);
-      break;
-   }
-   #endif // USE_MIDI
-   case Track::Label:
-      DrawLabelTrack((LabelTrack *)t, dc, rect, selectedRegion, zoomInfo);
-      break;
-   case Track::Time:
-      DrawTimeTrack((TimeTrack *)t, dc, rect, zoomInfo);
-      break;
    }
 }
 
-void TrackArtist::DrawVRuler(const Track *t, wxDC * dc, wxRect & rect)
+void TrackArt::DrawTracks(TrackPanelDrawingContext &context,
+                             const TrackList * tracks,
+                             const wxRegion & reg,
+                             const wxRect & clip)
 {
-   int kind = t->GetKind();
+   // Fix the horizontal extent; will later change only the vertical extent.
+   const auto artist = TrackArtist::Get( context );
+   const auto leftOffset = artist->leftOffset;
+   wxRect teamRect{
+      clip.x + leftOffset, 0, clip.width - (leftOffset + kRightMargin), 0
+   };
+
+   const auto &zoomInfo = *artist->pZoomInfo;
+
+   for(auto leader : tracks->Leaders()) {
+      auto group = TrackList::Channels( leader );
+      leader = leader->SubstitutePendingChangedTrack().get();
+
+      teamRect.y = leader->GetY() - zoomInfo.vpos;
+      teamRect.height = group.sum( [&] (const Track *channel) {
+         channel = channel->SubstitutePendingChangedTrack().get();
+         return channel->GetHeight();
+      });
+
+      if (teamRect.GetBottom() < clip.GetTop())
+         continue;
+      else if (teamRect.GetTop() > clip.GetBottom())
+         break;
+
+      for (auto t : group) {
+         // For various reasons, the code will break if we display one
+         // of a stereo pair of tracks but not the other - for example,
+         // if you try to edit the envelope of one track when its linked
+         // pair is off the screen, then it won't be able to edit the
+         // offscreen envelope.  So we compute the rect of the track and
+         // its linked partner, and see if any part of that rect is on-screen.
+         // If so, we draw both.  Otherwise, we can safely draw neither.
+
+         if (teamRect.Intersects(clip) && reg.Contains(teamRect)) {
+            t = t->SubstitutePendingChangedTrack().get();
+            wxRect trackRect {
+               teamRect.x,
+               t->GetY() - zoomInfo.vpos + kTopMargin,
+               teamRect.width,
+               t->GetHeight() - (kTopMargin + kBottomMargin)
+            };
+            DrawTrack( context, t, trackRect );
+         }
+      }
+   }
+}
+
+void TrackArt::DrawTrackNames(TrackPanelDrawingContext &context,
+                              const TrackList * tracks,
+                              const wxRegion & reg,
+                              const wxRect & clip)
+{
+   // Fix the horizontal extent; will later change only the vertical extent.
+   const auto artist = TrackArtist::Get( context );
+   const auto leftOffset = artist->leftOffset;
+   wxRect teamRect{
+      clip.x + leftOffset, 0, clip.width - (leftOffset + kRightMargin), 0
+   };
+
+   const auto &zoomInfo = *artist->pZoomInfo;
+   if( !artist->mbShowTrackNameInTrack )
+      return;
+
+   for(auto leader : tracks->Leaders()) {
+      auto group = TrackList::Channels( leader );
+      leader = leader->SubstitutePendingChangedTrack().get();
+
+      teamRect.y = leader->GetY() - zoomInfo.vpos;
+      teamRect.height = group.sum( [&] (const Track *channel) {
+         channel = channel->SubstitutePendingChangedTrack().get();
+         return channel->GetHeight();
+      });
+
+      if (teamRect.GetBottom() < clip.GetTop())
+         continue;
+      else if (teamRect.GetTop() > clip.GetBottom())
+         break;
+
+      for (auto t : group) {
+         if (teamRect.Intersects(clip) && reg.Contains(teamRect)) {
+            t = t->SubstitutePendingChangedTrack().get();
+            wxRect trackRect {
+               teamRect.x,
+               t->GetY() - zoomInfo.vpos + kTopMargin,
+               teamRect.width,
+               teamRect.height
+            };
+            DrawTrackName( context, t, trackRect );
+         }
+      }
+   }
+}
+
+// Draws the track name on the track, if it is needed.
+void TrackArt::DrawTrackName( TrackPanelDrawingContext &context, const Track * t, const wxRect & rect )
+{
+   auto name = t->GetName();
+   if( name.IsEmpty())
+      return;
+   if( !t->IsLeader())
+      return;
+   auto &dc = context.dc;
+   wxBrush Brush;
+   wxCoord x,y;
+   wxFont labelFont(12, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
+   dc.SetFont(labelFont);
+   dc.GetTextExtent( t->GetName(), &x, &y );
+
+   // Logic for name background translucency (aka 'shields')
+   // Tracks less than kOpaqueHeight high will have opaque shields.
+   // Tracks more than kTranslucentHeight will have maximum translucency for shields.
+   const int kOpaqueHeight = 44;
+   const int kTranslucentHeight = 124;
+   int h = rect.GetHeight();
+   // f codes the opacity as a number between 0.0 and 1.0
+   float f= wxClip((h -kOpaqueHeight)/(float)(kTranslucentHeight-kOpaqueHeight),0.0,1.0);
+   // kOpaque is the shield's alpha for tracks that are not tall
+   // kTranslucent is the shield's alpha for tracks that are tall.
+   const int kOpaque = 255;
+   const int kTranslucent = 140;
+   // 0.0 maps to full opacity, 1.0 maps to full translucency.
+   int opacity = 255 - (255-140)*f;
+
+#ifdef __WXMAC__
+   // Mac dc is a graphics dc already.
+   AColor::UseThemeColour( &dc, clrTrackInfoSelected, clrTrackPanelText, opacity );
+   dc.DrawRoundedRectangle( rect.x+7, rect.y+1,  x+16, y+4, 8.0 );
+#else
+   // This little dance with wxImage in order to draw to a graphic dc
+   // which we can then paste as a translucent bitmap onto the real dc.
+   wxImage image( x+18, y+6 );
+   image.InitAlpha();
+   unsigned char *alpha=image.GetAlpha();
+   memset(alpha, wxIMAGE_ALPHA_TRANSPARENT, image.GetWidth()*image.GetHeight());
+    
+   wxGraphicsContext &gc=*wxGraphicsContext::Create(image);
+   // This is to a gc, not a dc.
+   AColor::UseThemeColour( &gc, clrTrackInfoSelected, clrTrackPanelText, opacity );
+   // Draw at 1,1, not at 0,0 to avoid clipping of the antialiasing.
+   gc.DrawRoundedRectangle( 1, 1,  x+16, y+4, 8.0 );
+   // delete the gc so as to free and so update the wxImage.
+   delete &gc;
+   wxBitmap bitmap( image );
+   dc.DrawBitmap( bitmap, rect.x+6, rect.y);
+#endif
+   dc.SetTextForeground(theTheme.Colour( clrTrackPanelText ));
+   dc.DrawText (t->GetName(), rect.x+15, rect.y+3);  // move right 15 pixels to avoid overwriting <- symbol
+}
+
+void TrackArt::DrawTrack(TrackPanelDrawingContext &context,
+                            const Track * t,
+                            const wxRect & rect)
+{
+   const auto artist = TrackArtist::Get( context );
+
+   t->TypeSwitch(
+      [&](const WaveTrack *wt) {
+         for (const auto &clip : wt->GetClips()) {
+            clip->ClearDisplayRect();
+         }
+
+         const auto hasSolo = artist->hasSolo;
+         bool muted = (hasSolo || wt->GetMute()) &&
+            !wt->GetSolo();
+
+   #if defined(__WXMAC__)
+         const auto &dc = context.dc;
+         wxAntialiasMode aamode = dc.GetGraphicsContext()->GetAntialiasMode();
+         dc.GetGraphicsContext()->SetAntialiasMode(wxANTIALIAS_NONE);
+   #endif
+
+         switch (wt->GetDisplay()) {
+         case WaveTrack::Waveform:
+            DrawWaveform(context, wt, rect, muted);
+            break;
+         case WaveTrack::Spectrum:
+            DrawSpectrum( context, wt, rect );
+            break;
+         default:
+            wxASSERT(false);
+         }
+
+   #if defined(__WXMAC__)
+         dc.GetGraphicsContext()->SetAntialiasMode(aamode);
+   #endif
+      },
+   #ifdef USE_MIDI
+      [&](const NoteTrack *nt) {
+         bool muted = false;
+#ifdef EXPERIMENTAL_MIDI_OUT
+//       const auto artist = TrackArtist::Get( context );
+         const auto hasSolo = artist->hasSolo;
+         muted = (hasSolo || nt->GetMute()) && !nt->GetSolo();
+#endif
+         DrawNoteTrack( context, nt, rect, muted );
+      },
+   #endif // USE_MIDI
+      [&](const LabelTrack *lt) {
+         lt->Draw( context, rect );
+      },
+      [&](const TimeTrack *tt) {
+         DrawTimeTrack( context, tt, rect );
+      }
+   );
+}
+
+void TrackArt::DrawVRuler
+( TrackPanelDrawingContext &context, const Track *t, const wxRect & rect_,
+  bool bSelected )
+{
+   auto rect = rect_;
+   --rect.width;
+
+   auto dc = &context.dc;
+   bool highlight = false;
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+   highlight = rect.Contains(context.lastState.GetPosition());
+#endif
+
+
+   // Paint the background
+   AColor::MediumTrackInfo(dc, bSelected);
+   dc->DrawRectangle( rect );
+
+   // Stroke the left border
+   dc->SetPen(*wxBLACK_PEN);
+   {
+      const auto left = rect.GetLeft();
+      AColor::Line( *dc, left, rect.GetTop(), left, rect.GetBottom() );
+   }
 
    // Label and Time tracks do not have a vruler
    // But give it a beveled area
-   if (kind == Track::Label) {
-      wxRect bev = rect;
-      bev.Inflate(-1, 0);
-      bev.width += 1;
-      AColor::BevelTrackInfo(*dc, true, bev);
+   t->TypeSwitch(
+      [&](const LabelTrack *) {
+         wxRect bev = rect;
+         bev.Inflate(-1, 0);
+         bev.width += 1;
+         AColor::BevelTrackInfo(*dc, true, bev);
+      },
 
-      return;
-   }
+      [&](const TimeTrack *) {
+         wxRect bev = rect;
+         bev.Inflate(-1, 0);
+         bev.width += 1;
+         AColor::BevelTrackInfo(*dc, true, bev);
 
-   // Time tracks
-   if (kind == Track::Time) {
-      wxRect bev = rect;
-      bev.Inflate(-1, 0);
-      bev.width += 1;
-      AColor::BevelTrackInfo(*dc, true, bev);
+         // Right align the ruler
+         wxRect rr = rect;
+         rr.width--;
+         if (t->vrulerSize.GetWidth() < rect.GetWidth()) {
+            int adj = rr.GetWidth() - t->vrulerSize.GetWidth();
+            rr.x += adj;
+            rr.width -= adj;
+         }
 
-      // Right align the ruler
-      wxRect rr = rect;
-      rr.width--;
-      if (t->vrulerSize.GetWidth() < rect.GetWidth()) {
-         int adj = rr.GetWidth() - t->vrulerSize.GetWidth();
-         rr.x += adj;
-         rr.width -= adj;
+         const auto artist = TrackArtist::Get( context );
+         artist->UpdateVRuler(t, rr);
+
+         const auto &vruler = artist->vruler;
+         vruler->SetTickColour( theTheme.Colour( clrTrackPanelText ));
+         vruler->Draw(*dc);
+      },
+
+      [&](const WaveTrack *) {
+         // All waves have a ruler in the info panel
+         // The ruler needs a bevelled surround.
+         wxRect bev = rect;
+         bev.Inflate(-1, 0);
+         bev.width += 1;
+         AColor::BevelTrackInfo(*dc, true, bev, highlight);
+
+         // Right align the ruler
+         wxRect rr = rect;
+         rr.width--;
+         if (t->vrulerSize.GetWidth() < rect.GetWidth()) {
+            int adj = rr.GetWidth() - t->vrulerSize.GetWidth();
+            rr.x += adj;
+            rr.width -= adj;
+         }
+
+         const auto artist = TrackArtist::Get( context );
+         artist->UpdateVRuler(t, rr);
+
+         const auto &vruler = artist->vruler;
+         vruler->SetTickColour( theTheme.Colour( clrTrackPanelText ));
+         vruler->Draw(*dc);
       }
-
-      UpdateVRuler(t, rr);
-
-      vruler->Draw(*dc);
-
-      return;
-   }
-
-   // All waves have a ruler in the info panel
-   // The ruler needs a bevelled surround.
-   if (kind == Track::Wave) {
-      wxRect bev = rect;
-      bev.Inflate(-1, 0);
-      bev.width += 1;
-      AColor::BevelTrackInfo(*dc, true, bev);
-
-      // Right align the ruler
-      wxRect rr = rect;
-      rr.width--;
-      if (t->vrulerSize.GetWidth() < rect.GetWidth()) {
-         int adj = rr.GetWidth() - t->vrulerSize.GetWidth();
-         rr.x += adj;
-         rr.width -= adj;
-      }
-
-      UpdateVRuler(t, rr);
-
-      vruler->Draw(*dc);
-
-      return;
-   }
 
 #ifdef USE_MIDI
-   // The note track draws a vertical keyboard to label pitches
-   if (kind == Track::Note) {
-      UpdateVRuler(t, rect);
+      ,
+      [&](const NoteTrack *track) {
+      // The note track draws a vertical keyboard to label pitches
+         const auto artist = TrackArtist::Get( context );
+         artist->UpdateVRuler(t, rect);
 
-      dc->SetPen(*wxTRANSPARENT_PEN);
-      dc->SetBrush(*wxWHITE_BRUSH);
-      wxRect bev = rect;
-      bev.x++;
-      bev.width--;
-      dc->DrawRectangle(bev);
+         dc->SetPen(highlight ? AColor::uglyPen : *wxTRANSPARENT_PEN);
+         dc->SetBrush(*wxWHITE_BRUSH);
+         wxRect bev = rect;
+         bev.x++;
+         bev.width--;
+         dc->DrawRectangle(bev);
 
-      rect.y += 1;
-      rect.height -= 1;
+         rect.y += 1;
+         rect.height -= 1;
 
-      //int bottom = GetBottom((NoteTrack *) t, rect);
-      const NoteTrack *track = (NoteTrack *) t;
-      track->PrepareIPitchToY(rect);
+         NoteTrackDisplayData data = NoteTrackDisplayData(track, rect);
 
-      wxPen hilitePen;
-      hilitePen.SetColour(120, 120, 120);
-      wxBrush blackKeyBrush;
-      blackKeyBrush.SetColour(70, 70, 70);
+         wxPen hilitePen;
+         hilitePen.SetColour(120, 120, 120);
+         wxBrush blackKeyBrush;
+         blackKeyBrush.SetColour(70, 70, 70);
 
-      dc->SetBrush(blackKeyBrush);
+         dc->SetBrush(blackKeyBrush);
 
-      int fontSize = 10;
-#ifdef __WXMSW__
-      fontSize = 8;
-#endif
+         int fontSize = 10;
+   #ifdef __WXMSW__
+         fontSize = 8;
+   #endif
 
-      wxFont labelFont(fontSize, wxSWISS, wxNORMAL, wxNORMAL);
-      dc->SetFont(labelFont);
+         wxFont labelFont(fontSize, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
+         dc->SetFont(labelFont);
 
-      int octave = 0;
-      int obottom = track->GetOctaveBottom(octave);
-      int marg = track->GetNoteMargin();
-      //IPITCH_TO_Y(octave * 12) + PITCH_HEIGHT + 1;
-      while (obottom >= rect.y) {
+         int octave = 0;
+         int obottom = data.GetOctaveBottom(octave);
+         int marg = data.GetNoteMargin();
+
+         while (obottom >= rect.y) {
+            dc->SetPen(*wxBLACK_PEN);
+            for (int white = 0; white < 7; white++) {
+               int pos = data.GetWhitePos(white);
+               if (obottom - pos > rect.y + marg + 1 &&
+                   // don't draw too close to margin line -- it's annoying
+                   obottom - pos < rect.y + rect.height - marg - 3)
+                  AColor::Line(*dc, rect.x, obottom - pos,
+                               rect.x + rect.width, obottom - pos);
+            }
+            wxRect br = rect;
+            br.height = data.GetPitchHeight(1);
+            br.x++;
+            br.width = 17;
+            for (int black = 0; black < 5; black++) {
+               br.y = obottom - data.GetBlackPos(black);
+               if (br.y > rect.y + marg - 2 && br.y + br.height < rect.y + rect.height - marg) {
+                  dc->SetPen(hilitePen);
+                  dc->DrawRectangle(br);
+                  dc->SetPen(*wxBLACK_PEN);
+                  AColor::Line(*dc,
+                               br.x + 1, br.y + br.height - 1,
+                               br.x + br.width - 1, br.y + br.height - 1);
+                  AColor::Line(*dc,
+                               br.x + br.width - 1, br.y + 1,
+                               br.x + br.width - 1, br.y + br.height - 1);
+               }
+            }
+
+            if (octave >= 1 && octave <= 10) {
+               wxString s;
+               // ISO standard: A440 is in the 4th octave, denoted
+               // A4 <- the "4" should be a subscript.
+               s.Printf(wxT("C%d"), octave - 1);
+               wxCoord width, height;
+               dc->GetTextExtent(s, &width, &height);
+               if (obottom - height + 4 > rect.y &&
+                   obottom + 4 < rect.y + rect.height) {
+                  dc->SetTextForeground(wxColour(60, 60, 255));
+                  dc->DrawText(s, rect.x + rect.width - width,
+                               obottom - height + 2);
+               }
+            }
+            obottom = data.GetOctaveBottom(++octave);
+         }
+         // draw lines delineating the out-of-bounds margins
          dc->SetPen(*wxBLACK_PEN);
-         for (int white = 0; white < 7; white++) {
-            int pos = track->GetWhitePos(white);
-            if (obottom - pos > rect.y + marg + 1 &&
-                // don't draw too close to margin line -- it's annoying
-                obottom - pos < rect.y + rect.height - marg - 3)
-               AColor::Line(*dc, rect.x, obottom - pos,
-                            rect.x + rect.width, obottom - pos);
-         }
-         wxRect br = rect;
-         br.height = track->GetPitchHeight();
-         br.x++;
-         br.width = 17;
-         for (int black = 0; black < 5; black++) {
-            br.y = obottom - track->GetBlackPos(black);
-            if (br.y > rect.y + marg - 2 && br.y + br.height < rect.y + rect.height - marg) {
-               dc->SetPen(hilitePen);
-               dc->DrawRectangle(br);
-               dc->SetPen(*wxBLACK_PEN);
-               AColor::Line(*dc,
-                            br.x + 1, br.y + br.height - 1,
-                            br.x + br.width - 1, br.y + br.height - 1);
-               AColor::Line(*dc,
-                            br.x + br.width - 1, br.y + 1,
-                            br.x + br.width - 1, br.y + br.height - 1);
-            }
-         }
+         // you would think the -1 offset here should be -2 to match the
+         // adjustment to rect.y (see above), but -1 produces correct output
+         AColor::Line(*dc, rect.x, rect.y + marg - 1, rect.x + rect.width, rect.y + marg - 1);
+         // since the margin gives us the bottom of the line,
+         // the extra -1 gets us to the top
+         AColor::Line(*dc, rect.x, rect.y + rect.height - marg - 1,
+                           rect.x + rect.width, rect.y + rect.height - marg - 1);
 
-         if (octave >= 1 && octave <= 10) {
-            wxString s;
-            // ISO standard: A440 is in the 4th octave, denoted
-            // A4 <- the "4" should be a subscript.
-            s.Printf(wxT("C%d"), octave - 1);
-            wxCoord width, height;
-            dc->GetTextExtent(s, &width, &height);
-            if (obottom - height + 4 > rect.y &&
-                obottom + 4 < rect.y + rect.height) {
-               dc->SetTextForeground(wxColour(60, 60, 255));
-               dc->DrawText(s, rect.x + rect.width - width,
-                            obottom - height + 2);
-            }
-         }
-         obottom = track->GetOctaveBottom(++octave);
       }
-      // draw lines delineating the out-of-bounds margins
-      dc->SetPen(*wxBLACK_PEN);
-      // you would think the -1 offset here should be -2 to match the
-      // adjustment to rect.y (see above), but -1 produces correct output
-      AColor::Line(*dc, rect.x, rect.y + marg - 1, rect.x + rect.width, rect.y + marg - 1);
-      // since the margin gives us the bottom of the line,
-      // the extra -1 gets us to the top
-      AColor::Line(*dc, rect.x, rect.y + rect.height - marg - 1,
-                        rect.x + rect.width, rect.y + rect.height - marg - 1);
-
-   }
 #endif // USE_MIDI
-
+   );
 }
 
-void TrackArtist::UpdateVRuler(const Track *t, wxRect & rect)
+void TrackArtist::UpdateVRuler(const Track *t, const wxRect & rect)
 {
-   // Label tracks do not have a vruler
-   if (t->GetKind() == Track::Label) {
-      return;
-   }
+   auto update = t->TypeSwitch<bool>(
+      [] (const LabelTrack *) {
+      // Label tracks do not have a vruler
+         return false;
+      },
 
-   // Time tracks
-   if (t->GetKind() == Track::Time) {
-      const TimeTrack *tt = (TimeTrack *)t;
-      float min, max;
-      min = tt->GetRangeLower() * 100.0;
-      max = tt->GetRangeUpper() * 100.0;
+      [&](const TimeTrack *tt) {
+         float min, max;
+         min = tt->GetRangeLower() * 100.0;
+         max = tt->GetRangeUpper() * 100.0;
 
-      vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height-1);
-      vruler->SetOrientation(wxVERTICAL);
-      vruler->SetRange(max, min);
-      vruler->SetFormat((tt->GetDisplayLog()) ? Ruler::RealLogFormat : Ruler::RealFormat);
-      vruler->SetUnits(wxT(""));
-      vruler->SetLabelEdges(false);
-      vruler->SetLog(tt->GetDisplayLog());
-   }
+         vruler->SetDbMirrorValue( 0.0 );
+         vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height-1);
+         vruler->SetOrientation(wxVERTICAL);
+         vruler->SetRange(max, min);
+         vruler->SetFormat((tt->GetDisplayLog()) ? Ruler::RealLogFormat : Ruler::RealFormat);
+         vruler->SetUnits(wxT(""));
+         vruler->SetLabelEdges(false);
+         vruler->SetLog(tt->GetDisplayLog());
+         return true;
+      },
 
-   // All waves have a ruler in the info panel
-   // The ruler needs a bevelled surround.
-   if (t->GetKind() == Track::Wave) {
-      const WaveTrack *wt = static_cast<const WaveTrack*>(t);
-      const float dBRange =
-         wt->GetWaveformSettings().dBRange;
+      [&](const WaveTrack *wt) {
+         // All waves have a ruler in the info panel
+         // The ruler needs a bevelled surround.
+         const float dBRange =
+            wt->GetWaveformSettings().dBRange;
 
-      const int display = wt->GetDisplay();
+         const int display = wt->GetDisplay();
 
-      if (display == WaveTrack::Waveform) {
-         WaveformSettings::ScaleType scaleType =
-            wt->GetWaveformSettings().scaleType;
+         if (display == WaveTrack::Waveform) {
+            WaveformSettings::ScaleType scaleType =
+               wt->GetWaveformSettings().scaleType;
 
-         if (scaleType == WaveformSettings::stLinear) {
-            // Waveform
+            if (scaleType == WaveformSettings::stLinear) {
+               // Waveform
 
-            float min, max;
-            wt->GetDisplayBounds(&min, &max);
-            if (wt->GetLastScaleType() != scaleType &&
-                wt->GetLastScaleType() != -1)
-            {
-               // do a translation into the linear space
-               wt->SetLastScaleType();
-               wt->SetLastdBRange();
-               float sign = (min >= 0 ? 1 : -1);
-               if (min != 0.) {
-                  min = DB_TO_LINEAR(fabs(min) * dBRange - dBRange);
-                  if (min < 0.0)
-                     min = 0.0;
-                  min *= sign;
-               }
-               sign = (max >= 0 ? 1 : -1);
+               float min, max;
+               wt->GetDisplayBounds(&min, &max);
+               if (wt->GetLastScaleType() != scaleType &&
+                   wt->GetLastScaleType() != -1)
+               {
+                  // do a translation into the linear space
+                  wt->SetLastScaleType();
+                  wt->SetLastdBRange();
+                  float sign = (min >= 0 ? 1 : -1);
+                  if (min != 0.) {
+                     min = DB_TO_LINEAR(fabs(min) * dBRange - dBRange);
+                     if (min < 0.0)
+                        min = 0.0;
+                     min *= sign;
+                  }
+                  sign = (max >= 0 ? 1 : -1);
 
-               if (max != 0.) {
-                  max = DB_TO_LINEAR(fabs(max) * dBRange - dBRange);
-                  if (max < 0.0)
-                     max = 0.0;
-                  max *= sign;
-               }
-               wt->SetDisplayBounds(min, max);
-            }
-
-            vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height - 1);
-            vruler->SetOrientation(wxVERTICAL);
-            vruler->SetRange(max, min);
-            vruler->SetFormat(Ruler::RealFormat);
-            vruler->SetUnits(wxT(""));
-            vruler->SetLabelEdges(false);
-            vruler->SetLog(false);
-         }
-         else {
-            wxASSERT(scaleType == WaveformSettings::stLogarithmic);
-            scaleType = WaveformSettings::stLogarithmic;
-
-            vruler->SetUnits(wxT(""));
-
-            float min, max;
-            wt->GetDisplayBounds(&min, &max);
-            float lastdBRange;
-
-            if (wt->GetLastScaleType() != scaleType &&
-                wt->GetLastScaleType() != -1)
-            {
-               // do a translation into the dB space
-               wt->SetLastScaleType();
-               wt->SetLastdBRange();
-               float sign = (min >= 0 ? 1 : -1);
-               if (min != 0.) {
-                  min = (LINEAR_TO_DB(fabs(min)) + dBRange) / dBRange;
-                  if (min < 0.0)
-                     min = 0.0;
-                  min *= sign;
-               }
-               sign = (max >= 0 ? 1 : -1);
-
-               if (max != 0.) {
-                  max = (LINEAR_TO_DB(fabs(max)) + dBRange) / dBRange;
-                  if (max < 0.0)
-                     max = 0.0;
-                  max *= sign;
-               }
-               wt->SetDisplayBounds(min, max);
-            }
-            else if (dBRange != (lastdBRange = wt->GetLastdBRange())) {
-               wt->SetLastdBRange();
-               // Remap the max of the scale
-               const float sign = (max >= 0 ? 1 : -1);
-               float newMax = max;
-               if (max != 0.) {
-
-// Ugh, duplicating from TrackPanel.cpp
-#define ZOOMLIMIT 0.001f
-
-                  const float extreme = LINEAR_TO_DB(2);
-                  // recover dB value of max
-                  const float dB = std::min(extreme, (float(fabs(max)) * lastdBRange - lastdBRange));
-                  // find NEW scale position, but old max may get trimmed if the db limit rises
-                  // Don't trim it to zero though, but leave max and limit distinct
-                  newMax = sign * std::max(ZOOMLIMIT, (dBRange + dB) / dBRange);
-                  // Adjust the min of the scale if we can,
-                  // so the db Limit remains where it was on screen, but don't violate extremes
-                  if (min != 0.)
-                     min = std::max(-extreme, newMax * min / max);
+                  if (max != 0.) {
+                     max = DB_TO_LINEAR(fabs(max) * dBRange - dBRange);
+                     if (max < 0.0)
+                        max = 0.0;
+                     max *= sign;
+                  }
+                  wt->SetDisplayBounds(min, max);
                }
 
-               wt->SetDisplayBounds(min, newMax);
-            }
-
-            if (max > 0) {
-               int top = 0;
-               float topval = 0;
-               int bot = rect.height;
-               float botval = -dBRange;
-
-               if (min < 0) {
-                  bot = top + (int)((max / (max - min))*(bot - top));
-                  min = 0;
-               }
-
-               if (max > 1) {
-                  top += (int)((max - 1) / (max - min) * (bot - top));
-                  max = 1;
-               }
-
-               if (max < 1 && max > 0)
-                  topval = -((1 - max) * dBRange);
-
-               if (min > 0) {
-                  botval = -((1 - min) * dBRange);
-               }
-
-               vruler->SetBounds(rect.x, rect.y + top, rect.x + rect.width, rect.y + bot - 1);
+               vruler->SetDbMirrorValue( 0.0 );
+               vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height - 1);
                vruler->SetOrientation(wxVERTICAL);
-               vruler->SetRange(topval, botval);
-            }
-            else
-               vruler->SetBounds(0.0, 0.0, 0.0, 0.0); // A.C.H I couldn't find a way to just disable it?
-            vruler->SetFormat(Ruler::RealLogFormat);
-            vruler->SetLabelEdges(true);
-            vruler->SetLog(false);
-         }
-      }
-      else {
-         wxASSERT(display == WaveTrack::Spectrum);
-         const SpectrogramSettings &settings = wt->GetSpectrogramSettings();
-         float minFreq, maxFreq;
-         wt->GetSpectrumBounds(&minFreq, &maxFreq);
-
-         switch (settings.scaleType) {
-         default:
-            wxASSERT(false);
-         case SpectrogramSettings::stLinear:
-         {
-            // Spectrum
-
-            if (rect.height < 60)
-               return;
-
-            /*
-            draw the ruler
-            we will use Hz if maxFreq is < 2000, otherwise we represent kHz,
-            and append to the numbers a "k"
-            */
-            vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height - 1);
-            vruler->SetOrientation(wxVERTICAL);
-            vruler->SetFormat(Ruler::RealFormat);
-            vruler->SetLabelEdges(true);
-            // use kHz in scale, if appropriate
-            if (maxFreq >= 2000) {
-               vruler->SetRange((maxFreq / 1000.), (minFreq / 1000.));
-               vruler->SetUnits(wxT("k"));
+               vruler->SetRange(max, min);
+               vruler->SetFormat(Ruler::RealFormat);
+               vruler->SetUnits(wxT(""));
+               vruler->SetLabelEdges(false);
+               vruler->SetLog(false);
             }
             else {
-               // use Hz
-               vruler->SetRange((int)(maxFreq), (int)(minFreq));
+               wxASSERT(scaleType == WaveformSettings::stLogarithmic);
+               scaleType = WaveformSettings::stLogarithmic;
+
                vruler->SetUnits(wxT(""));
+
+               float min, max;
+               wt->GetDisplayBounds(&min, &max);
+               float lastdBRange;
+
+               if (wt->GetLastScaleType() != scaleType &&
+                   wt->GetLastScaleType() != -1)
+               {
+                  // do a translation into the dB space
+                  wt->SetLastScaleType();
+                  wt->SetLastdBRange();
+                  float sign = (min >= 0 ? 1 : -1);
+                  if (min != 0.) {
+                     min = (LINEAR_TO_DB(fabs(min)) + dBRange) / dBRange;
+                     if (min < 0.0)
+                        min = 0.0;
+                     min *= sign;
+                  }
+                  sign = (max >= 0 ? 1 : -1);
+
+                  if (max != 0.) {
+                     max = (LINEAR_TO_DB(fabs(max)) + dBRange) / dBRange;
+                     if (max < 0.0)
+                        max = 0.0;
+                     max *= sign;
+                  }
+                  wt->SetDisplayBounds(min, max);
+               }
+               else if (dBRange != (lastdBRange = wt->GetLastdBRange())) {
+                  wt->SetLastdBRange();
+                  // Remap the max of the scale
+                  float newMax = max;
+
+// This commented out code is problematic.
+// min and max may be correct, and this code cause them to change.
+#ifdef ONLY_LABEL_POSITIVE
+                  const float sign = (max >= 0 ? 1 : -1);
+                  if (max != 0.) {
+
+   // Ugh, duplicating from TrackPanel.cpp
+   #define ZOOMLIMIT 0.001f
+
+                     const float extreme = LINEAR_TO_DB(2);
+                     // recover dB value of max
+                     const float dB = std::min(extreme, (float(fabs(max)) * lastdBRange - lastdBRange));
+                     // find NEW scale position, but old max may get trimmed if the db limit rises
+                     // Don't trim it to zero though, but leave max and limit distinct
+                     newMax = sign * std::max(ZOOMLIMIT, (dBRange + dB) / dBRange);
+                     // Adjust the min of the scale if we can,
+                     // so the db Limit remains where it was on screen, but don't violate extremes
+                     if (min != 0.)
+                        min = std::max(-extreme, newMax * min / max);
+                  }
+#endif
+                  wt->SetDisplayBounds(min, newMax);
+               }
+
+// Old code was if ONLY_LABEL_POSITIVE were defined.  
+// it uses the +1 to 0 range only.
+// the enabled code uses +1 to -1, and relies on set ticks labelling knowing about
+// the dB scale.
+#ifdef ONLY_LABEL_POSITIVE
+               if (max > 0) {
+#endif
+                  int top = 0;
+                  float topval = 0;
+                  int bot = rect.height;
+                  float botval = -dBRange;
+
+#ifdef ONLY_LABEL_POSITIVE
+                  if (min < 0) {
+                     bot = top + (int)((max / (max - min))*(bot - top));
+                     min = 0;
+                  }
+
+                  if (max > 1) {
+                     top += (int)((max - 1) / (max - min) * (bot - top));
+                     max = 1;
+                  }
+
+                  if (max < 1 && max > 0)
+                     topval = -((1 - max) * dBRange);
+
+                  if (min > 0) {
+                     botval = -((1 - min) * dBRange);
+                  }
+#else
+                  topval = -((1 - max) * dBRange);
+                  botval = -((1 - min) * dBRange);
+                  vruler->SetDbMirrorValue( dBRange );
+#endif
+                  vruler->SetBounds(rect.x, rect.y + top, rect.x + rect.width, rect.y + bot - 1);
+                  vruler->SetOrientation(wxVERTICAL);
+                  vruler->SetRange(topval, botval);
+#ifdef ONLY_LABEL_POSITIVE
+               }
+               else
+                  vruler->SetBounds(0.0, 0.0, 0.0, 0.0); // A.C.H I couldn't find a way to just disable it?
+#endif
+               vruler->SetFormat(Ruler::RealLogFormat);
+               vruler->SetLabelEdges(true);
+               vruler->SetLog(false);
             }
-            vruler->SetLog(false);
          }
-         break;
-         case SpectrogramSettings::stLogarithmic:
-         case SpectrogramSettings::stMel:
-         case SpectrogramSettings::stBark:
-         case SpectrogramSettings::stErb:
-         case SpectrogramSettings::stPeriod:
-         {
-            // SpectrumLog
+         else {
+            wxASSERT(display == WaveTrack::Spectrum);
+            const SpectrogramSettings &settings = wt->GetSpectrogramSettings();
+            float minFreq, maxFreq;
+            wt->GetSpectrumBounds(&minFreq, &maxFreq);
+            vruler->SetDbMirrorValue( 0.0 );
 
-            if (rect.height < 10)
-               return;
+            switch (settings.scaleType) {
+            default:
+               wxASSERT(false);
+            case SpectrogramSettings::stLinear:
+            {
+               // Spectrum
 
-            /*
-            draw the ruler
-            we will use Hz if maxFreq is < 2000, otherwise we represent kHz,
-            and append to the numbers a "k"
-            */
-            vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height - 1);
-            vruler->SetOrientation(wxVERTICAL);
-            vruler->SetFormat(Ruler::IntFormat);
-            vruler->SetLabelEdges(true);
-            vruler->SetRange(maxFreq, minFreq);
-            vruler->SetUnits(wxT(""));
-            vruler->SetLog(true);
-            NumberScale scale
-               (wt->GetSpectrogramSettings().GetScale
-                  (minFreq, maxFreq, wt->GetRate(), false).Reversal());
-            vruler->SetNumberScale(&scale);
+               if (rect.height < 60)
+                  return false;
+
+               /*
+               draw the ruler
+               we will use Hz if maxFreq is < 2000, otherwise we represent kHz,
+               and append to the numbers a "k"
+               */
+               vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height - 1);
+               vruler->SetOrientation(wxVERTICAL);
+               vruler->SetFormat(Ruler::RealFormat);
+               vruler->SetLabelEdges(true);
+               // use kHz in scale, if appropriate
+               if (maxFreq >= 2000) {
+                  vruler->SetRange((maxFreq / 1000.), (minFreq / 1000.));
+                  vruler->SetUnits(wxT("k"));
+               }
+               else {
+                  // use Hz
+                  vruler->SetRange((int)(maxFreq), (int)(minFreq));
+                  vruler->SetUnits(wxT(""));
+               }
+               vruler->SetLog(false);
+            }
+            break;
+            case SpectrogramSettings::stLogarithmic:
+            case SpectrogramSettings::stMel:
+            case SpectrogramSettings::stBark:
+            case SpectrogramSettings::stErb:
+            case SpectrogramSettings::stPeriod:
+            {
+               // SpectrumLog
+
+               if (rect.height < 10)
+                  return false;
+
+               /*
+               draw the ruler
+               we will use Hz if maxFreq is < 2000, otherwise we represent kHz,
+               and append to the numbers a "k"
+               */
+               vruler->SetBounds(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height - 1);
+               vruler->SetOrientation(wxVERTICAL);
+               vruler->SetFormat(Ruler::IntFormat);
+               vruler->SetLabelEdges(true);
+               vruler->SetRange(maxFreq, minFreq);
+               vruler->SetUnits(wxT(""));
+               vruler->SetLog(true);
+               NumberScale scale(
+                  wt->GetSpectrogramSettings().GetScale( minFreq, maxFreq )
+                     .Reversal() );
+               vruler->SetNumberScale(&scale);
+            }
+            break;
+            }
          }
-         break;
-         }
+         return true;
       }
-   }
 
 #ifdef USE_MIDI
-   // The note track isn't drawing a ruler at all!
-   // But it needs to!
-   else if (t->GetKind() == Track::Note) {
-      vruler->SetBounds(rect.x, rect.y, rect.x + 1, rect.y + rect.height-1);
-      vruler->SetOrientation(wxVERTICAL);
-   }
+      ,
+      [&](const NoteTrack *) {
+         // The note track isn't drawing a ruler at all!
+         // But it needs to!
+         vruler->SetBounds(rect.x, rect.y, rect.x + 1, rect.y + rect.height-1);
+         vruler->SetOrientation(wxVERTICAL);
+         return true;
+      }
 #endif // USE_MIDI
+   );
 
-   vruler->GetMaxSize(&t->vrulerSize.x, &t->vrulerSize.y);
+   if (update)
+      vruler->GetMaxSize(&t->vrulerSize.x, &t->vrulerSize.y);
 }
 
 /// Takes a value between min and max and returns a value between
@@ -998,8 +954,11 @@ float ValueOfPixel(int yy, int height, bool offset,
    return v;
 }
 
-void TrackArtist::DrawNegativeOffsetTrackArrows(wxDC &dc, const wxRect &rect)
+void TrackArt::DrawNegativeOffsetTrackArrows(
+   TrackPanelDrawingContext &context, const wxRect &rect )
 {
+   auto &dc = context.dc;
+
    // Draws two black arrows on the left side of the track to
    // indicate the user that the track has been time-shifted
    // to the left beyond t=0.0.
@@ -1025,15 +984,19 @@ void TrackArtist::DrawNegativeOffsetTrackArrows(wxDC &dc, const wxRect &rect)
                 rect.x + 6, rect.y + rect.height - 12);
 }
 
-void TrackArtist::DrawWaveformBackground(wxDC &dc, int leftOffset, const wxRect &rect,
+void TrackArt::DrawWaveformBackground(TrackPanelDrawingContext &context,
+                                         int leftOffset, const wxRect &rect,
                                          const double env[],
                                          float zoomMin, float zoomMax,
                                          int zeroLevelYCoordinate,
                                          bool dB, float dBRange,
                                          double t0, double t1,
-                                         const ZoomInfo &zoomInfo,
-                                         bool drawEnvelope, bool bIsSyncLockSelected)
+                                         bool bIsSyncLockSelected,
+                                         bool highlightEnvelope)
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &zoomInfo = *artist->pZoomInfo;
 
    // Visually (one vertical slice of the waveform background, on its side;
    // the "*" is the actual waveform background we're drawing
@@ -1053,6 +1016,10 @@ void TrackArtist::DrawWaveformBackground(wxDC &dc, int leftOffset, const wxRect 
    bool sel, lsel = false;
    int xx, lx = 0;
    int l, w;
+
+   const auto &blankBrush = artist->blankBrush;
+   const auto &selectedBrush = artist->selectedBrush;
+   const auto &unselectedBrush = artist->unselectedBrush;
 
    dc.SetPen(*wxTRANSPARENT_PEN);
    dc.SetBrush(blankBrush);
@@ -1079,6 +1046,7 @@ void TrackArtist::DrawWaveformBackground(wxDC &dc, int leftOffset, const wxRect 
       mintop +=1;
       minbot +=1;
 
+      const auto drawEnvelope = artist->drawEnvelope;
       if (!drawEnvelope || maxbot > mintop) {
          maxbot = halfHeight;
          mintop = halfHeight;
@@ -1107,6 +1075,11 @@ void TrackArtist::DrawWaveformBackground(wxDC &dc, int leftOffset, const wxRect 
          dc.DrawRectangle(l, rect.y + lmaxtop, w, lminbot - lmaxtop);
       }
 
+      if (highlightEnvelope && lmaxbot < lmintop - 1) {
+         dc.SetBrush( AColor::uglyBrush );
+         dc.DrawRectangle(l, rect.y + lmaxbot, w, lmintop - lmaxbot);
+      }
+
       lmaxtop = maxtop;
       lmintop = mintop;
       lmaxbot = maxbot;
@@ -1125,12 +1098,17 @@ void TrackArtist::DrawWaveformBackground(wxDC &dc, int leftOffset, const wxRect 
    else {
       dc.DrawRectangle(l, rect.y + lmaxtop, w, lminbot - lmaxtop);
    }
+   if (highlightEnvelope && lmaxbot < lmintop - 1) {
+      dc.SetBrush( AColor::uglyBrush );
+      dc.DrawRectangle(l, rect.y + lmaxbot, w, lmintop - lmaxbot);
+   }
 
    // If sync-lock selected, draw in linked graphics.
    if (bIsSyncLockSelected && t0 < t1) {
       const int begin = std::max(0, std::min(rect.width, (int)(zoomInfo.TimeToPosition(t0, -leftOffset))));
       const int end = std::max(0, std::min(rect.width, (int)(zoomInfo.TimeToPosition(t1, -leftOffset))));
-      DrawSyncLockTiles(&dc, wxRect(rect.x + begin, rect.y, end - 1 - begin, rect.height));
+      DrawSyncLockTiles( context,
+         { rect.x + begin, rect.y, end - 1 - begin, rect.height } );
    }
 
    //OK, the display bounds are between min and max, which
@@ -1144,29 +1122,30 @@ void TrackArtist::DrawWaveformBackground(wxDC &dc, int leftOffset, const wxRect 
 }
 
 
-void TrackArtist::DrawMinMaxRMS(wxDC &dc, const wxRect & rect, const double env[],
+void TrackArt::DrawMinMaxRMS(
+   TrackPanelDrawingContext &context, const wxRect & rect, const double env[],
    float zoomMin, float zoomMax,
    bool dB, float dBRange,
    const float *min, const float *max, const float *rms, const int *bl,
-   bool /* showProgress */, bool muted
-#ifdef EXPERIMENTAL_OUTPUT_DISPLAY
-   , const float gain
-#endif
-)
+   bool /* showProgress */, bool muted)
 {
+   auto &dc = context.dc;
+
    // Display a line representing the
    // min and max of the samples in this region
    int lasth1 = std::numeric_limits<int>::max();
    int lasth2 = std::numeric_limits<int>::min();
    int h1;
    int h2;
-   int *r1 = new int[rect.width];
-   int *r2 = new int[rect.width];
-   int *clipped = NULL;
+   ArrayOf<int> r1{ size_t(rect.width) };
+   ArrayOf<int> r2{ size_t(rect.width) };
+   ArrayOf<int> clipped;
    int clipcnt = 0;
 
-   if (mShowClipping) {
-      clipped = new int[rect.width];
+   const auto artist = TrackArtist::Get( context );
+   const auto bShowClipping = artist->mShowClipping;
+   if (bShowClipping) {
+      clipped.reinit( size_t(rect.width) );
    }
 
    long pixAnimOffset = (long)fabs((double)(wxDateTime::Now().GetTicks() * -10)) +
@@ -1175,17 +1154,15 @@ void TrackArtist::DrawMinMaxRMS(wxDC &dc, const wxRect & rect, const double env[
    bool drawStripes = true;
    bool drawWaveform = true;
 
+   const auto &muteSamplePen = artist->muteSamplePen;
+   const auto &samplePen = artist->samplePen;
+
    dc.SetPen(muted ? muteSamplePen : samplePen);
    for (int x0 = 0; x0 < rect.width; ++x0) {
       int xx = rect.x + x0;
       double v;
-#ifdef EXPERIMENTAL_OUTPUT_DISPLAY
-     //JWA: "gain" variable passed to function includes the pan value and is used below 4/14/13
-      v = min[x0] * env[x0] * gain;
-#else
       v = min[x0] * env[x0];
-#endif
-      if (clipped && mShowClipping && (v <= -MAX_AUDIO))
+      if (clipped && bShowClipping && (v <= -MAX_AUDIO))
       {
          if (clipcnt == 0 || clipped[clipcnt - 1] != xx) {
             clipped[clipcnt++] = xx;
@@ -1194,12 +1171,8 @@ void TrackArtist::DrawMinMaxRMS(wxDC &dc, const wxRect & rect, const double env[
       h1 = GetWaveYPos(v, zoomMin, zoomMax,
                        rect.height, dB, true, dBRange, true);
 
-#ifdef EXPERIMENTAL_OUTPUT_DISPLAY
-      v = max[x0] * env[x0] * gain;
-#else
       v = max[x0] * env[x0];
-#endif
-      if (clipped && mShowClipping && (v >= MAX_AUDIO))
+      if (clipped && bShowClipping && (v >= MAX_AUDIO))
       {
          if (clipcnt == 0 || clipped[clipcnt - 1] != xx) {
             clipped[clipcnt++] = xx;
@@ -1221,17 +1194,10 @@ void TrackArtist::DrawMinMaxRMS(wxDC &dc, const wxRect & rect, const double env[
       lasth1 = h1;
       lasth2 = h2;
 
-#ifdef EXPERIMENTAL_OUTPUT_DISPLAY
-      r1[x0] = GetWaveYPos(-rms[x0] * env[x0]*gain, zoomMin, zoomMax,
-                          rect.height, dB, true, dBRange, true);
-      r2[x0] = GetWaveYPos(rms[xx0 * env[x0]*gain, zoomMin, zoomMax,
-                          rect.height, dB, true, dBRange, true);
-#else
       r1[x0] = GetWaveYPos(-rms[x0] * env[x0], zoomMin, zoomMax,
                           rect.height, dB, true, dBRange, true);
       r2[x0] = GetWaveYPos(rms[x0] * env[x0], zoomMin, zoomMax,
                           rect.height, dB, true, dBRange, true);
-#endif
       // Make sure the rms isn't larger than the waveform min/max
       if (r1[x0] > h1 - 1) {
          r1[x0] = h1 - 1;
@@ -1279,6 +1245,9 @@ void TrackArtist::DrawMinMaxRMS(wxDC &dc, const wxRect & rect, const double env[
    }
 
    // Stroke rms over the min-max
+   const auto &muteRmsPen = artist->muteRmsPen;
+   const auto &rmsPen = artist->rmsPen;
+
    dc.SetPen(muted ? muteRmsPen : rmsPen);
    for (int x0 = 0; x0 < rect.width; ++x0) {
       int xx = rect.x + x0;
@@ -1291,28 +1260,29 @@ void TrackArtist::DrawMinMaxRMS(wxDC &dc, const wxRect & rect, const double env[
 
    // Draw the clipping lines
    if (clipcnt) {
+      const auto &muteClippedPen = artist->muteClippedPen;
+      const auto &clippedPen = artist->clippedPen;
+
       dc.SetPen(muted ? muteClippedPen : clippedPen);
       while (--clipcnt >= 0) {
          int xx = clipped[clipcnt];
          AColor::Line(dc, xx, rect.y, xx, rect.y + rect.height);
       }
    }
-
-   if (mShowClipping) {
-      delete[] clipped;
-   }
-
-   delete [] r1;
-   delete [] r2;
 }
 
-void TrackArtist::DrawIndividualSamples(wxDC &dc, int leftOffset, const wxRect &rect,
+void TrackArt::DrawIndividualSamples(TrackPanelDrawingContext &context,
+                                        int leftOffset, const wxRect &rect,
                                         float zoomMin, float zoomMax,
                                         bool dB, float dBRange,
                                         const WaveClip *clip,
-                                        const ZoomInfo &zoomInfo,
-                                        bool bigPoints, bool showPoints, bool muted)
+                                        bool showPoints, bool muted,
+                                        bool highlight)
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &zoomInfo = *artist->pZoomInfo;
+
    const double toffset = clip->GetOffset();
    double rate = clip->GetRate();
    const double t0 = std::max(0.0, zoomInfo.PositionToTime(0, -leftOffset) - toffset);
@@ -1331,18 +1301,24 @@ void TrackArtist::DrawIndividualSamples(wxDC &dc, int leftOffset, const wxRect &
    if (slen <= 0)
       return;
 
-   float *buffer = new float[slen];
-   clip->GetSamples((samplePtr)buffer, floatSample, s0, slen);
+   Floats buffer{ size_t(slen) };
+   clip->GetSamples((samplePtr)buffer.get(), floatSample, s0, slen,
+                    // Suppress exceptions in this drawing operation:
+                    false);
 
-   int *xpos = new int[slen];
-   int *ypos = new int[slen];
-   int *clipped = NULL;
+   ArrayOf<int> xpos{ size_t(slen) };
+   ArrayOf<int> ypos{ size_t(slen) };
+   ArrayOf<int> clipped;
    int clipcnt = 0;
 
-   if (mShowClipping)
-      clipped = new int[slen];
+   const auto bShowClipping = artist->mShowClipping;
+   if (bShowClipping)
+      clipped.reinit( size_t(slen) );
 
-   dc.SetPen(muted ? muteSamplePen : samplePen);
+   const auto &muteSamplePen = artist->muteSamplePen;
+   const auto &samplePen = artist->samplePen;
+   auto &pen = highlight ? AColor::uglyPen : muted ? muteSamplePen : samplePen;
+   dc.SetPen( pen );
 
    for (decltype(slen) s = 0; s < slen; s++) {
       const double time = toffset + (s + s0).as_double() / rate;
@@ -1351,9 +1327,12 @@ void TrackArtist::DrawIndividualSamples(wxDC &dc, int leftOffset, const wxRect &
             (int)(zoomInfo.TimeToPosition(time, -leftOffset))));
       xpos[s] = xx;
 
-      const double tt = buffer[s] * clip->GetEnvelope()->GetValue(time);
+      // Calculate sample as it would be rendered, so quantize time
+      double value =
+         clip->GetEnvelope()->GetValue( time, 1.0 / clip->GetRate() );
+      const double tt = buffer[s] * value;
 
-      if (clipped && mShowClipping && ((tt <= -MAX_AUDIO) || (tt >= MAX_AUDIO)))
+      if (clipped && bShowClipping && ((tt <= -MAX_AUDIO) || (tt >= MAX_AUDIO)))
          clipped[clipcnt++] = xx;
       ypos[s] =
          std::max(-1,
@@ -1362,22 +1341,21 @@ void TrackArtist::DrawIndividualSamples(wxDC &dc, int leftOffset, const wxRect &
                                   rect.height, dB, true, dBRange, false)));
    }
 
-   // Draw lines
-   for (decltype(slen) s = 0; s < slen - 1; s++) {
-      AColor::Line(dc,
-                   rect.x + xpos[s], rect.y + ypos[s],
-                   rect.x + xpos[s + 1], rect.y + ypos[s + 1]);
-   }
 
-   if (showPoints)
-   {
+   if (showPoints) {
       // Draw points where spacing is enough
+      const auto bigPoints = artist->bigPoints;
       const int tickSize = bigPoints ? 4 : 3;// Bigger ellipses when draggable.
       wxRect pr;
       pr.width = tickSize;
       pr.height = tickSize;
       //different colour when draggable.
-      dc.SetBrush( bigPoints ? dragsampleBrush : sampleBrush);
+      const auto &dragsampleBrush = artist->dragsampleBrush;
+      const auto &sampleBrush = artist->sampleBrush;
+      auto &brush = highlight
+         ? AColor::uglyBrush
+         : bigPoints ? dragsampleBrush : sampleBrush;
+      dc.SetBrush( brush );
       for (decltype(slen) s = 0; s < slen; s++) {
          if (ypos[s] >= 0 && ypos[s] < rect.height) {
             pr.x = rect.x + xpos[s] - tickSize/2;
@@ -1387,31 +1365,49 @@ void TrackArtist::DrawIndividualSamples(wxDC &dc, int leftOffset, const wxRect &
       }
    }
 
+   const auto sampleDisplay = artist->mSampleDisplay;
+   if (showPoints && (sampleDisplay == (int) WaveTrack::StemPlot)) {
+      // Draw vertical lines
+      int yZero = GetWaveYPos(0.0, zoomMin, zoomMax, rect.height, dB, true, dBRange, false);
+      yZero = rect.y + std::max(-1, std::min(rect.height, yZero));
+      for (decltype(slen) s = 0; s < slen; s++) {
+         AColor::Line(dc,
+                     rect.x + xpos[s], rect.y + ypos[s],
+                     rect.x + xpos[s], yZero);
+      }
+   }
+   else {
+      // Connect samples with straight lines
+      for (decltype(slen) s = 0; s < slen - 1; s++) {
+         AColor::Line(dc,
+                     rect.x + xpos[s], rect.y + ypos[s],
+                     rect.x + xpos[s + 1], rect.y + ypos[s + 1]);
+      }
+   }
+
    // Draw clipping
    if (clipcnt) {
+      const auto &muteClippedPen = artist->muteClippedPen;
+      const auto &clippedPen = artist->clippedPen;
       dc.SetPen(muted ? muteClippedPen : clippedPen);
       while (--clipcnt >= 0) {
          auto s = clipped[clipcnt];
          AColor::Line(dc, rect.x + s, rect.y, rect.x + s, rect.y + rect.height);
       }
    }
-
-   if (mShowClipping) {
-      delete [] clipped;
-   }
-
-   delete[]buffer;
-   delete[]xpos;
-   delete[]ypos;
 }
 
-void TrackArtist::DrawEnvelope(wxDC &dc, const wxRect &rect, const double env[],
+void TrackArt::DrawEnvelope(TrackPanelDrawingContext &context,
+                               const wxRect &rect, const double env[],
                                float zoomMin, float zoomMax,
-                               bool dB, float dBRange)
+                               bool dB, float dBRange, bool highlight)
 {
+   auto &dc = context.dc;
+
    int h = rect.height;
 
-   dc.SetPen(AColor::envelopePen);
+   auto &pen = highlight ? AColor::uglyPen : AColor::envelopePen;
+   dc.SetPen( pen );
 
    for (int x0 = 0; x0 < rect.width; ++x0) {
       int cenvTop = GetWaveYPos(env[x0], zoomMin, zoomMax,
@@ -1433,13 +1429,17 @@ void TrackArtist::DrawEnvelope(wxDC &dc, const wxRect &rect, const double env[],
          cenvBot = value + 4;
       }
 
-      DrawEnvLine(dc, rect, x0, envTop, cenvTop, true);
-      DrawEnvLine(dc, rect, x0, envBot, cenvBot, false);
+      DrawEnvLine( context, rect, x0, envTop, cenvTop, true );
+      DrawEnvLine( context, rect, x0, envBot, cenvBot, false );
    }
 }
 
-void TrackArtist::DrawEnvLine(wxDC &dc, const wxRect &rect, int x0, int y0, int cy, bool top)
+void TrackArt::DrawEnvLine(
+   TrackPanelDrawingContext &context,
+   const wxRect &rect, int x0, int y0, int cy, bool top )
 {
+   auto &dc = context.dc;
+
    int xx = rect.x + x0;
    int yy = rect.y + cy;
 
@@ -1463,49 +1463,75 @@ void TrackArtist::DrawEnvLine(wxDC &dc, const wxRect &rect, int x0, int y0, int 
    }
 }
 
-void TrackArtist::DrawWaveform(const WaveTrack *track,
-                               wxDC & dc,
+#include "tracks/ui/TimeShiftHandle.h"
+#include "tracks/playabletrack/wavetrack/ui/CutlineHandle.h"
+void TrackArt::DrawWaveform(TrackPanelDrawingContext &context,
+                               const WaveTrack *track,
                                const wxRect & rect,
-                               const SelectedRegion &selectedRegion,
-                               const ZoomInfo &zoomInfo,
-                               bool drawEnvelope,
-                               bool bigPoints,
-                               bool drawSliders,
                                bool muted)
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+
+   bool highlight = false;
+   bool gripHit = false;
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+   auto target = dynamic_cast<TimeShiftHandle*>(context.target.get());
+   gripHit = target && target->IsGripHit();
+   highlight = target && target->GetTrack().get() == track;
+#endif
+
    const bool dB = !track->GetWaveformSettings().isLinear();
 
-   DrawBackgroundWithSelection(&dc, rect, track, blankSelectedBrush, blankBrush,
-         selectedRegion, zoomInfo);
+   const auto &blankSelectedBrush = artist->blankSelectedBrush;
+   const auto &blankBrush = artist->blankBrush;
+   DrawBackgroundWithSelection(
+      context, rect, track, blankSelectedBrush, blankBrush );
 
    for (const auto &clip: track->GetClips())
-      DrawClipWaveform(track, clip.get(), dc, rect, selectedRegion, zoomInfo,
-                       drawEnvelope, bigPoints,
+      DrawClipWaveform(context, track, clip.get(), rect,
                        dB, muted);
 
    // Update cache for locations, e.g. cutlines and merge points
    track->UpdateLocationsCache();
 
+   const auto &zoomInfo = *artist->pZoomInfo;
+
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+   auto target2 = dynamic_cast<CutlineHandle*>(context.target.get());
+#endif
    for (const auto loc : track->GetCachedLocations()) {
+      bool highlightLoc = false;
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+      highlightLoc =
+         target2 && target2->GetTrack().get() == track &&
+         target2->GetLocation() == loc;
+#endif
       const int xx = zoomInfo.TimeToPosition(loc.pos);
       if (xx >= 0 && xx < rect.width) {
-         dc.SetPen(*wxGREY_PEN);
+         dc.SetPen( highlightLoc ? AColor::uglyPen : *wxGREY_PEN );
          AColor::Line(dc, (int) (rect.x + xx - 1), rect.y, (int) (rect.x + xx - 1), rect.y + rect.height);
          if (loc.typ == WaveTrackLocation::locationCutLine) {
-            dc.SetPen(*wxRED_PEN);
+            dc.SetPen( highlightLoc ? AColor::uglyPen : *wxRED_PEN );
          }
          else {
-            dc.SetPen(*wxBLACK_PEN);
+#ifdef EXPERIMENTAL_DA
+            // JKC Black does not show up enough.
+            dc.SetPen(highlightLoc ? AColor::uglyPen : *wxWHITE_PEN);
+#else
+            dc.SetPen(highlightLoc ? AColor::uglyPen : *wxBLACK_PEN);
+#endif
          }
          AColor::Line(dc, (int) (rect.x + xx), rect.y, (int) (rect.x + xx), rect.y + rect.height);
-         dc.SetPen(*wxGREY_PEN);
+         dc.SetPen( highlightLoc ? AColor::uglyPen : *wxGREY_PEN );
          AColor::Line(dc, (int) (rect.x + xx + 1), rect.y, (int) (rect.x + xx + 1), rect.y + rect.height);
       }
    }
 
+   const auto drawSliders = artist->drawSliders;
    if (drawSliders) {
-      DrawTimeSlider(dc, rect, true);  // directed right
-      DrawTimeSlider(dc, rect, false); // directed left
+      DrawTimeSlider( context, rect, true, highlight && gripHit );  // directed right
+      DrawTimeSlider( context, rect, false, highlight && gripHit ); // directed left
    }
 }
 
@@ -1724,22 +1750,32 @@ void FindWavePortions
 }
 }
 
-void TrackArtist::DrawClipWaveform(const WaveTrack *track,
+#include "tracks/playabletrack/wavetrack/ui/SampleHandle.h"
+#include "tracks/ui/EnvelopeHandle.h"
+void TrackArt::DrawClipWaveform(TrackPanelDrawingContext &context,
+                                   const WaveTrack *track,
                                    const WaveClip *clip,
-                                   wxDC & dc,
                                    const wxRect & rect,
-                                   const SelectedRegion &selectedRegion,
-                                   const ZoomInfo &zoomInfo,
-                                   bool drawEnvelope,
-                                   bool bigPoints,
                                    bool dB,
                                    bool muted)
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &selectedRegion = *artist->pSelectedRegion;
+   const auto &zoomInfo = *artist->pZoomInfo;
+
 #ifdef PROFILE_WAVEFORM
    Profiler profiler;
 #endif
 
-   const ClipParameters params(false, track, clip, rect, selectedRegion, zoomInfo);
+   bool highlightEnvelope = false;
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+   auto target = dynamic_cast<EnvelopeHandle*>(context.target.get());
+   highlightEnvelope = target && target->GetEnvelope() == clip->GetEnvelope();
+#endif
+
+   const ClipParameters params{
+      false, track, clip, rect, selectedRegion, zoomInfo };
    const wxRect &hiddenMid = params.hiddenMid;
    // The "hiddenMid" rect contains the part of the display actually
    // containing the waveform, as it appears without the fisheye.  If it's empty, we're done.
@@ -1761,6 +1797,8 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
    const float dBRange = track->GetWaveformSettings().dBRange;
 
    dc.SetPen(*wxTRANSPARENT_PEN);
+   int iColorIndex = clip->GetColourIndex();
+   artist->SetColours( iColorIndex );
 
    // If we get to this point, the clip is actually visible on the
    // screen, so remember the display rectangle.
@@ -1773,26 +1811,33 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
 
    std::vector<double> vEnv(mid.width);
    double *const env = &vEnv[0];
-   clip->GetEnvelope()->GetValues(env, mid.width, leftOffset, zoomInfo);
+   clip->GetEnvelope()->GetValues
+      ( tOffset,
+
+        // PRL: change back to make envelope evaluate only at sample times
+        // and then interpolate the display
+        0, // 1.0 / rate,
+
+        env, mid.width, leftOffset, zoomInfo );
 
    // Draw the background of the track, outlining the shape of
    // the envelope and using a colored pen for the selected
    // part of the waveform
    {
-      double t0, t1;
+      double tt0, tt1;
       if (track->GetSelected() || track->IsSyncLockSelected()) {
-         t0 = track->LongSamplesToTime(track->TimeToLongSamples(selectedRegion.t0())),
-            t1 = track->LongSamplesToTime(track->TimeToLongSamples(selectedRegion.t1()));
+         tt0 = track->LongSamplesToTime(track->TimeToLongSamples(selectedRegion.t0())),
+            tt1 = track->LongSamplesToTime(track->TimeToLongSamples(selectedRegion.t1()));
       }
       else
-         t0 = t1 = 0.0;
-      DrawWaveformBackground(dc, leftOffset, mid,
+         tt0 = tt1 = 0.0;
+      DrawWaveformBackground(context, leftOffset, mid,
          env,
          zoomMin, zoomMax,
          track->ZeroLevelYCoordinate(mid),
          dB, dBRange,
-         t0, t1, zoomInfo, drawEnvelope,
-         !track->GetSelected());
+         tt0, tt1,
+         !track->GetSelected(), highlightEnvelope);
    }
 
    WaveDisplay display(hiddenMid.width);
@@ -1837,17 +1882,19 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
       }
    }
 
+   // TODO Add a comment to say what this loop does.
+   // Possily make it into a subroutine.
    for (unsigned ii = 0; ii < nPortions; ++ii) {
       WavePortion &portion = portions[ii];
       const bool showIndividualSamples = portion.averageZoom > threshold1;
       const bool showPoints = portion.averageZoom > threshold2;
-      wxRect& rect = portion.rect;
-      rect.Intersect(mid);
-      wxASSERT(rect.width >= 0);
+      wxRect& rectPortion = portion.rect;
+      rectPortion.Intersect(mid);
+      wxASSERT(rectPortion.width >= 0);
 
       float *useMin = 0, *useMax = 0, *useRms = 0;
       int *useBl = 0;
-      WaveDisplay fisheyeDisplay(rect.width);
+      WaveDisplay fisheyeDisplay(rectPortion.width);
       int skipped = 0, skippedLeft = 0, skippedRight = 0;
       if (portion.inFisheye) {
          if (!showIndividualSamples) {
@@ -1855,12 +1902,12 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
             const auto numSamples = clip->GetNumSamples();
             // Get wave display data for different magnification
             int jj = 0;
-            for (; jj < rect.width; ++jj) {
+            for (; jj < rectPortion.width; ++jj) {
                const double time =
                   zoomInfo.PositionToTime(jj, -leftOffset) - tOffset;
                const auto sample = (sampleCount)floor(time * rate + 0.5);
                if (sample < 0) {
-                  ++rect.x;
+                  ++rectPortion.x;
                   ++skippedLeft;
                   continue;
                }
@@ -1869,9 +1916,9 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
                fisheyeDisplay.where[jj - skippedLeft] = sample;
             }
 
-            skippedRight = rect.width - jj;
+            skippedRight = rectPortion.width - jj;
             skipped = skippedRight + skippedLeft;
-            rect.width -= skipped;
+            rectPortion.width -= skipped;
 
             // where needs a sentinel
             if (jj > 0)
@@ -1879,7 +1926,7 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
                1 + fisheyeDisplay.where[jj - skippedLeft - 1];
             fisheyeDisplay.width -= skipped;
             // Get a wave display for the fisheye, uncached.
-            if (rect.width > 0)
+            if (rectPortion.width > 0)
                if (!clip->GetWaveDisplay(
                      fisheyeDisplay, t0, -1.0, // ignored
                      isLoadingOD))
@@ -1900,40 +1947,53 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
 
       leftOffset += skippedLeft;
 
-      if (rect.width > 0) {
+      if (rectPortion.width > 0) {
          if (!showIndividualSamples) {
-            std::vector<double> vEnv2(rect.width);
+            std::vector<double> vEnv2(rectPortion.width);
             double *const env2 = &vEnv2[0];
-            clip->GetEnvelope()->GetValues(env2, rect.width, leftOffset, zoomInfo);
-            DrawMinMaxRMS(dc, rect, env2,
+            clip->GetEnvelope()->GetValues
+               ( tOffset,
+
+                 // PRL: change back to make envelope evaluate only at sample times
+                 // and then interpolate the display
+                 0, // 1.0 / rate,
+
+                 env2, rectPortion.width, leftOffset, zoomInfo );
+            DrawMinMaxRMS( context, rectPortion, env2,
                zoomMin, zoomMax,
                dB, dBRange,
                useMin, useMax, useRms, useBl,
-               isLoadingOD, muted
-#ifdef EXPERIMENTAL_OUTPUT_DISPLAY
-               , track->GetChannelGain(track->GetChannel())
-#endif
-            );
+               isLoadingOD, muted );
          }
-         else
-            DrawIndividualSamples(dc, leftOffset, rect, zoomMin, zoomMax,
+         else {
+            bool highlight = false;
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+            auto target = dynamic_cast<SampleHandle*>(context.target.get());
+            highlight = target && target->GetTrack().get() == track;
+#endif
+            DrawIndividualSamples(
+               context, leftOffset, rectPortion, zoomMin, zoomMax,
                dB, dBRange,
-               clip, zoomInfo,
-               bigPoints, showPoints, muted);
+               clip,
+               showPoints, muted, highlight );
+         }
       }
 
-      leftOffset += rect.width + skippedRight;
+      leftOffset += rectPortion.width + skippedRight;
    }
 
+   const auto drawEnvelope = artist->drawEnvelope;
    if (drawEnvelope) {
-      DrawEnvelope(dc, mid, env, zoomMin, zoomMax, dB, dBRange);
-      clip->GetEnvelope()->DrawPoints(dc, rect, zoomInfo, dB, dBRange, zoomMin, zoomMax);
+      DrawEnvelope(
+         context, mid, env, zoomMin, zoomMax, dB, dBRange, highlightEnvelope );
+      clip->GetEnvelope()->DrawPoints
+         ( context, rect, dB, dBRange, zoomMin, zoomMax, true );
    }
 
    // Draw arrows on the left side if the track extends to the left of the
    // beginning of time.  :)
    if (h == 0.0 && tOffset < 0.0) {
-      DrawNegativeOffsetTrackArrows(dc, rect);
+      DrawNegativeOffsetTrackArrows( context, rect );
    }
 
    // Draw clip edges
@@ -1951,10 +2011,12 @@ void TrackArtist::DrawClipWaveform(const WaveTrack *track,
 }
 
 
-void TrackArtist::DrawTimeSlider(wxDC & dc,
-                                 const wxRect & rect,
-                                 bool rightwards)
+void TrackArt::DrawTimeSlider( TrackPanelDrawingContext &context,
+                                  const wxRect & rect,
+                                  bool rightwards, bool highlight )
 {
+   auto &dc = context.dc;
+
    const int border = 3; // 3 pixels all round.
    const int width = 6; // width of the drag box.
    const int taper = 6; // how much the box tapers by.
@@ -1979,12 +2041,12 @@ void TrackArtist::DrawTimeSlider(wxDC & dc,
    int yTop  = rect.y + border;
    int yBot  = rect.y + rect.height - border - 1;
 
-   AColor::Light(&dc, false);
+   AColor::Light(&dc, false, highlight);
    AColor::Line(dc, xLeft,         yBot - leftTaper, xLeft,         yTop + leftTaper);
    AColor::Line(dc, xLeft,         yTop + leftTaper, xLeft + xFlat, yTop);
    AColor::Line(dc, xLeft + xFlat, yTop,             xLeft + width, yTop + rightTaper);
 
-   AColor::Dark(&dc, false);
+   AColor::Dark(&dc, false, highlight);
    AColor::Line(dc, xLeft + width,         yTop + rightTaper, xLeft + width,       yBot - rightTaper);
    AColor::Line(dc, xLeft + width,         yBot - rightTaper, xLeft + width-xFlat, yBot);
    AColor::Line(dc, xLeft + width - xFlat, yBot,              xLeft,               yBot - leftTaper);
@@ -1995,35 +2057,35 @@ void TrackArtist::DrawTimeSlider(wxDC & dc,
    int yy;
    int i;
 
-   AColor::Light(&dc, false);
+   AColor::Light(&dc, false, highlight);
    for (i = 0;i < nBars; i++) {
       yy = firstBar + barSpacing * i;
       AColor::Line(dc, xLeft, yy, xLeft + barWidth, yy);
    }
-   AColor::Dark(&dc, false);
+   AColor::Dark(&dc, false, highlight);
    for(i = 0;i < nBars; i++){
       yy = firstBar + barSpacing * i + 1;
       AColor::Line(dc, xLeft, yy, xLeft + barWidth, yy);
    }
 }
 
-void TrackArtist::DrawSpectrum(const WaveTrack *track,
-                               wxDC & dc,
-                               const wxRect & rect,
-                               const SelectedRegion &selectedRegion,
-                               const ZoomInfo &zoomInfo)
+void TrackArt::DrawSpectrum( TrackPanelDrawingContext &context,
+                                const WaveTrack *track,
+                                const wxRect & rect )
 {
-   DrawBackgroundWithSelection(&dc, rect, track, blankSelectedBrush, blankBrush,
-         selectedRegion, zoomInfo);
+   const auto artist = TrackArtist::Get( context );
+   const auto &blankSelectedBrush = artist->blankSelectedBrush;
+   const auto &blankBrush = artist->blankBrush;
+   DrawBackgroundWithSelection(
+      context, rect, track, blankSelectedBrush, blankBrush );
 
-   WaveTrackCache cache(track);
-   for (const auto &clip: track->GetClips()) {
-      DrawClipSpectrum(cache, clip.get(), dc, rect, selectedRegion, zoomInfo);
-   }
+   WaveTrackCache cache(track->SharedPointer<const WaveTrack>());
+   for (const auto &clip: track->GetClips())
+      DrawClipSpectrum( context, cache, clip.get(), rect );
 }
 
 static inline float findValue
-(const float *spectrum, float bin0, float bin1, unsigned half,
+(const float *spectrum, float bin0, float bin1, unsigned nBins,
  bool autocorrelation, int gain, int range)
 {
    float value;
@@ -2043,7 +2105,7 @@ static inline float findValue
          bin0 += 1.0;
       }
       // Do not reference past end of freq array.
-      if ((int)(bin1) >= (int)half) {
+      if ((int)(bin1) >= (int)nBins) {
          bin1 -= 1.0;
       }
 
@@ -2055,18 +2117,18 @@ static inline float findValue
    // See Bug971
    int index, limitIndex;
    if (autocorrelation) {
-      // bin = 2 * half / (half - 1 - array_index);
+      // bin = 2 * nBins / (nBins - 1 - array_index);
       // Solve for index
-      index = std::max(0.0f, std::min(float(half - 1),
-         (half - 1) - (2 * half) / (std::max(1.0f, bin0))
+      index = std::max(0.0f, std::min(float(nBins - 1),
+         (nBins - 1) - (2 * nBins) / (std::max(1.0f, bin0))
       ));
-      limitIndex = std::max(0.0f, std::min(float(half - 1),
-         (half - 1) - (2 * half) / (std::max(1.0f, bin1))
+      limitIndex = std::max(0.0f, std::min(float(nBins - 1),
+         (nBins - 1) - (2 * nBins) / (std::max(1.0f, bin1))
       ));
    }
    else {
-      index = std::min<int>(half - 1, (int)(floor(0.5 + bin0)));
-      limitIndex = std::min<int>(half, (int)(floor(0.5 + bin1)));
+      index = std::min<int>(nBins - 1, (int)(floor(0.5 + bin0)));
+      limitIndex = std::min<int>(nBins, (int)(floor(0.5 + bin1)));
    }
    value = spectrum[index];
    while (++index < limitIndex)
@@ -2099,28 +2161,32 @@ AColor::ColorGradientChoice ChooseColorSet( float bin0, float bin1, float selBin
    if ((selBinLo < 0 || selBinLo < bin1) && (selBinHi < 0 || selBinHi > bin0))
       return  AColor::ColorGradientTimeAndFrequencySelected;
 
-      return  AColor::ColorGradientTimeSelected;
+   return  AColor::ColorGradientTimeSelected;
 }
 
 
-void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
+void TrackArt::DrawClipSpectrum(TrackPanelDrawingContext &context,
+                                   WaveTrackCache &waveTrackCache,
                                    const WaveClip *clip,
-                                   wxDC & dc,
-                                   const wxRect & rect,
-                                   const SelectedRegion &selectedRegion,
-                                   const ZoomInfo &zoomInfo)
+                                   const wxRect & rect)
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &selectedRegion = *artist->pSelectedRegion;
+   const auto &zoomInfo = *artist->pZoomInfo;
+
 #ifdef PROFILE_WAVEFORM
    Profiler profiler;
 #endif
 
-   const WaveTrack *const track = waveTrackCache.GetTrack();
+   const WaveTrack *const track = waveTrackCache.GetTrack().get();
    const SpectrogramSettings &settings = track->GetSpectrogramSettings();
    const bool autocorrelation = (settings.algorithm == SpectrogramSettings::algPitchEAC);
 
    enum { DASH_LENGTH = 10 /* pixels */ };
 
-   const ClipParameters params(true, track, clip, rect, selectedRegion, zoomInfo);
+   const ClipParameters params{
+      true, track, clip, rect, selectedRegion, zoomInfo };
    const wxRect &hiddenMid = params.hiddenMid;
    // The "hiddenMid" rect contains the part of the display actually
    // containing the waveform, as it appears without the fisheye.  If it's empty, we're done.
@@ -2155,8 +2221,8 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
 
 #ifdef EXPERIMENTAL_FIND_NOTES
    const bool &fftFindNotes = settings.fftFindNotes;
-   const bool &findNotesMinA = settings.findNotesMinA;
-   const bool &numberOfMaxima = settings.numberOfMaxima;
+   const double &findNotesMinA = settings.findNotesMinA;
+   const int &numberOfMaxima = settings.numberOfMaxima;
    const bool &findNotesQuantize = settings.findNotesQuantize;
 #endif
 #ifdef EXPERIMENTAL_FFT_Y_GRID
@@ -2172,6 +2238,10 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
    wxImage image((int)mid.width, (int)mid.height);
    if (!image.IsOk())
       return;
+#ifdef EXPERIMENTAL_SPECTROGRAM_OVERLAY
+   image.SetAlpha();
+   unsigned char *alpha = image.GetAlpha();
+#endif
    unsigned char *data = image.GetData();
 
    const auto half = settings.GetFFTLength() / 2;
@@ -2185,6 +2255,7 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
                                      (size_t)hiddenMid.width,
          t0, pps);
    }
+   auto nBins = settings.NBins();
 
    float minFreq, maxFreq;
    track->GetSpectrumBounds(&minFreq, &maxFreq);
@@ -2195,17 +2266,19 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
    // the desired fft bin(s) for display on that row
    float *bins = (float*)alloca(sizeof(*bins)*(hiddenMid.height + 1));
    {
-       const NumberScale numberScale(settings.GetScale(minFreq, maxFreq, rate, true));
+      const NumberScale numberScale( settings.GetScale( minFreq, maxFreq ) );
 
-       NumberScale::Iterator it = numberScale.begin(mid.height);
-       float nextBin = std::max(0.0f, std::min(float(half - 1), *it));
+      NumberScale::Iterator it = numberScale.begin(mid.height);
+      float nextBin = std::max( 0.0f, std::min( float(nBins - 1),
+         settings.findBin( *it, binUnit ) ) );
 
-       int yy;
-       for (yy = 0; yy < hiddenMid.height; ++yy) {
-          bins[yy] = nextBin;
-          nextBin = std::max(0.0f, std::min(float(half - 1), *++it));
-       }
-       bins[yy] = nextBin;
+      int yy;
+      for (yy = 0; yy < hiddenMid.height; ++yy) {
+         bins[yy] = nextBin;
+         nextBin = std::max( 0.0f, std::min( float(nBins - 1),
+            settings.findBin( *++it, binUnit ) ) );
+      }
+      bins[yy] = nextBin;
    }
 
 #ifdef EXPERIMENTAL_FFT_Y_GRID
@@ -2214,8 +2287,7 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
       scale2 = (lmax - lmin) / log2,
       lmin2 = lmin / log2;
 
-   bool *yGrid;
-   yGrid = new bool[mid.height];
+   ArrayOf<bool> yGrid{size_t(mid.height)};
    for (int yy = 0; yy < mid.height; ++yy) {
       float n = (float(yy) / mid.height*scale2 - lmin2) * 12;
       float n2 = (float(yy + 1) / mid.height*scale2 - lmin2) * 12;
@@ -2231,7 +2303,7 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
 #endif //EXPERIMENTAL_FFT_Y_GRID
 
    if (!updated && clip->mSpecPxCache->valid &&
-      (clip->mSpecPxCache->len == hiddenMid.height * hiddenMid.width)
+      ((int)clip->mSpecPxCache->len == hiddenMid.height * hiddenMid.width)
       && scaleType == clip->mSpecPxCache->scaleType
       && gain == clip->mSpecPxCache->gain
       && range == clip->mSpecPxCache->range
@@ -2267,6 +2339,8 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
 #endif
 
 #ifdef EXPERIMENTAL_FIND_NOTES
+      float log2 = logf( 2.0f ),
+         lmin = logf( minFreq ), lmax = logf( maxFreq ), scale = lmax - lmin,
          lmins = lmin,
          lmaxs = lmax
          ;
@@ -2282,90 +2356,89 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
          i0 = expf(lmin) / binUnit,
          i1 = expf(scale + lmin) / binUnit,
          minColor = 0.0f;
-      const int maxTableSize = 1024;
-      int *indexes = new int[maxTableSize];
+      const size_t maxTableSize = 1024;
+      ArrayOf<int> indexes{ maxTableSize };
 #endif //EXPERIMENTAL_FIND_NOTES
 
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
       for (int xx = 0; xx < hiddenMid.width; ++xx) {
+#ifdef EXPERIMENTAL_FIND_NOTES
+         int maximas = 0;
+         const int x0 = nBins * xx;
+         if (fftFindNotes) {
+            for (int i = maxTableSize - 1; i >= 0; i--)
+               indexes[i] = -1;
+
+            // Build a table of (most) values, put the index in it.
+            for (int i = (int)(i0); i < (int)(i1); i++) {
+               float freqi = freq[x0 + (int)(i)];
+               int value = (int)((freqi + gain + range) / range*(maxTableSize - 1));
+               if (value < 0)
+                  value = 0;
+               if (value >= maxTableSize)
+                  value = maxTableSize - 1;
+               indexes[value] = i;
+            }
+            // Build from the indices an array of maxima.
+            for (int i = maxTableSize - 1; i >= 0; i--) {
+               int index = indexes[i];
+               if (index >= 0) {
+                  float freqi = freq[x0 + index];
+                  if (freqi < findNotesMinA)
+                     break;
+
+                  bool ok = true;
+                  for (int m = 0; m < maximas; m++) {
+                     // Avoid to store very close maxima.
+                     float maxm = maxima[m];
+                     if (maxm / index < minDistance && index / maxm < minDistance) {
+                        ok = false;
+                        break;
+                     }
+                  }
+                  if (ok) {
+                     maxima[maximas++] = index;
+                     if (maximas >= numberOfMaxima)
+                        break;
+                  }
+               }
+            }
+
+// The f2pix helper macro converts a frequency into a pixel coordinate.
+#define f2pix(f) (logf(f)-lmins)/(lmaxs-lmins)*hiddenMid.height
+
+            // Possibly quantize the maxima frequencies and create the pixel block limits.
+            for (int i = 0; i < maximas; i++) {
+               int index = maxima[i];
+               float f = float(index)*bin2f;
+               if (findNotesQuantize)
+               {
+                  f = expf((int)(log(f / 440) / log2 * 12 - 0.5) / 12.0f*log2) * 440;
+                  maxima[i] = f*f2bin;
+               }
+               float f0 = expf((log(f / 440) / log2 * 24 - 1) / 24.0f*log2) * 440;
+               maxima0[i] = f2pix(f0);
+               float f1 = expf((log(f / 440) / log2 * 24 + 1) / 24.0f*log2) * 440;
+               maxima1[i] = f2pix(f1);
+            }
+         }
+
+         int it = 0;
+         bool inMaximum = false;
+#endif //EXPERIMENTAL_FIND_NOTES
+
          for (int yy = 0; yy < hiddenMid.height; ++yy) {
             const float bin     = bins[yy];
             const float nextBin = bins[yy+1];
 
             if (settings.scaleType != SpectrogramSettings::stLogarithmic) {
                const float value = findValue
-                  (freq + half * xx, bin, nextBin, half, autocorrelation, gain, range);
+                  (freq + nBins * xx, bin, nextBin, nBins, autocorrelation, gain, range);
                clip->mSpecPxCache->values[xx * hiddenMid.height + yy] = value;
             }
             else {
-               // Do we need this legacy experiment still?
-#ifdef EXPERIMENTAL_FIND_NOTES
-               int maximas = 0;
-               const int x0 = half * x;
-               if (fftFindNotes) {
-                  for (int i = maxTableSize - 1; i >= 0; i--)
-                     indexes[i] = -1;
-
-                  // Build a table of (most) values, put the index in it.
-                  for (int i = (int)(i0); i < (int)(i1); i++) {
-                     float freqi = freq[x0 + (int)(i)];
-                     int value = (int)((freqi + gain + range) / range*(maxTableSize - 1));
-                     if (value < 0)
-                        value = 0;
-                     if (value >= maxTableSize)
-                        value = maxTableSize - 1;
-                     indexes[value] = i;
-                  }
-                  // Build from the indices an array of maxima.
-                  for (int i = maxTableSize - 1; i >= 0; i--) {
-                     int index = indexes[i];
-                     if (index >= 0) {
-                        float freqi = freq[x0 + index];
-                        if (freqi < findNotesMinA)
-                           break;
-
-                        bool ok = true;
-                        for (int m = 0; m < maximas; m++) {
-                           // Avoid to store very close maxima.
-                           float maxm = maxima[m];
-                           if (maxm / index < minDistance && index / maxm < minDistance) {
-                              ok = false;
-                              break;
-                           }
-                        }
-                        if (ok) {
-                           maxima[maximas++] = index;
-                           if (maximas >= numberOfMaxima)
-                              break;
-                        }
-                     }
-                  }
-
-// The f2pix helper macro converts a frequency into a pixel coordinate.
-#define f2pix(f) (logf(f)-lmins)/(lmaxs-lmins)*hiddenMid.height
-
-                  // Possibly quantize the maxima frequencies and create the pixel block limits.
-                  for (int i = 0; i < maximas; i++) {
-                     int index = maxima[i];
-                     float f = float(index)*bin2f;
-                     if (findNotesQuantize)
-                     {
-                        f = expf((int)(log(f / 440) / log2 * 12 - 0.5) / 12.0f*log2) * 440;
-                        maxima[i] = f*f2bin;
-                     }
-                     float f0 = expf((log(f / 440) / log2 * 24 - 1) / 24.0f*log2) * 440;
-                     maxima0[i] = f2pix(f0);
-                     float f1 = expf((log(f / 440) / log2 * 24 + 1) / 24.0f*log2) * 440;
-                     maxima1[i] = f2pix(f1);
-                  }
-               }
-               int it = 0;
-               int oldBin0 = -1;
-               bool inMaximum = false;
-#endif //EXPERIMENTAL_FIND_NOTES
-
                float value;
 
 #ifdef EXPERIMENTAL_FIND_NOTES
@@ -2378,7 +2451,7 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
                      if (inMaximum) {
                         float i1 = maxima1[it];
                         if (yy + 1 <= i1) {
-                           value = findValue(freq + x0, bin, nextBin, half, autocorrelation, gain, range);
+                           value = findValue(freq + x0, bin, nextBin, nBins, autocorrelation, gain, range);
                            if (value < findNotesMinA)
                               value = minColor;
                         }
@@ -2399,7 +2472,7 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
 #endif //EXPERIMENTAL_FIND_NOTES
                {
                   value = findValue
-                     (freq + half * xx, bin, nextBin, half, autocorrelation, gain, range);
+                     (freq + nBins * xx, bin, nextBin, nBins, autocorrelation, gain, range);
                }
                clip->mSpecPxCache->values[xx * hiddenMid.height + yy] = value;
             } // logF
@@ -2407,10 +2480,11 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
       } // each xx
    } // updating cache
 
-   float selBinLo = freqLo / binUnit;
-   float selBinHi = freqHi / binUnit;
-   float selBinCenter =
-      ((freqLo < 0 || freqHi < 0) ? -1 : sqrt(freqLo * freqHi)) / binUnit;
+   float selBinLo = settings.findBin( freqLo, binUnit);
+   float selBinHi = settings.findBin( freqHi, binUnit);
+   float selBinCenter = (freqLo < 0 || freqHi < 0)
+      ? -1
+      : settings.findBin( sqrt(freqLo * freqHi), binUnit );
 
    const bool isSpectral = settings.SpectralSelectionEnabled();
    const bool hidden = (ZoomInfo::HIDDEN == zoomInfo.GetFisheyeState());
@@ -2421,11 +2495,12 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
       ? 0
       : std::min(mid.width, (int)(zoomInfo.GetFisheyeRightBoundary(-leftOffset)));
    const size_t numPixels = std::max(0, end - begin);
-   const size_t zeroPaddingFactor = autocorrelation ? 1 : settings.ZeroPaddingFactor();
-   SpecCache specCache
-      (numPixels, settings.algorithm, -1,
-       t0, settings.windowType,
-       settings.WindowSize(), zeroPaddingFactor, settings.frequencyGain);
+
+   SpecCache specCache;
+
+   // need explicit resize since specCache.where[] accessed before Populate()
+   specCache.Grow(numPixels, settings, -1, t0);
+
    if (numPixels > 0) {
       for (int ii = begin; ii < end; ++ii) {
          const double time = zoomInfo.PositionToTime(ii, -leftOffset) - tOffset;
@@ -2461,8 +2536,8 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
           uncached = 0;
       }
       else {
-          int specIndex = (xx - fisheyeLeft) * half;
-          wxASSERT(specIndex >= 0 && specIndex < specCache.freq.size());
+          int specIndex = (xx - fisheyeLeft) * nBins;
+          wxASSERT(specIndex >= 0 && specIndex < (int)specCache.freq.size());
           uncached = &specCache.freq[specIndex];
       }
 
@@ -2493,7 +2568,7 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
                   (xx + leftOffset - hiddenLeftOffset) / DASH_LENGTH, isSpectral);
 
          const float value = uncached
-            ? findValue(uncached, bin, nextBin, half, autocorrelation, gain, range)
+            ? findValue(uncached, bin, nextBin, nBins, autocorrelation, gain, range)
             : clip->mSpecPxCache->values[correctedX * hiddenMid.height + yy];
 
          unsigned char rv, gv, bv;
@@ -2507,7 +2582,12 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
          }
 #endif //EXPERIMENTAL_FFT_Y_GRID
 
-         int px = ((mid.height - 1 - yy) * mid.width + xx) * 3;
+         int px = ((mid.height - 1 - yy) * mid.width + xx);
+#ifdef EXPERIMENTAL_SPECTROGRAM_OVERLAY
+         // More transparent the closer to zero intensity.
+         alpha[px]= wxMin( 200, (value+0.3) * 500) ;
+#endif
+         px *=3;
          data[px++] = rv;
          data[px++] = gv;
          data[px] = bv;
@@ -2521,10 +2601,6 @@ void TrackArtist::DrawClipSpectrum(WaveTrackCache &waveTrackCache,
    memDC.SelectObject(converted);
 
    dc.Blit(mid.x, mid.y, mid.width, mid.height, &memDC, 0, 0, wxCOPY, FALSE);
-
-#ifdef EXPERIMENTAL_FFT_Y_GRID
-   delete[] yGrid;
-#endif //EXPERIMENTAL_FFT_Y_GRID
 }
 
 #ifdef USE_MIDI
@@ -2711,36 +2787,43 @@ int PitchToY(double p, int bottom)
    sel is equal to rect, and the entire region is drawn with unselected
    background colors.
  */
-void TrackArtist::DrawNoteBackground(const NoteTrack *track, wxDC &dc,
+void TrackArt::DrawNoteBackground(TrackPanelDrawingContext &context,
+                                     const NoteTrack *track,
                                      const wxRect &rect, const wxRect &sel,
-                                     const ZoomInfo &zoomInfo,
                                      const wxBrush &wb, const wxPen &wp,
                                      const wxBrush &bb, const wxPen &bp,
                                      const wxPen &mp)
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &zoomInfo = *artist->pZoomInfo;
+
    dc.SetBrush(wb);
    dc.SetPen(wp);
+#ifndef EXPERIMENTAL_NOTETRACK_OVERLAY
    dc.DrawRectangle(sel); // fill rectangle with white keys background
+#endif
 
    int left = TIME_TO_X(track->GetOffset());
    if (left < sel.x) left = sel.x; // clip on left
 
-   int right = TIME_TO_X(track->GetOffset() + track->mSeq->get_real_dur());
+   int right = TIME_TO_X(track->GetOffset() + track->GetSeq().get_real_dur());
    if (right > sel.x + sel.width) right = sel.x + sel.width; // clip on right
 
    // need overlap between MIDI data and the background region
    if (left >= right) return;
 
+   NoteTrackDisplayData data = NoteTrackDisplayData(track, rect);
    dc.SetBrush(bb);
    int octave = 0;
    // obottom is the window coordinate of octave divider line
-   int obottom = track->GetOctaveBottom(octave);
+   int obottom = data.GetOctaveBottom(octave);
    // eOffset is for the line between E and F; there's another line
    // between B and C, hence the offset of 2 for two line thicknesses
-   int eOffset = track->GetPitchHeight() * 5 + 2;
-   while (obottom > rect.y + track->GetNoteMargin() + 3) {
+   int eOffset = data.GetPitchHeight(5) + 2;
+   while (obottom > rect.y + data.GetNoteMargin() + 3) {
       // draw a black line separating octaves if this octave botton is visible
-      if (obottom < rect.y + rect.height - track->GetNoteMargin()) {
+      if (obottom < rect.y + rect.height - data.GetNoteMargin()) {
          dc.SetPen(*wxBLACK_PEN);
          // obottom - 1 because obottom is at the bottom of the line
          AColor::Line(dc, left, obottom - 1, right, obottom - 1);
@@ -2756,18 +2839,18 @@ void TrackArtist::DrawNoteBackground(const NoteTrack *track, wxDC &dc,
       wxRect br;
       br.x = left;
       br.width = right - left;
-      br.height = track->GetPitchHeight();
+      br.height = data.GetPitchHeight(1);
       for (int black = 0; black < 5; black++) {
-         br.y = obottom - track->GetBlackPos(black);
+         br.y = obottom - data.GetBlackPos(black);
          if (br.y > rect.y && br.y + br.height < rect.y + rect.height) {
             dc.DrawRectangle(br); // draw each black key background stripe
          }
       }
-      obottom = track->GetOctaveBottom(++octave);
+      obottom = data.GetOctaveBottom(++octave);
    }
 
    // draw bar lines
-   Alg_seq_ptr seq = track->mSeq.get();
+   Alg_seq_ptr seq = &track->GetSeq();
    // We assume that sliding a NoteTrack around slides the barlines
    // along with the notes. This means that when we write out a track
    // as Allegro or MIDI without the offset, we'll need to insert an
@@ -2805,13 +2888,16 @@ graphics. Since there may be notes outside of the display region,
 reserve a half-note-height margin at the top and bottom of the
 window and draw out-of-bounds notes here instead.
 */
-void TrackArtist::DrawNoteTrack(const NoteTrack *track,
-                                wxDC & dc,
+void TrackArt::DrawNoteTrack(TrackPanelDrawingContext &context,
+                                const NoteTrack *track,
                                 const wxRect & rect,
-                                const SelectedRegion &selectedRegion,
-                                const ZoomInfo &zoomInfo,
                                 bool muted)
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &selectedRegion = *artist->pSelectedRegion;
+   const auto &zoomInfo = *artist->pZoomInfo;
+
    SonifyBeginNoteBackground();
    double sel0 = selectedRegion.t0();
    double sel1 = selectedRegion.t1();
@@ -2819,51 +2905,39 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
    const double h = X_TO_TIME(rect.x);
    const double h1 = X_TO_TIME(rect.x + rect.width);
 
-   Alg_seq_ptr seq = track->mSeq.get();
-   if (!seq) {
-      assert(track->mSerializationBuffer);
-      // JKC: Previously this indirected via seq->, a NULL pointer.
-      // This was actually OK, since unserialize is a static function.
-      // Alg_seq:: is clearer.
-      std::unique_ptr<Alg_track> alg_track{ Alg_seq::unserialize(track->mSerializationBuffer,
-            track->mSerializationLength) };
-      assert(alg_track->get_type() == 's');
-      const_cast<NoteTrack*>(track)->mSeq.reset(seq = static_cast<Alg_seq*>(alg_track.release()));
-      free(track->mSerializationBuffer);
-      track->mSerializationBuffer = NULL;
-   }
-   assert(seq);
-   int visibleChannels = track->mVisibleChannels;
+   Alg_seq_ptr seq = &track->GetSeq();
 
    if (!track->GetSelected())
       sel0 = sel1 = 0.0;
 
+   NoteTrackDisplayData data = NoteTrackDisplayData(track, rect);
+
    // reserve 1/2 note height at top and bottom of track for
    // out-of-bounds notes
-   int numPitches = (rect.height) / track->GetPitchHeight();
+   int numPitches = (rect.height) / data.GetPitchHeight(1);
    if (numPitches < 0) numPitches = 0; // cannot be negative
 
-   // bottom is the hypothetical location of the bottom of pitch 0 relative to
-   // the top of the clipping region rect: rect.height - PITCH_HEIGHT/2 is where the
-   // bottomNote is displayed, and to that
-   // we add the height of bottomNote from the position of pitch 0
-   track->PrepareIPitchToY(rect);
+#ifdef EXPERIMENTAL_NOTETRACK_OVERLAY
+   DrawBackgroundWithSelection(context, rect, track,
+         AColor::labelSelectedBrush, AColor::labelUnselectedBrush);
+#endif
 
-   // Background comes in 6 colors:
+   // Background comes in 4 colors, that are now themed.
    //   214, 214,214 -- unselected white keys
-   //   192,192,192 -- unselected black keys
-   //   170,170,170 -- unselected bar lines
+   //   192,192,192 -- black keys
+   //   170,170,170 -- bar lines
    //   165,165,190 -- selected white keys
-   //   148,148,170 -- selected black keys
-   //   131,131,150 -- selected bar lines
-   wxPen blackStripePen;
-   blackStripePen.SetColour(192, 192, 192);
-   wxBrush blackStripeBrush;
-   blackStripeBrush.SetColour(192, 192, 192);
-   wxPen barLinePen;
-   barLinePen.SetColour(170, 170, 170);
 
-   DrawNoteBackground(track, dc, rect, rect, zoomInfo, blankBrush, blankPen,
+   wxPen blackStripePen;
+   blackStripePen.SetColour(theTheme.Colour( clrMidiZebra));
+   wxBrush blackStripeBrush;
+   blackStripeBrush.SetColour(theTheme.Colour( clrMidiZebra));
+   wxPen barLinePen;
+   barLinePen.SetColour(theTheme.Colour( clrMidiLines));
+
+   const auto &blankBrush = artist->blankBrush;
+   const auto &blankPen = artist->blankPen;
+   DrawNoteBackground(context, track, rect, rect, blankBrush, blankPen,
                       blackStripeBrush, blackStripePen, barLinePen);
 
    dc.SetClippingRegion(rect);
@@ -2882,22 +2956,22 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
    dc.SetPen(selectedWhiteKeyPen);
 
    wxBrush selectedWhiteKeyBrush;
-   selectedWhiteKeyBrush.SetColour(165, 165, 190);
+   selectedWhiteKeyBrush.SetColour(theTheme.Colour( clrSelected ));
    // Then, the black keys and octave stripes, as smaller rectangles
    wxPen selectedBlackKeyPen;
-   selectedBlackKeyPen.SetColour(148, 148, 170);
+   selectedBlackKeyPen.SetColour(theTheme.Colour( clrMidiZebra));
    wxBrush selectedBlackKeyBrush;
-   selectedBlackKeyBrush.SetColour(148, 148, 170);
+   selectedBlackKeyBrush.SetColour(theTheme.Colour( clrMidiZebra));
    wxPen selectedBarLinePen;
-   selectedBarLinePen.SetColour(131, 131, 150);
+   selectedBarLinePen.SetColour(theTheme.Colour( clrMidiLines));
 
-   DrawNoteBackground(track, dc, rect, selBG, zoomInfo,
+   DrawNoteBackground(context, track, rect, selBG,
                       selectedWhiteKeyBrush, selectedWhiteKeyPen,
                       selectedBlackKeyBrush, selectedBlackKeyPen,
                       selectedBarLinePen);
    SonifyEndNoteBackground();
    SonifyBeginNoteForeground();
-   int marg = track->GetNoteMargin();
+   int marg = data.GetNoteMargin();
 
    // NOTE: it would be better to put this in some global initialization
    // function rather than do lookups every time.
@@ -2936,15 +3010,15 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
       if (evt->get_type() == 'n') { // 'n' means a note
          Alg_note_ptr note = (Alg_note_ptr) evt;
          // if the note's channel is visible
-         if (visibleChannels & (1 << (evt->chan & 15))) {
+         if (track->IsVisibleChan(evt->chan)) {
             double xx = note->time + track->GetOffset();
             double x1 = xx + note->dur;
             if (xx < h1 && x1 > h) { // omit if outside box
                const char *shape = NULL;
                if (note->loud > 0.0 || 0 == (shape = IsShape(note))) {
                   wxRect nr; // "note rectangle"
-                  nr.y = track->PitchToY(note->pitch);
-                  nr.height = track->GetPitchHeight();
+                  nr.y = data.PitchToY(note->pitch);
+                  nr.height = data.GetPitchHeight(1);
 
                   nr.x = TIME_TO_X(xx);
                   nr.width = TIME_TO_X(x1) - nr.x;
@@ -2985,7 +3059,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                         else
                            AColor::MIDIChannel(&dc, note->chan + 1);
                         dc.DrawRectangle(nr);
-                        if (track->GetPitchHeight() > 2) {
+                        if (data.GetPitchHeight(1) > 2) {
                            AColor::LightMIDIChannel(&dc, note->chan + 1);
                            AColor::Line(dc, nr.x, nr.y, nr.x + nr.width-2, nr.y);
                            AColor::Line(dc, nr.x, nr.y, nr.x, nr.y + nr.height-2);
@@ -3003,7 +3077,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                   // add 0.5 to pitch because pitches are plotted with
                   // height = PITCH_HEIGHT; thus, the center is raised
                   // by PITCH_HEIGHT * 0.5
-                  int yy = track->PitchToY(note->pitch);
+                  int yy = data.PitchToY(note->pitch);
                   long linecolor = LookupIntAttribute(note, linecolori, -1);
                   long linethick = LookupIntAttribute(note, linethicki, 1);
                   long fillcolor = -1;
@@ -3016,7 +3090,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                         dc.SetPen(wxPen(wxColour(RED(linecolor),
                               GREEN(linecolor),
                               BLUE(linecolor)),
-                              linethick, wxSOLID));
+                              linethick, wxPENSTYLE_SOLID));
                   }
                   if (shape != line) {
                      fillcolor = LookupIntAttribute(note, fillcolori, -1);
@@ -3026,10 +3100,10 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                         dc.SetBrush(wxBrush(wxColour(RED(fillcolor),
                               GREEN(fillcolor),
                               BLUE(fillcolor)),
-                              wxSOLID));
+                              wxBRUSHSTYLE_SOLID));
                      if (!fillflag) dc.SetBrush(*wxTRANSPARENT_BRUSH);
                   }
-                  int y1 = track->PitchToY(LookupRealAttribute(note, y1r, note->pitch));
+                  int y1 = data.PitchToY(LookupRealAttribute(note, y1r, note->pitch));
                   if (shape == line) {
                      // extreme zooms caues problems under windows, so we have to do some
                      // clipping before calling display routine
@@ -3060,7 +3134,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                      points[1].y = y1;
                      points[2].x = TIME_TO_X(LookupRealAttribute(note, x2r, xx));
                      CLIP(points[2].x);
-                     points[2].y = track->PitchToY(LookupRealAttribute(note, y2r, note->pitch));
+                     points[2].y = data.PitchToY(LookupRealAttribute(note, y2r, note->pitch));
                      dc.DrawPolygon(3, points);
                   } else if (shape == polygon) {
                      wxPoint points[20]; // upper bound of 20 sides
@@ -3072,7 +3146,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                      points[1].y = y1;
                      points[2].x = TIME_TO_X(LookupRealAttribute(note, x2r, xx));
                      CLIP(points[2].x);
-                     points[2].y = track->PitchToY(LookupRealAttribute(note, y2r, note->pitch));
+                     points[2].y = data.PitchToY(LookupRealAttribute(note, y2r, note->pitch));
                      int n = 3;
                      while (n < 20) {
                         char name[8];
@@ -3086,7 +3160,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                         attr = symbol_table.insert_string(name);
                         double yn = LookupRealAttribute(note, attr, -1000000.0);
                         if (yn == -1000000.0) break;
-                        points[n].y = track->PitchToY(yn);
+                        points[n].y = data.PitchToY(yn);
                         n++;
                      }
                      dc.DrawPolygon(n, points);
@@ -3117,11 +3191,11 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                      int size = LookupIntAttribute(note, sizei, 8);
                      const char *justify = LookupStringAttribute(note, justifys, "ld");
                      wxFont wxfont;
-                     wxfont.SetFamily(font == roman ? wxROMAN :
-                        (font == swiss ? wxSWISS :
-                           (font == modern ? wxMODERN : wxDEFAULT)));
-                     wxfont.SetStyle(wxNORMAL);
-                     wxfont.SetWeight(weight == bold ? wxBOLD : wxNORMAL);
+                     wxfont.SetFamily(font == roman ? wxFONTFAMILY_ROMAN :
+                        (font == swiss ? wxFONTFAMILY_SWISS :
+                           (font == modern ? wxFONTFAMILY_MODERN : wxFONTFAMILY_DEFAULT)));
+                     wxfont.SetStyle(wxFONTSTYLE_NORMAL);
+                     wxfont.SetWeight(weight == bold ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
                      wxfont.SetPointSize(size);
                      dc.SetFont(wxfont);
 
@@ -3147,7 +3221,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                         dc.SetPen(wxPen(wxColour(RED(fillcolor),
                               GREEN(fillcolor),
                               BLUE(fillcolor)),
-                              1, wxSOLID));
+                              1, wxPENSTYLE_SOLID));
                         dc.DrawRectangle(TIME_TO_X(xx) + hoffset, yy + voffset,
                               textWidth, textHeight);
                      }
@@ -3166,7 +3240,7 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
                 rect.x + rect.width, rect.y + rect.height - marg - 1); // top of line
 
    if (h == 0.0 && track->GetOffset() < 0.0) {
-      DrawNegativeOffsetTrackArrows(dc, rect);
+      DrawNegativeOffsetTrackArrows( context, rect );
    }
 
    dc.DestroyClippingRegion();
@@ -3175,43 +3249,36 @@ void TrackArtist::DrawNoteTrack(const NoteTrack *track,
 #endif // USE_MIDI
 
 
-void TrackArtist::DrawLabelTrack(const LabelTrack *track,
-                                 wxDC & dc,
-                                 const wxRect & rect,
-                                 const SelectedRegion &selectedRegion,
-                                 const ZoomInfo &zoomInfo)
+void TrackArt::DrawTimeTrack(TrackPanelDrawingContext &context,
+                                const TimeTrack *track,
+                                const wxRect & rect)
 {
-   double sel0 = selectedRegion.t0();
-   double sel1 = selectedRegion.t1();
-
-   if (!track->GetSelected() && !track->IsSyncLockSelected())
-      sel0 = sel1 = 0.0;
-
-   track->Draw(dc, rect, SelectedRegion(sel0, sel1), zoomInfo);
-}
-
-void TrackArtist::DrawTimeTrack(const TimeTrack *track,
-                                wxDC & dc,
-                                const wxRect & rect,
-                                const ZoomInfo &zoomInfo)
-{
-   track->Draw(dc, rect, zoomInfo);
+   track->Draw( context, rect );
    wxRect envRect = rect;
    envRect.height -= 2;
    double lower = track->GetRangeLower(), upper = track->GetRangeUpper();
+   const auto artist = TrackArtist::Get( context );
+   const auto dbRange = artist->mdBrange;
    if(track->GetDisplayLog()) {
       // MB: silly way to undo the work of GetWaveYPos while still getting a logarithmic scale
-      lower = LINEAR_TO_DB(std::max(1.0e-7, lower)) / mdBrange + 1.0;
-      upper = LINEAR_TO_DB(std::max(1.0e-7, upper)) / mdBrange + 1.0;
+      lower = LINEAR_TO_DB(std::max(1.0e-7, lower)) / dbRange + 1.0;
+      upper = LINEAR_TO_DB(std::max(1.0e-7, upper)) / dbRange + 1.0;
    }
-   track->GetEnvelope()->DrawPoints(dc, envRect, zoomInfo,
-               track->GetDisplayLog(), mdBrange, lower, upper);
+   track->GetEnvelope()->DrawPoints
+      ( context, envRect,
+        track->GetDisplayLog(), dbRange, lower, upper, false );
 }
 
 void TrackArtist::UpdatePrefs()
 {
    mdBrange = gPrefs->Read(ENV_DB_KEY, mdBrange);
    mShowClipping = gPrefs->Read(wxT("/GUI/ShowClipping"), mShowClipping);
+   mSampleDisplay = TracksPrefs::SampleViewChoice();
+
+   mbShowTrackNameInTrack =
+      gPrefs->ReadBool(wxT("/GUI/ShowTrackNameInWaveform"), false);
+   
+   SetColours(0);
 }
 
 // Draws the sync-lock bitmap, tiled; always draws stationary relative to the DC
@@ -3227,8 +3294,11 @@ void TrackArtist::UpdatePrefs()
 // 5x5 box.
 //
 // There may be a better way to do this, or a more appealing pattern.
-void TrackArtist::DrawSyncLockTiles(wxDC *dc, wxRect rect)
+void TrackArt::DrawSyncLockTiles(
+   TrackPanelDrawingContext &context, const wxRect &rect )
 {
+   const auto dc = &context.dc;
+
    wxBitmap syncLockBitmap(theTheme.Image(bmpSyncLockSelTile));
 
    // Grid spacing is a bit smaller than actual image size
@@ -3334,17 +3404,19 @@ void TrackArtist::DrawSyncLockTiles(wxDC *dc, wxRect rect)
    }
 }
 
-void TrackArtist::DrawBackgroundWithSelection(wxDC *dc, const wxRect &rect,
-   const Track *track, wxBrush &selBrush, wxBrush &unselBrush,
-   const SelectedRegion &selectedRegion, const ZoomInfo &zoomInfo)
+void TrackArt::DrawBackgroundWithSelection(
+   TrackPanelDrawingContext &context, const wxRect &rect,
+   const Track *track, const wxBrush &selBrush, const wxBrush &unselBrush,
+   bool useSelection)
 {
-   //MM: Draw background. We should optimize that a bit more.
-   //AWD: "+ 1.5" and "+ 2.5" throughout match code in
-   //AdornedRulerPanel::DoDrawSelection() and make selection line up with ruler.
-   //I don't know if/why this is correct.
+   const auto dc = &context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &selectedRegion = *artist->pSelectedRegion;
+   const auto &zoomInfo = *artist->pZoomInfo;
 
-   const double sel0 = selectedRegion.t0();
-   const double sel1 = selectedRegion.t1();
+   //MM: Draw background. We should optimize that a bit more.
+   const double sel0 = useSelection ? selectedRegion.t0() : 0.0;
+   const double sel1 = useSelection ? selectedRegion.t1() : 0.0;
 
    dc->SetPen(*wxTRANSPARENT_PEN);
    if (track->GetSelected() || track->IsSyncLockSelected())
@@ -3354,7 +3426,7 @@ void TrackArtist::DrawBackgroundWithSelection(wxDC *dc, const wxRect &rect,
       wxRect within = rect;
       wxRect after = rect;
 
-      before.width = (int)(zoomInfo.TimeToPosition(sel0) + 2);
+      before.width = (int)(zoomInfo.TimeToPosition(sel0) );
       if (before.GetRight() > rect.GetRight()) {
          before.width = rect.width;
       }
@@ -3365,7 +3437,7 @@ void TrackArtist::DrawBackgroundWithSelection(wxDC *dc, const wxRect &rect,
 
          within.x = 1 + before.GetRight();
       }
-      within.width = rect.x + (int)(zoomInfo.TimeToPosition(sel1) + 2) - within.x;
+      within.width = rect.x + (int)(zoomInfo.TimeToPosition(sel1) ) - within.x -1;
 
       if (within.GetRight() > rect.GetRight()) {
          within.width = 1 + rect.GetRight() - within.x;
@@ -3380,7 +3452,7 @@ void TrackArtist::DrawBackgroundWithSelection(wxDC *dc, const wxRect &rect,
             // Per condition above, track must be sync-lock selected
             dc->SetBrush(unselBrush);
             dc->DrawRectangle(within);
-            DrawSyncLockTiles(dc, within);
+            DrawSyncLockTiles( context, within );
          }
 
          after.x = 1 + within.GetRight();

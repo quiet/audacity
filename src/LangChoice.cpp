@@ -16,19 +16,20 @@ of languages for Audacity.
 
 
 #include "Audacity.h"
+#include "LangChoice.h"
 
 #include <wx/defs.h>
 #include <wx/button.h>
 #include <wx/choice.h>
 #include <wx/intl.h>
-#include <wx/msgdlg.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 
-#include "LangChoice.h"
 #include "Languages.h"
 #include "ShuttleGui.h"
 #include "widgets/wxPanelWrapper.h"
+#include "widgets/ErrorDialog.h"
+#include "Internat.h"
 
 class LangChoiceDialog final : public wxDialogWrapper {
 public:
@@ -46,7 +47,7 @@ private:
 
    int mNumLangs;
    wxArrayString mLangCodes;
-   wxArrayString mLangNames;
+   wxArrayStringEx mLangNames;
 
    DECLARE_EVENT_TABLE()
 };
@@ -76,12 +77,8 @@ LangChoiceDialog::LangChoiceDialog(wxWindow * parent,
 {
    SetName(GetTitle());
    GetLanguages(mLangCodes, mLangNames);
-   int ndx = mLangCodes.Index(GetSystemLanguageCode());
-   wxString lang;
-
-   if (ndx != wxNOT_FOUND) {
-      lang = mLangNames[ndx];
-   }
+   int lang =
+      make_iterator_range( mLangCodes ).index( GetSystemLanguageCode() );
 
    ShuttleGui S(this, eIsCreating);
 
@@ -91,8 +88,8 @@ LangChoiceDialog::LangChoiceDialog(wxWindow * parent,
       {
          S.SetBorder(15);
          mChoice = S.AddChoice(_("Choose Language for Audacity to use:"),
-                              lang,
-                              &mLangNames);
+                              mLangNames,
+                              lang);
       }
       S.EndVerticalLay();
 
@@ -110,7 +107,7 @@ void LangChoiceDialog::OnOk(wxCommandEvent & WXUNUSED(event))
    mLang = mLangCodes[ndx];
 
    wxString slang = GetSystemLanguageCode();
-   int sndx = mLangCodes.Index(slang);
+   int sndx = make_iterator_range( mLangCodes ).index( slang );
    wxString sname;
 
    if (sndx == wxNOT_FOUND) {
@@ -128,11 +125,11 @@ void LangChoiceDialog::OnOk(wxCommandEvent & WXUNUSED(event))
       /* i18n-hint: The %s's are replaced by translated and untranslated
        * versions of language names. */
       msg.Printf(_("The language you have chosen, %s (%s), is not the same as the system language, %s (%s)."),
-                 mLangNames[ndx].c_str(),
-                 mLang.c_str(),
-                 sname.c_str(),
-                 slang.c_str());
-      if (wxMessageBox(msg, _("Confirm"), wxYES_NO) == wxNO) {
+                 mLangNames[ndx],
+                 mLang,
+                 sname,
+                 slang);
+      if (AudacityMessageBox(msg, _("Confirm"), wxYES_NO) == wxNO) {
          return;
       }
    }

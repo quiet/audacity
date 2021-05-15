@@ -17,15 +17,20 @@
 #include "../Audacity.h"
 #include "BassTreble.h"
 
+#include "../Experimental.h"
+
 #include <math.h>
 #include <algorithm>
 
 #include <wx/button.h>
+#include <wx/checkbox.h>
 #include <wx/intl.h>
 #include <wx/panel.h>
 #include <wx/sizer.h>
+#include <wx/slider.h>
 
 #include "../Prefs.h"
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../WaveTrack.h"
 #include "../widgets/valnum.h"
@@ -41,13 +46,10 @@ enum
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name       Type     Key                  Def      Min      Max      Scale
-Param( Bass,      double,  XO("Bass"),          0.0,     -30.0,   30.0,    1  );
-Param( Treble,    double,  XO("Treble"),        0.0,     -30.0,   30.0,    1  );
-Param( Gain,      double,  XO("Gain"),          0.0,     -30.0,   30.0,    1  );
-Param( Link,      bool,    XO("Link Sliders"),  false,    false,  true,    1  );
-
-#include <wx/arrimpl.cpp>
-WX_DEFINE_OBJARRAY(EffectBassTrebleStateArray);
+Param( Bass,      double,  wxT("Bass"),          0.0,     -30.0,   30.0,    1  );
+Param( Treble,    double,  wxT("Treble"),        0.0,     -30.0,   30.0,    1  );
+Param( Gain,      double,  wxT("Gain"),          0.0,     -30.0,   30.0,    1  );
+Param( Link,      bool,    wxT("Link Sliders"),  false,    false,  true,    1  );
 
 // Used to communicate the type of the filter.
 enum kShelfType
@@ -80,19 +82,24 @@ EffectBassTreble::~EffectBassTreble()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectBassTreble::GetSymbol()
+ComponentInterfaceSymbol EffectBassTreble::GetSymbol()
 {
    return BASSTREBLE_PLUGIN_SYMBOL;
 }
 
 wxString EffectBassTreble::GetDescription()
 {
-   return XO("Simple tone control effect");
+   return _("Simple tone control effect");
 }
 
-// EffectIdentInterface implementation
+wxString EffectBassTreble::ManualPage()
+{
+   return wxT("Bass_and_Treble");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectBassTreble::GetType()
 {
@@ -137,7 +144,7 @@ bool EffectBassTreble::RealtimeInitialize()
 {
    SetBlockSize(512);
 
-   mSlaves.Clear();
+   mSlaves.clear();
 
    return true;
 }
@@ -148,14 +155,14 @@ bool EffectBassTreble::RealtimeAddProcessor(unsigned WXUNUSED(numChannels), floa
 
    InstanceInit(slave, sampleRate);
 
-   mSlaves.Add(slave);
+   mSlaves.push_back(slave);
 
    return true;
 }
 
 bool EffectBassTreble::RealtimeFinalize()
 {
-   mSlaves.Clear();
+   mSlaves.clear();
 
    return true;
 }
@@ -167,8 +174,15 @@ size_t EffectBassTreble::RealtimeProcess(int group,
 {
    return InstanceProcess(mSlaves[group], inbuf, outbuf, numSamples);
 }
+bool EffectBassTreble::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( mBass, Bass );
+   S.SHUTTLE_PARAM( mTreble, Treble );
+   S.SHUTTLE_PARAM( mGain, Gain );
+   S.SHUTTLE_PARAM( mLink, Link );
+   return true;
+}
 
-bool EffectBassTreble::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectBassTreble::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_Bass, mBass);
    parms.Write(KEY_Treble, mTreble);
@@ -178,7 +192,7 @@ bool EffectBassTreble::GetAutomationParameters(EffectAutomationParameters & parm
    return true;
 }
 
-bool EffectBassTreble::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectBassTreble::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyDouble(Bass);
    ReadAndVerifyDouble(Treble);
@@ -220,7 +234,7 @@ void EffectBassTreble::PopulateOrExchange(ShuttleGui & S)
          mBassT->SetValidator(vldBass);
 
          S.SetStyle(wxSL_HORIZONTAL);
-         mBassS = S.Id(ID_Bass).AddSlider(wxT(""), 0, MAX_Bass * SCL_Bass, MIN_Bass * SCL_Bass);
+         mBassS = S.Id(ID_Bass).AddSlider( {}, 0, MAX_Bass * SCL_Bass, MIN_Bass * SCL_Bass);
          mBassS->SetName(_("Bass"));
 
          // Treble control
@@ -230,14 +244,14 @@ void EffectBassTreble::PopulateOrExchange(ShuttleGui & S)
          mTrebleT->SetValidator(vldTreble);
 
          S.SetStyle(wxSL_HORIZONTAL);
-         mTrebleS = S.Id(ID_Treble).AddSlider(wxT(""), 0, MAX_Treble * SCL_Treble, MIN_Treble * SCL_Treble);
+         mTrebleS = S.Id(ID_Treble).AddSlider( {}, 0, MAX_Treble * SCL_Treble, MIN_Treble * SCL_Treble);
          mTrebleS->SetName(_("Treble"));
       }
       S.EndMultiColumn();
    }
    S.EndStatic();
 
-   S.StartStatic("Output");
+   S.StartStatic(_("Output"));
    {
       S.StartMultiColumn(3, wxEXPAND);
       {
@@ -250,7 +264,7 @@ void EffectBassTreble::PopulateOrExchange(ShuttleGui & S)
          mGainT->SetValidator(vldGain);
 
          S.SetStyle(wxSL_HORIZONTAL);
-         mGainS = S.Id(ID_Gain).AddSlider(wxT(""), 0, MAX_Gain * SCL_Gain, MIN_Gain * SCL_Gain);
+         mGainS = S.Id(ID_Gain).AddSlider( {}, 0, MAX_Gain * SCL_Gain, MIN_Gain * SCL_Gain);
          mGainS->SetName(_("Level"));
       }
       S.EndMultiColumn();
@@ -259,7 +273,7 @@ void EffectBassTreble::PopulateOrExchange(ShuttleGui & S)
       {
          // Link checkbox
          mLinkCheckBox = S.Id(ID_Link).AddCheckBox(_("&Link Volume control to Tone controls"),
-                                          DEF_Link ? wxT("true") : wxT("false"));
+                                          DEF_Link);
       }
       S.EndMultiColumn();
    }

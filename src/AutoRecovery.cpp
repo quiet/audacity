@@ -12,23 +12,31 @@
 \brief The AutoRecoveryDialog prompts the user whether to
 recover previous Audacity projects that were closed incorrectly.
 
+\class AutoSaveFile
+\brief a class wrapping reading and writing of arbitrary data in 
+text or binary format to a file.
+
 *//********************************************************************/
 
-#include "AutoRecovery.h"
 #include "Audacity.h"
-#include "AudacityApp.h"
+#include "AutoRecovery.h"
 #include "FileNames.h"
 #include "blockfile/SimpleBlockFile.h"
+#include "Project.h"
 #include "Sequence.h"
 #include "ShuttleGui.h"
 
+#include <wx/evtloop.h>
 #include <wx/wxprec.h>
 #include <wx/filefn.h>
+#include <wx/listctrl.h>
 #include <wx/dir.h>
 #include <wx/dialog.h>
 #include <wx/app.h>
 
+#include "WaveClip.h"
 #include "WaveTrack.h"
+#include "widgets/ErrorDialog.h"
 
 enum {
    ID_RECOVER_ALL = 10000,
@@ -135,8 +143,8 @@ void AutoRecoveryDialog::OnQuitAudacity(wxCommandEvent & WXUNUSED(event))
 
 void AutoRecoveryDialog::OnRecoverNone(wxCommandEvent & WXUNUSED(event))
 {
-   int ret = wxMessageBox(
-      _("Are you sure you want to discard all projects?\n\nChoosing \"Yes\" discards all projects immediately."),
+   int ret = AudacityMessageBox(
+      _("Are you sure you want to discard all recoverable projects?\n\nChoosing \"Yes\" discards all recoverable projects immediately."),
       _("Confirm Discard Projects"), wxICON_QUESTION | wxYES_NO | wxNO_DEFAULT, this);
 
    if (ret == wxYES)
@@ -155,7 +163,7 @@ static bool HaveFilesToRecover()
    wxDir dir(FileNames::AutoSaveDir());
    if (!dir.IsOpened())
    {
-      wxMessageBox(_("Could not enumerate files in auto save directory."),
+      AudacityMessageBox(_("Could not enumerate files in auto save directory."),
                    _("Error"), wxICON_STOP);
       return false;
    }
@@ -168,17 +176,17 @@ static bool HaveFilesToRecover()
 
 static bool RemoveAllAutoSaveFiles()
 {
-   wxArrayString files;
+   FilePaths files;
    wxDir::GetAllFiles(FileNames::AutoSaveDir(), &files,
                       wxT("*.autosave"), wxDIR_FILES);
 
-   for (unsigned int i = 0; i < files.GetCount(); i++)
+   for (unsigned int i = 0; i < files.size(); i++)
    {
       if (!wxRemoveFile(files[i]))
       {
          // I don't think this error message is actually useful.
          // -dmazzoni
-         //wxMessageBox(wxT("Could not remove auto save file: " + files[i]),
+         //AudacityMessageBox(wxT("Could not remove auto save file: " + files[i]),
          //             _("Error"), wxICON_STOP);
          return false;
       }
@@ -192,36 +200,32 @@ static bool RecoverAllProjects(AudacityProject** pproj)
    wxDir dir(FileNames::AutoSaveDir());
    if (!dir.IsOpened())
    {
-      wxMessageBox(_("Could not enumerate files in auto save directory."),
+      AudacityMessageBox(_("Could not enumerate files in auto save directory."),
                    _("Error"), wxICON_STOP);
       return false;
    }
 
    // Open a project window for each auto save file
    wxString filename;
-   AudacityProject* proj = NULL;
 
-   wxArrayString files;
+   FilePaths files;
    wxDir::GetAllFiles(FileNames::AutoSaveDir(), &files,
                       wxT("*.autosave"), wxDIR_FILES);
 
-   for (unsigned int i = 0; i < files.GetCount(); i++)
+   for (unsigned int i = 0; i < files.size(); i++)
    {
+      AudacityProject* proj{};
       if (*pproj)
       {
          // Reuse existing project window
          proj = *pproj;
          *pproj = NULL;
-      } else
-      {
-         // Create NEW project window
-         proj = CreateNewAudacityProject();
       }
 
       // Open project. When an auto-save file has been opened successfully,
       // the opened auto-save file is automatically deleted and a NEW one
       // is created.
-      proj->OpenFile(files[i], false);
+      AudacityProject::OpenProject( proj, files[i], false );
    }
 
    return true;
@@ -327,7 +331,7 @@ bool RecordingRecoveryHandler::HandleXMLTag(const wxChar *tag,
          return false;
       }
 
-      WaveTrack* track = tracks[index];
+      WaveTrack* track = tracks[index].get();
       WaveClip*  clip = track->NewestOrNewClip();
       Sequence* seq = clip->GetSequence();
 
@@ -400,7 +404,7 @@ bool RecordingRecoveryHandler::HandleXMLTag(const wxChar *tag,
 void RecordingRecoveryHandler::HandleXMLEndTag(const wxChar *tag)
 {
    if (wxStrcmp(tag, wxT("simpleblockfile")) == 0)
-      // Still in inner looop
+      // Still in inner loop
       return;
 
    WaveTrackArray tracks = mProject->GetTracks()->GetWaveTrackArray(false);
@@ -412,11 +416,12 @@ void RecordingRecoveryHandler::HandleXMLEndTag(const wxChar *tag)
       wxASSERT(false);
    }
    else {
-      WaveTrack* track = tracks[index];
+      WaveTrack* track = tracks[index].get();
       WaveClip*  clip = track->NewestOrNewClip();
       Sequence* seq = clip->GetSequence();
 
-      seq->ConsistencyCheck(wxT("RecordingRecoveryHandler::HandleXMLEndTag"));
+      seq->ConsistencyCheck
+         (wxT("RecordingRecoveryHandler::HandleXMLEndTag"), false);
    }
 }
 
@@ -462,25 +467,29 @@ XMLTagHandler* RecordingRecoveryHandler::HandleXMLChild(const wxChar *tag)
 
 enum FieldTypes
 {
-   FT_StartTag,      // type, ID, name
-   FT_EndTag,        // type, ID, name
-   FT_String,        // type, ID, name, string length, string
+   FT_StartTag,      // type, ID
+   FT_EndTag,        // type, ID
+   FT_String,        // type, ID, string length, string
    FT_Int,           // type, ID, value
    FT_Bool,          // type, ID, value
    FT_Long,          // type, ID, value
    FT_LongLong,      // type, ID, value
    FT_SizeT,         // type, ID, value
-   FT_Float,         // type, ID, value
-   FT_Double,        // type, ID, value
+   FT_Float,         // type, ID, value, digits
+   FT_Double,        // type, ID, value, digits
    FT_Data,          // type, string length, string
    FT_Raw,           // type, string length, string
    FT_Push,          // type only
    FT_Pop,           // type only
-   FT_Name           // type, name length, name
+   FT_Name           // type, ID, name length, name
 };
 
-#include <wx/arrimpl.cpp>
-WX_DEFINE_OBJARRAY(IdMapArray);
+wxString AutoSaveFile::FailureMessage( const FilePath &/*filePath*/ )
+{
+   return 
+_("This recovery file was saved by Audacity 2.3.0 or before.\n"
+   "You need to run that version of Audacity to recover the project." );
+}
 
 AutoSaveFile::AutoSaveFile(size_t allocSize)
 {
@@ -513,7 +522,7 @@ void AutoSaveFile::WriteAttr(const wxString & name, const wxString & value)
    mBuffer.PutC(FT_String);
    WriteName(name);
 
-   int len = value.Length() * sizeof(wxChar);
+   int len = value.length() * sizeof(wxChar);
 
    mBuffer.Write(&len, sizeof(len));
    mBuffer.Write(value.wx_str(), len);
@@ -581,7 +590,7 @@ void AutoSaveFile::WriteData(const wxString & value)
 {
    mBuffer.PutC(FT_Data);
 
-   int len = value.Length() * sizeof(wxChar);
+   int len = value.length() * sizeof(wxChar);
 
    mBuffer.Write(&len, sizeof(len));
    mBuffer.Write(value.wx_str(), len);
@@ -591,7 +600,7 @@ void AutoSaveFile::Write(const wxString & value)
 {
    mBuffer.PutC(FT_Raw);
 
-   int len = value.Length() * sizeof(wxChar);
+   int len = value.length() * sizeof(wxChar);
 
    mBuffer.Write(&len, sizeof(len));
    mBuffer.Write(value.wx_str(), len);
@@ -642,17 +651,16 @@ void AutoSaveFile::CheckSpace(wxMemoryOutputStream & os)
    if (left == 0)
    {
       size_t origPos = buf->GetIntPosition();
-      char *temp = new char[mAllocSize];
-      buf->Write(temp, mAllocSize);
-      delete[] temp;
+      ArrayOf<char> temp{ mAllocSize };
+      buf->Write(temp.get(), mAllocSize);
       buf->SetIntPosition(origPos);
    }
 }
 
 void AutoSaveFile::WriteName(const wxString & name)
 {
-   wxASSERT(name.Length() * sizeof(wxChar) <= SHRT_MAX);
-   short len = name.Length() * sizeof(wxChar);
+   wxASSERT(name.length() * sizeof(wxChar) <= SHRT_MAX);
+   short len = name.length() * sizeof(wxChar);
    short id;
 
    if (mNames.count(name))
@@ -680,7 +688,7 @@ bool AutoSaveFile::IsEmpty() const
    return mBuffer.GetLength() == 0;
 }
 
-bool AutoSaveFile::Decode(const wxString & fileName)
+bool AutoSaveFile::Decode(const FilePath & fileName)
 {
    char ident[sizeof(AutoSaveIdent)];
    size_t len = strlen(AutoSaveIdent);
@@ -741,247 +749,218 @@ bool AutoSaveFile::Decode(const wxString & fileName)
    }
 
    len = file.Length() - len;
-   char *buf = new char[len];
-
-   if (file.Read(buf, len) != len)
+   using Chars = ArrayOf < char >;
+   using WxChars = ArrayOf < wxChar >;
+   Chars buf{ len };
+   if (file.Read(buf.get(), len) != len)
    {
-      delete[] buf;
       return false;
    }
 
-   wxMemoryInputStream in(buf, len);
+   wxMemoryInputStream in(buf.get(), len);
 
    file.Close();
-
-   // Decode to a temporary file to preserve the orignal.
-   wxString tempName = fn.CreateTempFileName(fnPath);
-   bool opened = false;
-
-   XMLFileWriter out;
 
    // JKC: ANSWER-ME: Is the try catch actually doing anything?
    // If it is useful, why are we not using it everywhere?
    // If it isn't useful, why are we doing it here?
-   try
-   {
-      out.Open(tempName, wxT("wb"));
-      opened = out.IsOpened();
-   }
-   catch (const XMLFileWriterException&)
-   {
-   }
+   // PRL: Yes, now we are doing GuardedCall everywhere that XMLFileWriter is
+   // used.
+   return GuardedCall< bool >( [&] {
+      XMLFileWriter out{ fileName, _("Error Decoding File") };
 
-   if (!opened)
-   {
-      delete[] buf;
+      IdMap mIds;
+      std::vector<IdMap> mIdStack;
 
-      wxRemoveFile(tempName);
+      mIds.clear();
+   
+      struct Error{};
+      auto Lookup = [&mIds]( short id ) -> const wxString & {
+         auto iter = mIds.find( id );
+         if ( iter == mIds.end() )
+            throw Error{};
+         return iter->second;
+      };
 
-      return false;
-   }
+      try { while ( !in.Eof() ) {
+         short id;
 
-   mIds.clear();
+         switch (in.GetC())
+         {
+            case FT_Push:
+            {
+               mIdStack.push_back(mIds);
+               mIds.clear();
+            }
+            break;
 
-   while (!in.Eof() && !out.Error())
-   {
-      short id;
+            case FT_Pop:
+            {
+               mIds = mIdStack.back();
+               mIdStack.pop_back();
+            }
+            break;
 
-      switch (in.GetC())
+            case FT_Name:
+            {
+               short len;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&len, sizeof(len));
+               WxChars name{ len / sizeof(wxChar) };
+               in.Read(name.get(), len);
+
+               mIds[id] = wxString(name.get(), len / sizeof(wxChar));
+            }
+            break;
+
+            case FT_StartTag:
+            {
+               in.Read(&id, sizeof(id));
+
+               out.StartTag(Lookup(id));
+            }
+            break;
+
+            case FT_EndTag:
+            {
+               in.Read(&id, sizeof(id));
+
+               out.EndTag(Lookup(id));
+            }
+            break;
+
+            case FT_String:
+            {
+               int len;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&len, sizeof(len));
+               WxChars val{ len / sizeof(wxChar) };
+               in.Read(val.get(), len);
+
+               out.WriteAttr(Lookup(id), wxString(val.get(), len / sizeof(wxChar)));
+            }
+            break;
+
+            case FT_Float:
+            {
+               float val;
+               int dig;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&val, sizeof(val));
+               in.Read(&dig, sizeof(dig));
+
+               out.WriteAttr(Lookup(id), val, dig);
+            }
+            break;
+
+            case FT_Double:
+            {
+               double val;
+               int dig;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&val, sizeof(val));
+               in.Read(&dig, sizeof(dig));
+
+               out.WriteAttr(Lookup(id), val, dig);
+            }
+            break;
+
+            case FT_Int:
+            {
+               int val;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&val, sizeof(val));
+
+               out.WriteAttr(Lookup(id), val);
+            }
+            break;
+
+            case FT_Bool:
+            {
+               bool val;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&val, sizeof(val));
+
+               out.WriteAttr(Lookup(id), val);
+            }
+            break;
+
+            case FT_Long:
+            {
+               long val;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&val, sizeof(val));
+
+               out.WriteAttr(Lookup(id), val);
+            }
+            break;
+
+            case FT_LongLong:
+            {
+               long long val;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&val, sizeof(val));
+
+               out.WriteAttr(Lookup(id), val);
+            }
+            break;
+
+            case FT_SizeT:
+            {
+               size_t val;
+
+               in.Read(&id, sizeof(id));
+               in.Read(&val, sizeof(val));
+
+               out.WriteAttr(Lookup(id), val);
+            }
+            break;
+
+            case FT_Data:
+            {
+               int len;
+
+               in.Read(&len, sizeof(len));
+               WxChars val{ len / sizeof(wxChar) };
+               in.Read(val.get(), len);
+
+               out.WriteData(wxString(val.get(), len / sizeof(wxChar)));
+            }
+            break;
+
+            case FT_Raw:
+            {
+               int len;
+
+               in.Read(&len, sizeof(len));
+               WxChars val{ len / sizeof(wxChar) };
+               in.Read(val.get(), len);
+
+               out.Write(wxString(val.get(), len / sizeof(wxChar)));
+            }
+            break;
+
+            default:
+               wxASSERT(true);
+            break;
+         }
+      } }
+      catch( const Error & )
       {
-         case FT_Push:
-         {
-            mIdStack.Add(mIds);
-            mIds.clear();
-         }
-         break;
-
-         case FT_Pop:
-         {
-            mIds = mIdStack[mIdStack.GetCount() - 1];
-            mIdStack.RemoveAt(mIdStack.GetCount() - 1);
-         }
-         break;
-
-         case FT_Name:
-         {
-            short len;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&len, sizeof(len));
-            wxChar *name = new wxChar[len / sizeof(wxChar)];
-            in.Read(name, len);
-
-            mIds[id] = wxString(name, len / sizeof(wxChar));
-            delete[] name;
-         }
-         break;
-
-         case FT_StartTag:
-         {
-            in.Read(&id, sizeof(id));
-
-            out.StartTag(mIds[id]);
-         }
-         break;
-
-         case FT_EndTag:
-         {
-            in.Read(&id, sizeof(id));
-
-            out.EndTag(mIds[id]);
-         }
-         break;
-
-         case FT_String:
-         {
-            int len;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&len, sizeof(len));
-            wxChar *val = new wxChar[len / sizeof(wxChar)];
-            in.Read(val, len);
-
-            out.WriteAttr(mIds[id], wxString(val, len / sizeof(wxChar)));
-            delete[] val;
-         }
-         break;
-
-         case FT_Float:
-         {
-            float val;
-            int dig;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&val, sizeof(val));
-            in.Read(&dig, sizeof(dig));
-
-            out.WriteAttr(mIds[id], val, dig);
-         }
-         break;
-
-         case FT_Double:
-         {
-            double val;
-            int dig;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&val, sizeof(val));
-            in.Read(&dig, sizeof(dig));
-
-            out.WriteAttr(mIds[id], val, dig);
-         }
-         break;
-
-         case FT_Int:
-         {
-            int val;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&val, sizeof(val));
-
-            out.WriteAttr(mIds[id], val);
-         }
-         break;
-
-         case FT_Bool:
-         {
-            bool val;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&val, sizeof(val));
-
-            out.WriteAttr(mIds[id], val);
-         }
-         break;
-
-         case FT_Long:
-         {
-            long val;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&val, sizeof(val));
-
-            out.WriteAttr(mIds[id], val);
-         }
-         break;
-
-         case FT_LongLong:
-         {
-            long long val;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&val, sizeof(val));
-
-            out.WriteAttr(mIds[id], val);
-         }
-         break;
-
-         case FT_SizeT:
-         {
-            size_t val;
-
-            in.Read(&id, sizeof(id));
-            in.Read(&val, sizeof(val));
-
-            out.WriteAttr(mIds[id], val);
-         }
-         break;
-
-         case FT_Data:
-         {
-            int len;
-
-            in.Read(&len, sizeof(len));
-            wxChar *val = new wxChar[len / sizeof(wxChar)];
-            in.Read(val, len);
-
-            out.WriteData(wxString(val, len / sizeof(wxChar)));
-            delete[] val;
-         }
-         break;
-
-         case FT_Raw:
-         {
-            int len;
-
-            in.Read(&len, sizeof(len));
-            wxChar *val = new wxChar[len / sizeof(wxChar)];
-            in.Read(val, len);
-
-            out.Write(wxString(val, len / sizeof(wxChar)));
-            delete[] val;
-         }
-         break;
-
-         default:
-            wxASSERT(true);
-         break;
-      }
-   }
-
-   delete[] buf;
-
-   bool error = out.Error();
- 
-   out.Close();
-
-   // Bail if decoding failed.
-   if (error)
-   {
-      // File successfully decoded
-      wxRemoveFile(tempName);
-
-      return false;
-   }
-
-   // Decoding was successful, so remove the original file and replace with decoded one.
-   if (wxRemoveFile(fileName))
-   {
-      if (!wxRenameFile(tempName, fileName))
-      {
+         // return before committing, so we do not overwrite the recovery file!
          return false;
       }
-   }
 
-   return true;
+      out.Commit();
+
+      return true;
+   } );
 }

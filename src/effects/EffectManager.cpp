@@ -7,28 +7,43 @@
   Audacity(R) is copyright (c) 1999-2008 Audacity Team.
   License: GPL v2.  See License.txt.
 
-**********************************************************************/
+******************************************************************//**
+
+\class EffectManager
+\brief EffectManager is the class that handles effects and effect categories.
+
+It maintains a graph of effect categories and subcategories,
+registers and unregisters effects and can return filtered lists of
+effects.
+
+*//*******************************************************************/
 
 #include "../Audacity.h"
+#include "EffectManager.h"
 
-#include <wx/msgdlg.h>
+#include "../Experimental.h"
+
+#include <algorithm>
 #include <wx/stopwatch.h>
 #include <wx/tokenzr.h>
 
-#include "../Experimental.h"
+#include "../widgets/ErrorDialog.h"
 
 #if defined(EXPERIMENTAL_EFFECTS_RACK)
 #include "EffectRack.h"
 #endif
 
-#include "EffectManager.h"
+#include "../Shuttle.h"
+#include "../commands/Command.h"
+#include "../commands/CommandContext.h"
+#include "../PluginManager.h"
 
-// ============================================================================
-//
-// Create singleton and return reference
-//
-// (Thread-safe...no active threading during construction or after destruction)
-// ============================================================================
+
+/*******************************************************************************
+Creates a singleton and returns reference
+
+ (Thread-safe...no active threading during construction or after destruction)
+*******************************************************************************/
 EffectManager & EffectManager::Get()
 {
    static EffectManager em;
@@ -61,7 +76,7 @@ EffectManager::~EffectManager()
 // a better solution is devised.
 const PluginID & EffectManager::RegisterEffect(Effect *f)
 {
-   const PluginID & ID = PluginManager::Get().RegisterPlugin(f);
+   const PluginID & ID = PluginManager::Get().RegisterPlugin(f, PluginTypeEffect);
 
    mEffects[ID] = f;
 
@@ -111,19 +126,59 @@ bool EffectManager::DoEffect(const PluginID & ID,
    return res;
 }
 
-wxString EffectManager::GetEffectName(const PluginID & ID)
+bool EffectManager::DoAudacityCommand(const PluginID & ID,
+                             const CommandContext &context,
+                             wxWindow *parent,
+                             bool shouldPrompt /* = true */)
+
 {
-   return PluginManager::Get().GetName(ID);
+   this->SetSkipStateFlag(false);
+   AudacityCommand *command = GetAudacityCommand(ID);
+   
+   if (!command)
+   {
+      return false;
+   }
+
+   bool res = command->DoAudacityCommand(parent, context, shouldPrompt);
+
+   return res;
 }
 
-wxString EffectManager::GetEffectIdentifier(const PluginID & ID)
+ComponentInterfaceSymbol EffectManager::GetCommandSymbol(const PluginID & ID)
 {
-   wxString name = (PluginManager::Get().GetSymbol(ID));
+   return PluginManager::Get().GetSymbol(ID);
+}
+
+wxString EffectManager::GetCommandName(const PluginID & ID)
+{
+   return GetCommandSymbol(ID).Translation();
+}
+
+wxString EffectManager::GetEffectFamilyName(const PluginID & ID)
+{
+   auto effect = GetEffect(ID);
+   if (effect)
+      return effect->GetFamily().Translation();
+   return {};
+}
+
+wxString EffectManager::GetVendorName(const PluginID & ID)
+{
+   auto effect = GetEffect(ID);
+   if (effect)
+      return effect->GetVendor().Translation();
+   return {};
+}
+
+CommandID EffectManager::GetCommandIdentifier(const PluginID & ID)
+{
+   wxString name = PluginManager::Get().GetSymbol(ID).Internal();
 
    // Get rid of leading and trailing white space
    name.Trim(true).Trim(false);
 
-   if (name == wxEmptyString)
+   if (name.empty())
    {
       return name;
    }
@@ -142,17 +197,74 @@ wxString EffectManager::GetEffectIdentifier(const PluginID & ID)
    return id;
 }
 
-wxString EffectManager::GetEffectDescription(const PluginID & ID)
+wxString EffectManager::GetCommandDescription(const PluginID & ID)
 {
-   Effect *effect = GetEffect(ID);
-
-   if (effect)
-   {
-      return wxString::Format(_("Applied effect: %s"), effect->GetName().c_str());
-   }
+   if (GetEffect(ID))
+      return wxString::Format(_("Applied effect: %s"), GetCommandName(ID));
+   if (GetAudacityCommand(ID))
+      return wxString::Format(_("Applied command: %s"), GetCommandName(ID));
 
    return wxEmptyString;
 }
+
+wxString EffectManager::GetCommandUrl(const PluginID & ID)
+{
+   Effect* pEff = GetEffect(ID);
+   if( pEff )
+      return pEff->ManualPage();
+   AudacityCommand * pCom = GetAudacityCommand(ID);
+   if( pCom )
+      return pCom->ManualPage();
+
+   return wxEmptyString;
+}
+
+wxString EffectManager::GetCommandTip(const PluginID & ID)
+{
+   Effect* pEff = GetEffect(ID);
+   if( pEff )
+      return pEff->GetDescription();
+   AudacityCommand * pCom = GetAudacityCommand(ID);
+   if( pCom )
+      return pCom->GetDescription();
+
+   return wxEmptyString;
+}
+
+
+void EffectManager::GetCommandDefinition(const PluginID & ID, const CommandContext & context, int flags)
+{
+   ComponentInterface *command;
+   command = GetEffect(ID);
+   if( !command )
+      command = GetAudacityCommand( ID );
+   if( !command )
+      return;
+
+   ShuttleParams NullShuttle;
+   // Test if it defines any parameters at all.
+   bool bHasParams = command->DefineParams( NullShuttle );
+   if( (flags ==0) && !bHasParams )
+      return;
+
+   // This is capturing the output context into the shuttle.
+   ShuttleGetDefinition S(  *context.pOutput.get()->mStatusTarget.get() );
+   S.StartStruct();
+   S.AddItem( GetCommandIdentifier( ID ), "id" );
+   S.AddItem( GetCommandName( ID ), "name" );
+   if( bHasParams ){
+      S.StartField( "params" );
+      S.StartArray();
+      command->DefineParams( S );
+      S.EndArray();
+      S.EndField();
+   }
+   S.AddItem( GetCommandUrl( ID ), "url" );
+   S.AddItem( GetCommandTip( ID ), "tip" );
+   S.EndStruct();
+}
+
+
 
 bool EffectManager::IsHidden(const PluginID & ID)
 {
@@ -199,7 +311,7 @@ wxString EffectManager::GetEffectParameters(const PluginID & ID)
 
       // Some effects don't have automatable parameters and will not return
       // anything, so try to get the active preset (current or factory).
-      if (parms.IsEmpty())
+      if (parms.empty())
       {
          parms = GetDefaultPreset(ID);
       }
@@ -207,6 +319,23 @@ wxString EffectManager::GetEffectParameters(const PluginID & ID)
       return parms;
    }
 
+   AudacityCommand *command = GetAudacityCommand(ID);
+   
+   if (command)
+   {
+      wxString parms;
+
+      command->GetAutomationParameters(parms);
+
+      // Some effects don't have automatable parameters and will not return
+      // anything, so try to get the active preset (current or factory).
+      if (parms.empty())
+      {
+         parms = GetDefaultPreset(ID);
+      }
+
+      return parms;
+   }
    return wxEmptyString;
 }
 
@@ -214,29 +343,52 @@ bool EffectManager::SetEffectParameters(const PluginID & ID, const wxString & pa
 {
    Effect *effect = GetEffect(ID);
    
-   if (!effect)
+   if (effect)
    {
-      return false;
+      CommandParameters eap(params);
+
+      if (eap.HasEntry(wxT("Use Preset")))
+      {
+         return effect->SetAutomationParameters(eap.Read(wxT("Use Preset")));
+      }
+
+      return effect->SetAutomationParameters(params);
    }
-
-   EffectAutomationParameters eap(params);
-
-   if (eap.HasEntry(wxT("Use Preset")))
+   AudacityCommand *command = GetAudacityCommand(ID);
+   
+   if (command)
    {
-      return effect->SetAutomationParameters(eap.Read(wxT("Use Preset")));
-   }
+      // Set defaults (if not initialised) before setting values.
+      command->Init(); 
+      CommandParameters eap(params);
 
-   return effect->SetAutomationParameters(params);
+      if (eap.HasEntry(wxT("Use Preset")))
+      {
+         return command->SetAutomationParameters(eap.Read(wxT("Use Preset")));
+      }
+
+      return command->SetAutomationParameters(params);
+   }
+   return false;
 }
 
 bool EffectManager::PromptUser(const PluginID & ID, wxWindow *parent)
 {
-   Effect *effect = GetEffect(ID);
    bool result = false;
+   Effect *effect = GetEffect(ID);
 
    if (effect)
    {
       result = effect->PromptUser(parent);
+      return result;
+   }
+
+   AudacityCommand *command = GetAudacityCommand(ID);
+
+   if (command)
+   {
+      result = command->PromptUser(parent);
+      return result;
    }
 
    return result;
@@ -251,8 +403,8 @@ bool EffectManager::HasPresets(const PluginID & ID)
       return false;
    }
 
-   return effect->GetUserPresets().GetCount() > 0 ||
-          effect->GetFactoryPresets().GetCount() > 0 ||
+   return effect->GetUserPresets().size() > 0 ||
+          effect->GetFactoryPresets().size() > 0 ||
           effect->HasCurrentSettings() ||
           effect->HasFactoryDefaults();
 }
@@ -266,7 +418,7 @@ wxString EffectManager::GetPreset(const PluginID & ID, const wxString & params, 
       return wxEmptyString;
    }
 
-   EffectAutomationParameters eap(params);
+   CommandParameters eap(params);
 
    wxString preset;
    if (eap.HasEntry(wxT("Use Preset")))
@@ -275,7 +427,7 @@ wxString EffectManager::GetPreset(const PluginID & ID, const wxString & params, 
    }
 
    preset = effect->GetPreset(parent, preset);
-   if (preset.IsEmpty())
+   if (preset.empty())
    {
       return preset;
    }
@@ -307,9 +459,9 @@ wxString EffectManager::GetDefaultPreset(const PluginID & ID)
       preset = Effect::kFactoryDefaultsIdent;
    }
 
-   if (!preset.IsEmpty())
+   if (!preset.empty())
    {
-      EffectAutomationParameters eap;
+      CommandParameters eap;
 
       eap.Write(wxT("Use Preset"), preset);
       eap.GetParameters(preset);
@@ -321,13 +473,19 @@ wxString EffectManager::GetDefaultPreset(const PluginID & ID)
 void EffectManager::SetBatchProcessing(const PluginID & ID, bool start)
 {
    Effect *effect = GetEffect(ID);
-
-   if (!effect)
+   if (effect)
    {
+      effect->SetBatchProcessing(start);
       return;
    }
 
-   effect->SetBatchProcessing(start);
+   AudacityCommand *command = GetAudacityCommand(ID);
+   if (command)
+   {
+      command->SetBatchProcessing(start);
+      return;
+   }
+
 }
 
 #if defined(EXPERIMENTAL_EFFECTS_RACK)
@@ -397,6 +555,7 @@ void EffectManager::RealtimeSetEffects(const EffectArray & effects)
       }
    }
 
+   // Get rid of the old chain
    // And install the NEW one
    mRealtimeEffects = effects;
 
@@ -407,7 +566,7 @@ void EffectManager::RealtimeSetEffects(const EffectArray & effects)
 
 bool EffectManager::RealtimeIsActive()
 {
-   return mRealtimeEffects.GetCount() != 0;
+   return mRealtimeEffects.size() != 0;
 }
 
 bool EffectManager::RealtimeIsSuspended()
@@ -434,7 +593,7 @@ void EffectManager::RealtimeAddEffect(Effect *effect)
    }
    
    // Add to list of active effects
-   mRealtimeEffects.Add(effect);
+   mRealtimeEffects.push_back(effect);
 
    // Allow RealtimeProcess() to, well, process 
    RealtimeResume();
@@ -452,29 +611,32 @@ void EffectManager::RealtimeRemoveEffect(Effect *effect)
    }
       
    // Remove from list of active effects
-   mRealtimeEffects.Remove(effect);
+   auto end = mRealtimeEffects.end();
+   auto found = std::find(mRealtimeEffects.begin(), end, effect);
+   if (found != end)
+      mRealtimeEffects.erase(found);
 
    // Allow RealtimeProcess() to, well, process 
    RealtimeResume();
 }
 
-void EffectManager::RealtimeInitialize()
+void EffectManager::RealtimeInitialize(double rate)
 {
    // The audio thread should not be running yet, but protect anyway
    RealtimeSuspend();
 
    // (Re)Set processor parameters
    mRealtimeChans.clear();
-   mRealtimeRates.Clear();
+   mRealtimeRates.clear();
 
    // RealtimeAdd/RemoveEffect() needs to know when we're active so it can
    // initialize newly added effects
    mRealtimeActive = true;
 
    // Tell each effect to get ready for action
-   for (int i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
-   {
-      mRealtimeEffects[i]->RealtimeInitialize();
+   for (auto e : mRealtimeEffects) {
+      e->SetSampleRate(rate);
+      e->RealtimeInitialize();
    }
 
    // Get things moving
@@ -483,13 +645,11 @@ void EffectManager::RealtimeInitialize()
 
 void EffectManager::RealtimeAddProcessor(int group, unsigned chans, float rate)
 {
-   for (size_t i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
-   {
-      mRealtimeEffects[i]->RealtimeAddProcessor(group, chans, rate);
-   }
+   for (auto e : mRealtimeEffects)
+      e->RealtimeAddProcessor(group, chans, rate);
 
    mRealtimeChans.push_back(chans);
-   mRealtimeRates.Add(rate);
+   mRealtimeRates.push_back(rate);
 }
 
 void EffectManager::RealtimeFinalize()
@@ -501,14 +661,12 @@ void EffectManager::RealtimeFinalize()
    mRealtimeLatency = 0;
 
    // Tell each effect to clean up as well
-   for (int i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
-   {
-      mRealtimeEffects[i]->RealtimeFinalize();
-   }
+   for (auto e : mRealtimeEffects)
+      e->RealtimeFinalize();
 
    // Reset processor parameters
    mRealtimeChans.clear();
-   mRealtimeRates.Clear();
+   mRealtimeRates.clear();
 
    // No longer active
    mRealtimeActive = false;
@@ -529,10 +687,8 @@ void EffectManager::RealtimeSuspend()
    mRealtimeSuspended = true;
 
    // And make sure the effects don't either
-   for (int i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
-   {
-      mRealtimeEffects[i]->RealtimeSuspend();
-   }
+   for (auto e : mRealtimeEffects)
+      e->RealtimeSuspend();
 
    mRealtimeLock.Leave();
 }
@@ -549,10 +705,8 @@ void EffectManager::RealtimeResume()
    }
 
    // Tell the effects to get ready for more action
-   for (int i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
-   {
-      mRealtimeEffects[i]->RealtimeResume();
-   }
+   for (auto e : mRealtimeEffects)
+      e->RealtimeResume();
 
    // And we should too
    mRealtimeSuspended = false;
@@ -572,12 +726,10 @@ void EffectManager::RealtimeProcessStart()
    // have been suspended.
    if (!mRealtimeSuspended)
    {
-      for (size_t i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
+      for (auto e : mRealtimeEffects)
       {
-         if (mRealtimeEffects[i]->IsRealtimeActive())
-         {
-            mRealtimeEffects[i]->RealtimeProcessStart();
-         }
+         if (e->IsRealtimeActive())
+            e->RealtimeProcessStart();
       }
    }
 
@@ -594,7 +746,7 @@ size_t EffectManager::RealtimeProcess(int group, unsigned chans, float **buffers
 
    // Can be suspended because of the audio stream being paused or because effects
    // have been suspended, so allow the samples to pass as-is.
-   if (mRealtimeSuspended || mRealtimeEffects.IsEmpty())
+   if (mRealtimeSuspended || mRealtimeEffects.empty())
    {
       mRealtimeLock.Leave();
       return numSamples;
@@ -602,7 +754,7 @@ size_t EffectManager::RealtimeProcess(int group, unsigned chans, float **buffers
 
    // Remember when we started so we can calculate the amount of latency we
    // are introducing
-   wxMilliClock_t start = wxGetLocalTimeMillis();
+   wxMilliClock_t start = wxGetUTCTimeMillis();
 
    // Allocate the in/out buffer arrays
    float **ibuf = (float **) alloca(chans * sizeof(float *));
@@ -610,7 +762,7 @@ size_t EffectManager::RealtimeProcess(int group, unsigned chans, float **buffers
 
    // And populate the input with the buffers we've been given while allocating
    // NEW output buffers
-   for (int i = 0; i < chans; i++)
+   for (unsigned int i = 0; i < chans; i++)
    {
       ibuf[i] = buffers[i];
       obuf[i] = (float *) alloca(numSamples * sizeof(float));
@@ -619,15 +771,15 @@ size_t EffectManager::RealtimeProcess(int group, unsigned chans, float **buffers
    // Now call each effect in the chain while swapping buffer pointers to feed the
    // output of one effect as the input to the next effect
    size_t called = 0;
-   for (size_t i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
+   for (auto e : mRealtimeEffects)
    {
-      if (mRealtimeEffects[i]->IsRealtimeActive())
+      if (e->IsRealtimeActive())
       {
-         mRealtimeEffects[i]->RealtimeProcess(group, chans, ibuf, obuf, numSamples);
+         e->RealtimeProcess(group, chans, ibuf, obuf, numSamples);
          called++;
       }
 
-      for (int j = 0; j < chans; j++)
+      for (unsigned int j = 0; j < chans; j++)
       {
          float *temp;
          temp = ibuf[j];
@@ -642,14 +794,14 @@ size_t EffectManager::RealtimeProcess(int group, unsigned chans, float **buffers
    // is odd.
    if (called & 1)
    {
-      for (int i = 0; i < chans; i++)
+      for (unsigned int i = 0; i < chans; i++)
       {
          memcpy(buffers[i], ibuf[i], numSamples * sizeof(float));
       }
    }
 
    // Remember the latency
-   mRealtimeLatency = (int) (wxGetLocalTimeMillis() - start).GetValue();
+   mRealtimeLatency = (int) (wxGetUTCTimeMillis() - start).GetValue();
 
    mRealtimeLock.Leave();
 
@@ -671,12 +823,10 @@ void EffectManager::RealtimeProcessEnd()
    // have been suspended.
    if (!mRealtimeSuspended)
    {
-      for (size_t i = 0, cnt = mRealtimeEffects.GetCount(); i < cnt; i++)
+      for (auto e : mRealtimeEffects)
       {
-         if (mRealtimeEffects[i]->IsRealtimeActive())
-         {
-            mRealtimeEffects[i]->RealtimeProcessEnd();
-         }
+         if (e->IsRealtimeActive())
+            e->RealtimeProcessEnd();
       }
    }
 
@@ -691,16 +841,20 @@ int EffectManager::GetRealtimeLatency()
 Effect *EffectManager::GetEffect(const PluginID & ID)
 {
    // Must have a "valid" ID
-   if (ID.IsEmpty())
+   if (ID.empty())
    {
       return NULL;
    }
+
+   // If it is actually a command then refuse it (as an effect).
+   if( mCommands.find( ID ) != mCommands.end() )
+      return NULL;
 
    // TODO: This is temporary and should be redone when all effects are converted
    if (mEffects.find(ID) == mEffects.end())
    {
       // This will instantiate the effect client if it hasn't already been done
-      EffectIdentInterface *ident = dynamic_cast<EffectIdentInterface *>(PluginManager::Get().GetInstance(ID));
+      EffectDefinitionInterface *ident = dynamic_cast<EffectDefinitionInterface *>(PluginManager::Get().GetInstance(ID));
       if (ident && ident->IsLegacy())
       {
          auto effect = dynamic_cast<Effect *>(ident);
@@ -724,8 +878,10 @@ Effect *EffectManager::GetEffect(const PluginID & ID)
          }
       }
 
-      wxMessageBox(wxString::Format(_("Attempting to initialize the following effect failed:\n\n%s\n\nMore information may be available in Help->Show Log"),
-                                    PluginManager::Get().GetName(ID).c_str()),
+      auto command = dynamic_cast<AudacityCommand *>(PluginManager::Get().GetInstance(ID));
+      if( !command )
+         AudacityMessageBox(wxString::Format(_("Attempting to initialize the following effect failed:\n\n%s\n\nMore information may be available in Help->Show Log"),
+                                    GetCommandName(ID)),
                    _("Effect failed to initialize"));
 
       return NULL;
@@ -734,25 +890,82 @@ Effect *EffectManager::GetEffect(const PluginID & ID)
    return mEffects[ID];
 }
 
-const PluginID & EffectManager::GetEffectByIdentifier(const wxString & strTarget)
+AudacityCommand *EffectManager::GetAudacityCommand(const PluginID & ID)
+{
+   // Must have a "valid" ID
+   if (ID.empty())
+   {
+      return NULL;
+   }
+
+   // TODO: This is temporary and should be redone when all effects are converted
+   if (mCommands.find(ID) == mCommands.end())
+   {
+
+      // This will instantiate the effect client if it hasn't already been done
+      auto command = dynamic_cast<AudacityCommand *>(PluginManager::Get().GetInstance(ID));
+      if (command )//&& command->Startup(NULL))
+      {
+         command->Init();
+         mCommands[ID] = command;
+         return command;
+      }
+
+         /*
+      if (ident && ident->IsLegacy())
+      {
+         auto command = dynamic_cast<AudacityCommand *>(ident);
+         if (commandt && command->Startup(NULL))
+         {
+            mCommands[ID] = command;
+            return command;
+         }
+      }
+
+
+      auto command = std::make_shared<AudacityCommand>(); // TODO: use make_unique and store in std::unordered_map
+      if (command)
+      {
+         AudacityCommand *client = dynamic_cast<AudacityCommand *>(ident);
+         if (client && command->Startup(client))
+         {
+            auto pCommand = command.get();
+            mEffects[ID] = pCommand;
+            mHostEffects[ID] = std::move(effect);
+            return pEffect;
+         }
+      }
+*/
+      AudacityMessageBox(wxString::Format(_("Attempting to initialize the following command failed:\n\n%s\n\nMore information may be available in Help->Show Log"),
+                                    GetCommandName(ID)),
+                   _("Command failed to initialize"));
+
+      return NULL;
+   }
+
+   return mCommands[ID];
+}
+
+
+const PluginID & EffectManager::GetEffectByIdentifier(const CommandID & strTarget)
 {
    static PluginID empty;
-   if (strTarget == wxEmptyString) // set GetEffectIdentifier to wxT("") to not show an effect in Batch mode
+   if (strTarget.empty()) // set GetCommandIdentifier to wxT("") to not show an effect in Batch mode
    {
       return empty;
    }
 
    PluginManager & pm = PluginManager::Get();
-   const PluginDescriptor *plug = pm.GetFirstPlugin(PluginTypeEffect);
+   // Effects OR Generic commands...
+   const PluginDescriptor *plug = pm.GetFirstPlugin(PluginTypeEffect | PluginTypeAudacityCommand);
    while (plug)
    {
-      if (GetEffectIdentifier(plug->GetID()).IsSameAs(strTarget))
+      if (GetCommandIdentifier(plug->GetID()).IsSameAs(strTarget, false))
       {
          return plug->GetID();
       }
-      plug = pm.GetNextPlugin(PluginTypeEffect);
+      plug = pm.GetNextPlugin(PluginTypeEffect | PluginTypeAudacityCommand);
    }
-
    return empty;;
 }
 

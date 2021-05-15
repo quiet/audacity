@@ -20,7 +20,10 @@ and on Mac OS X for the filesystem.
 
 *//*******************************************************************/
 
-#include <wx/msgdlg.h>
+#include "Internat.h"
+
+#include "Experimental.h"
+
 #include <wx/log.h>
 #include <wx/intl.h>
 #include <wx/filename.h>
@@ -28,8 +31,9 @@ and on Mac OS X for the filesystem.
 #include <locale.h>
 #include <math.h> // for pow()
 
-#include "Internat.h"
-#include "FileDialog.h"
+#include "FileNames.h"
+#include "widgets/ErrorDialog.h"
+#include "../include/audacity/ComponentInterface.h"
 
 // in order for the static member variables to exist, they must appear here
 // (_outside_) the class definition, in order to be allocated some storage.
@@ -38,6 +42,45 @@ and on Mac OS X for the filesystem.
 wxChar Internat::mDecimalSeparator = wxT('.'); // default
 wxArrayString Internat::exclude;
 wxCharBuffer Internat::mFilename;
+
+// DA: Use tweaked translation mechanism to replace 'Audacity' by 'DarkAudacity'.
+#ifdef EXPERIMENTAL_DA
+// This function allows us to replace Audacity by DarkAudacity without peppering 
+// the source code with changes.  We split out this step, the customisation, as 
+// it is used on its own (without translation) in the wxTS macro.
+AUDACITY_DLL_API const wxString& GetCustomSubstitution(const wxString& str2)
+{
+   // If contains 'DarkAudacity, already converted.
+   if( str2.Contains( "DarkAudacity" ))
+      return str2;
+   // If does not contain 'Audacity', nothing to do.
+   if( !str2.Contains( "Audacity" ))
+      return str2;
+   wxString str3 = str2;
+   str3.Replace( "Audacity", "DarkAudacity" );
+   str3.Replace( "DarkAudacity &Manual", "Audacity &Manual" );
+   str3.Replace( " an DarkAudacity", " a DarkAudacity" );
+   // DA also renames sync-lock(ed) as time-lock(ed).
+   str3.Replace( "Sync-Lock", "Time-Lock" );
+   str3.Replace( "Sync-&Lock", "Time-&Lock" );
+   str3.Replace( "Sync Lock", "Time Lock" );
+   return wxTranslations::GetUntranslatedString(str3);
+}
+#else 
+AUDACITY_DLL_API const wxString& GetCustomSubstitution(const wxString& str1)
+{
+   return str1 ;
+}
+#endif
+
+// In any translated string, we can replace the name 'Audacity' by 'DarkAudacity'
+// without requiring translators to see extra strings for the two versions.
+AUDACITY_DLL_API const wxString& GetCustomTranslation(const wxString& str1)
+{
+   const wxString& str2 = wxGetTranslation( str1 );
+   return GetCustomSubstitution( str2 );
+}
+
 
 void Internat::Init()
 {
@@ -63,14 +106,14 @@ void Internat::Init()
    auto forbid = wxFileName::GetForbiddenChars(format);
 
    for(auto cc: forbid)
-      exclude.Add(wxString{ cc });
+      exclude.push_back(wxString{ cc });
 
    // The path separators may not be forbidden, so add them
    auto separators = wxFileName::GetPathSeparators(format);
 
    for(auto cc: separators) {
       if (forbid.Find(cc) == wxNOT_FOUND)
-         exclude.Add(wxString{ cc });
+         exclude.push_back(wxString{ cc });
    }
 }
 
@@ -123,7 +166,7 @@ wxString Internat::ToDisplayString(double numberToConvert,
       if (result.Find(decSep) != -1)
       {
          // Strip trailing zeros, but leave one, and decimal separator.
-         int pos = result.Length() - 1;
+         int pos = result.length() - 1;
          while ((pos > 1) &&
                   (result.GetChar(pos) == wxT('0')) &&
                   (result.GetChar(pos - 1) != decSep))
@@ -204,10 +247,11 @@ char *Internat::VerifyFilename(const wxString &s, bool input)
       wxFileName ff(name);
       wxString ext;
       while ((char *) (const char *)name.mb_str() == NULL) {
-         wxMessageBox(_("The specified filename could not be converted due to Unicode character use."));
+         AudacityMessageBox(_("The specified filename could not be converted due to Unicode character use."));
 
          ext = ff.GetExt();
-         name = FileSelector(_("Specify New Filename:"),
+         name = FileNames::SelectFile(FileNames::Operation::_None,
+                             _("Specify New Filename:"),
                              wxEmptyString,
                              name,
                              ext,
@@ -249,8 +293,8 @@ bool Internat::SanitiseFilename(wxString &name, const wxString &sub)
 wxString Internat::StripAccelerators(const wxString &s)
 {
    wxString result;
-   result.Alloc(s.Length());
-   for(size_t i = 0; i < s.Length(); i++) {
+   result.reserve(s.length());
+   for(size_t i = 0; i < s.length(); i++) {
       if (s[i] == '\t')
          break;
       if (s[i] != '&' && s[i] != '.')
@@ -259,11 +303,11 @@ wxString Internat::StripAccelerators(const wxString &s)
    return result;
 }
 
-wxString Internat::Parenthesize(const wxString &str)
+wxArrayStringEx LocalizedStrings(
+   const EnumValueSymbol strings[], size_t nStrings)
 {
-   /* i18n-hint: An opening parenthesis, in some languages a right parenthesis */
-   auto open = _("(");
-   /* i18n-hint: A closing parenthesis, in some languages a left parenthesis */
-   auto close = _(")");
-   return open + str + close;
+   return transform_range<wxArrayStringEx>(
+      strings, strings + nStrings,
+      std::mem_fn( &EnumValueSymbol::Translation )
+   );
 }

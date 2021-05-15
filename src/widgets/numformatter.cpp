@@ -15,8 +15,13 @@
 // headers
 // ----------------------------------------------------------------------------
 
+#include "../Audacity.h"
+#include "numformatter.h"
+
 // For compilers that support precompilation, includes "wx.h".
 #include <wx/wxprec.h>
+
+#include <wx/setup.h> // for wxUSE_* macros
 
 #ifdef __BORLANDC__
     #pragma hdrstop
@@ -28,7 +33,7 @@
 #endif
 
 
-#include "numformatter.h"
+#include "../Internat.h"
 #include <wx/intl.h>
 
 #include <locale.h> // for setlocale and LC_ALL
@@ -72,7 +77,7 @@ bool NumberFormatter::GetThousandsSeparatorIfUsed(wxChar *sep)
    struct lconv *info = localeconv();
    wxString s = info ? wxString::FromUTF8(info->thousands_sep) : wxT("");
 
-   if (s.IsEmpty())
+   if (s.empty())
    {
       return false;
    }
@@ -207,7 +212,7 @@ void NumberFormatter::RemoveTrailingZeroes(wxString& s, size_t retain /* = 0 */)
 {
    const size_t posDecSep = s.find(GetDecimalSeparator());
    wxCHECK_RET( posDecSep != wxString::npos,
-               wxString::Format(wxT("No decimal separator in \"%s\""), s.c_str()) );
+               wxString::Format(wxT("No decimal separator in \"%s\""), s) );
    wxCHECK_RET( posDecSep, wxT("Can't start with decimal separator" ));
 
    // Find the last character to keep.

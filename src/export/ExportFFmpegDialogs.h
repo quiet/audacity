@@ -11,17 +11,23 @@ LRN
 #if !defined(__EXPORT_FFMPEG_DIALOGS_H__)
 #define __EXPORT_FFMPEG_DIALOGS_H__
 
+#include "../Audacity.h"   // keep ffmpeg before wx because they interact // for USE_* macros
+
 #if defined(USE_FFMPEG)
 
-#include "../Audacity.h"   // keep ffmpeg before wx because they interact
 #include "../FFmpeg.h"     // and Audacity.h before FFmpeg for config*.h
 
-#include <wx/hashmap.h>
-#include <wx/listimpl.cpp>
 #include "../xml/XMLFileReader.h"
 #include "../FileNames.h"
-#include "../widgets/wxPanelWrapper.h"
 
+#include <unordered_map>
+
+class wxArrayStringEx;
+
+class wxArrayString;
+class wxCheckBox;
+class wxStaticText;
+class wxTextCtrl;
 
 /// Identifiers for pre-set export types.
 enum FFmpegExposedFormat
@@ -34,6 +40,8 @@ enum FFmpegExposedFormat
    FMT_LAST
 };
 
+#define AV_CANMETA (AV_VERSION_INT(255, 255, 255))
+
 /// Describes export type
 struct ExposedFormat
 {
@@ -42,11 +50,13 @@ struct ExposedFormat
    const wxChar *extension;   //!< default extension for this format. More extensions may be added later via AddExtension.
    const wxChar *shortname;   //!< used to guess the format
    unsigned maxchannels;      //!< how many channels this format could handle
-   int canmetadata;           //!< !=0 if format supports metadata, -1 any avformat version, otherwise version support added
+   const int canmetadata;           //!< !=0 if format supports metadata, AV_CANMETA any avformat version, otherwise version support added
    bool canutf8;              //!< true if format supports metadata in UTF-8, false otherwise
-   const wxChar *description; //!< format description (will be shown in export dialog)
+   const wxChar *description_; //!< format description (will be shown in export dialog) (untranslated!)
    AVCodecID codecid;         //!< codec ID (see libavcodec/avcodec.h)
    bool compiledIn;           //!< support for this codec/format is compiled in (checked at runtime)
+
+   wxString Description() const; // get translation
 };
 
 
@@ -67,8 +77,8 @@ public:
    virtual ~ExportFFmpegAC3Options();
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
    /// Bit Rates supported by AC3 encoder
    static const int iAC3BitRates[];
@@ -78,8 +88,8 @@ public:
 
 private:
 
-   wxArrayString mBitRateNames;
-   wxArrayInt    mBitRateLabels;
+   wxArrayStringEx mBitRateNames;
+   std::vector<int>    mBitRateLabels;
 
    wxChoice *mBitRateChoice;
    int mBitRateFromChoice;
@@ -93,8 +103,8 @@ public:
    virtual ~ExportFFmpegAACOptions();
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
 private:
 
@@ -109,15 +119,15 @@ public:
    virtual ~ExportFFmpegAMRNBOptions();
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
    static int iAMRNBBitRate[];
 
 private:
 
-   wxArrayString mBitRateNames;
-   wxArrayInt    mBitRateLabels;
+   wxArrayStringEx mBitRateNames;
+   std::vector<int>    mBitRateLabels;
 
    wxChoice *mBitRateChoice;
    int mBitRateFromChoice;
@@ -131,16 +141,16 @@ public:
    ~ExportFFmpegWMAOptions();
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
    static const int iWMASampleRates[];
    static const int iWMABitRate[];
 
 private:
 
-   wxArrayString mBitRateNames;
-   wxArrayInt    mBitRateLabels;
+   wxArrayStringEx mBitRateNames;
+   std::vector<int>    mBitRateLabels;
 
    wxChoice *mBitRateChoice;
    int mBitRateFromChoice;
@@ -154,8 +164,8 @@ public:
    ~ExportFFmpegCustomOptions();
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
    void OnOpen(wxCommandEvent & evt);
 
@@ -199,11 +209,9 @@ public:
    // Static tables
    static CompatibilityEntry CompatibilityList[];
    static int iAACProfileValues[];
-   static const wxChar *iAACProfileNames[];
    static ExposedFormat fmts[];
    static const int iAACSampleRates[];
    static ApplicableFor apptable[];
-   static const wxChar *PredictionOrderMethodNames[];
 
 private:
 
@@ -211,14 +219,14 @@ private:
    wxArrayString mShownFormatLongNames;
    wxArrayString mShownCodecNames;
    wxArrayString mShownCodecLongNames;
-   wxArrayString mFormatNames;
+   wxArrayStringEx mFormatNames;
    wxArrayString mFormatLongNames;
-   wxArrayString mCodecNames;
+   wxArrayStringEx mCodecNames;
    wxArrayString mCodecLongNames;
-   wxArrayString mProfileNames;
-   wxArrayInt    mProfileLabels;
-   wxArrayString mPredictionOrderMethodNames;
-   wxArrayInt    mPredictionOrderMethodLabels;
+   wxArrayStringEx mProfileNames;
+   std::vector<int> mProfileLabels;
+   wxArrayStringEx mPredictionOrderMethodNames;
+   std::vector<int> mPredictionOrderMethodLabels;
 
    wxChoice *mFormatChoice;
    wxChoice *mCodecChoice;
@@ -264,7 +272,7 @@ private:
 
    std::unique_ptr<FFmpegPresets> mPresets;
 
-   wxArrayString mPresetNames;
+   wxArrayStringEx mPresetNames;
 
    /// Finds the format currently selected and returns it's name and description
    void FindSelectedFormat(wxString **name, wxString **longname);
@@ -316,7 +324,7 @@ public:
 
 };
 
-WX_DECLARE_STRING_HASH_MAP(FFmpegPreset, FFmpegPresetMap);
+using FFmpegPresetMap = std::unordered_map<wxString, FFmpegPreset>;
 
 class FFmpegPresets : XMLTagHandler
 {
@@ -333,10 +341,10 @@ public:
    void ImportPresets(wxString &filename);
    void ExportPresets(wxString &filename);
 
-   bool HandleXMLTag(const wxChar *tag, const wxChar **attrs);
-   XMLTagHandler *HandleXMLChild(const wxChar *tag);
-   void WriteXMLHeader(XMLWriter &xmlFile);
-   void WriteXML(XMLWriter &xmlFile);
+   bool HandleXMLTag(const wxChar *tag, const wxChar **attrs) override;
+   XMLTagHandler *HandleXMLChild(const wxChar *tag) override;
+   void WriteXMLHeader(XMLWriter &xmlFile) const;
+   void WriteXML(XMLWriter &xmlFile) const;
 
 private:
 

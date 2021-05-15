@@ -24,12 +24,11 @@ public:
    NyquistEffectsModule(ModuleManagerInterface *moduleManager, const wxString *path);
    virtual ~NyquistEffectsModule();
 
-   // IdentInterface implementatino
+   // ComponentInterface implementation
 
-   wxString GetPath() override;
-   wxString GetSymbol() override;
-   wxString GetName() override;
-   wxString GetVendor() override;
+   PluginPath GetPath() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   VendorSymbol GetVendor() override;
    wxString GetVersion() override;
    wxString GetDescription() override;
 
@@ -38,18 +37,24 @@ public:
    bool Initialize() override;
    void Terminate() override;
 
+   FileExtensions GetFileExtensions() override;
+   FilePath InstallPath() override;
+
    bool AutoRegisterPlugins(PluginManagerInterface & pm) override;
-   wxArrayString FindPlugins(PluginManagerInterface & pm) override;
-   bool RegisterPlugin(PluginManagerInterface & pm, const wxString & path) override;
+   PluginPaths FindPluginPaths(PluginManagerInterface & pm) override;
+   unsigned DiscoverPluginsAtPath(
+      const PluginPath & path, wxString &errMsg,
+      const RegistrationCallback &callback)
+         override;
 
-   bool IsPluginValid(const wxString & path, bool bFast) override;
+   bool IsPluginValid(const PluginPath & path, bool bFast) override;
 
-   IdentInterface *CreateInstance(const wxString & path) override;
-   void DeleteInstance(IdentInterface *instance) override;
+   ComponentInterface *CreateInstance(const PluginPath & path) override;
+   void DeleteInstance(ComponentInterface *instance) override;
 
    // NyquistEffectModule implementation
 
 private:
    ModuleManagerInterface *mModMan;
-   wxString mPath;
+   PluginPath mPath;
 };

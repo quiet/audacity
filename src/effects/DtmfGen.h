@@ -14,18 +14,16 @@
 #ifndef __AUDACITY_EFFECT_DTMF__
 #define __AUDACITY_EFFECT_DTMF__
 
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/stattext.h>
-#include <wx/string.h>
-
 #include "../widgets/NumericTextCtrl.h"
 
 #include "Effect.h"
 
+class wxSlider;
+class wxStaticText;
+class wxTextCtrl;
 class ShuttleGui;
 
-#define DTMFTONES_PLUGIN_SYMBOL XO("DTMF Tones")
+#define DTMFTONES_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("DTMF Tones") }
 
 class EffectDtmf final : public Effect
 {
@@ -33,12 +31,13 @@ public:
    EffectDtmf();
    virtual ~EffectDtmf();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
@@ -47,8 +46,9 @@ public:
    unsigned GetAudioOutCount() override;
    bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 

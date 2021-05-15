@@ -30,22 +30,21 @@
 #define __AUDACITY_TAGS__
 
 #include "Audacity.h"
-#include "widgets/Grid.h"
+
 #include "xml/XMLTagHandler.h"
 
 #include "MemoryX.h"
 #include <utility>
-#include <wx/hashmap.h>
-#include <wx/notebook.h>
-#include <wx/string.h>
 
-#include "widgets/wxPanelWrapper.h"
+#include "widgets/wxPanelWrapper.h" // to inherit
 
-class wxButton;
-class wxChoice;
+#include <unordered_map>
+
+class wxArrayString;
 class wxComboBox;
 class wxGridCellChoiceEditor;
-class wxRadioButton;
+class wxGridCellStringRenderer;
+class wxGridEvent;
 class wxTextCtrl;
 
 class Grid;
@@ -53,15 +52,7 @@ class ShuttleGui;
 class TagsEditor;
 class ComboEditor;
 
-// We want a macro call like this:
-// WX_DECLARE_USER_EXPORTED_STRING_HASH_MAP(wxString, TagMap, AUDACITY_DLL_API);
-// Which wxWidgets does not supply!
-// So use this undocumented variant:
-WX_DECLARE_STRING_HASH_MAP_WITH_DECL( wxString, TagMap,class AUDACITY_DLL_API );
-// Doing this means we can export class Tags without any worry,
-// as every class it uses, including TagMap, is then exported.
-// It's better than using #pragma warning(disable: 4251)
-// and relying on the relevant parts of class Tags being private.
+using TagMap = std::unordered_map< wxString, wxString >;
 
 #define TAG_TITLE     wxT("TITLE")
 #define TAG_ARTIST   wxT("ARTIST")
@@ -77,6 +68,8 @@ class AUDACITY_DLL_API Tags final : public XMLTagHandler {
 
  public:
    Tags();  // constructor
+   Tags( const Tags& ) = default;
+   //Tags( Tags && ) = default;
    virtual ~Tags();
 
    std::shared_ptr<Tags> Duplicate() const;
@@ -87,7 +80,7 @@ class AUDACITY_DLL_API Tags final : public XMLTagHandler {
 
    bool HandleXMLTag(const wxChar *tag, const wxChar **attrs) override;
    XMLTagHandler *HandleXMLChild(const wxChar *tag) override;
-   void WriteXML(XMLWriter &xmlFile) /* not override */;
+   void WriteXML(XMLWriter &xmlFile) const /* not override */;
 
    void AllowEditTitle(bool editTitle);
    void AllowEditTrackNumber(bool editTrackNumber);
@@ -148,6 +141,8 @@ class TagsEditor final : public wxDialogWrapper
 
    void PopulateOrExchange(ShuttleGui & S);
 
+   void OnDontShow( wxCommandEvent & Evt);
+   void OnHelp(wxCommandEvent & Evt);
    bool TransferDataToWindow() override;
    bool TransferDataFromWindow() override;
 

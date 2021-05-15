@@ -14,32 +14,35 @@
 
 #include <wx/defs.h>
 
-#include <wx/choice.h>
-#include <wx/string.h>
-#include <wx/window.h>
-#include <wx/dynarray.h>
-
 #include "PrefsPanel.h"
 
+class wxChoice;
 class ShuttleGui;
+class wxArrayStringEx;
+
+#define DEVICE_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Device") }
 
 class DevicePrefs final : public PrefsPanel
 {
  public:
-   DevicePrefs(wxWindow * parent);
+   DevicePrefs(wxWindow * parent, wxWindowID winid, int Options=0);
    virtual ~DevicePrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+
+   bool Commit() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
  private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
    void GetNamesAndLabels();
 
    void OnHost(wxCommandEvent & e);
    void OnDevice(wxCommandEvent & e);
 
-   wxArrayString mHostNames;
-   wxArrayString mHostLabels;
+   wxArrayStringEx mHostNames;
+   wxArrayStringEx mHostLabels;
 
    wxString mPlayDevice;
    wxString mRecordDevice;
@@ -51,13 +54,16 @@ class DevicePrefs final : public PrefsPanel
    wxChoice *mRecord;
    wxChoice *mChannels;
 
+   int mOptions;
+
    DECLARE_EVENT_TABLE()
 };
 
+/// A PrefsPanelFactory that creates one DevicePrefs panel.
 class DevicePrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 
 #endif

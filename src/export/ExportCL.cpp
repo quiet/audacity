@@ -13,16 +13,22 @@
 
 #include "../Audacity.h"
 #include "ExportCL.h"
+
 #include "../Project.h"
 
+#include <wx/app.h>
 #include <wx/button.h>
 #include <wx/combobox.h>
+#include <wx/filedlg.h>
 #include <wx/log.h>
-#include <wx/msgdlg.h>
 #include <wx/process.h>
 #include <wx/sizer.h>
 #include <wx/textctrl.h>
-#include <FileDialog.h>
+#if defined(__WXMSW__)
+#include <wx/msw/registry.h> // for wxRegKey
+#endif
+
+#include "../FileNames.h"
 #include "Export.h"
 
 #include "../Mix.h"
@@ -31,6 +37,8 @@
 #include "../Internat.h"
 #include "../float_cast.h"
 #include "../widgets/FileHistory.h"
+#include "../widgets/ErrorDialog.h"
+#include "../widgets/ProgressDialog.h"
 
 #include "../Track.h"
 
@@ -46,8 +54,8 @@ public:
    virtual ~ExportCLOptions();
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
    void OnBrowse(wxCommandEvent & event);
 
@@ -97,11 +105,11 @@ ExportCLOptions::~ExportCLOptions()
 ///
 void ExportCLOptions::PopulateOrExchange(ShuttleGui & S)
 {
-   wxArrayString cmds;
+   wxArrayStringEx cmds;
    wxString cmd;
 
    for (size_t i = 0; i < mHistory.GetCount(); i++) {
-      cmds.Add(mHistory.GetHistoryFile(i));
+      cmds.push_back(mHistory.GetHistoryFile(i));
    }
    cmd = cmds[0];
 
@@ -115,10 +123,10 @@ void ExportCLOptions::PopulateOrExchange(ShuttleGui & S)
             S.SetStretchyCol(1);
             mCmd = S.AddCombo(_("Command:"),
                               cmd,
-                              &cmds);
+                              cmds);
             S.Id(ID_BROWSE).AddButton(_("Browse..."),
                                       wxALIGN_CENTER_VERTICAL);
-            S.AddFixedText(wxT(""));
+            S.AddFixedText( {} );
             S.TieCheckBox(_("Show output"),
                           wxT("/FileFormats/ExternalProgramShowOutput"),
                           false);
@@ -168,14 +176,15 @@ void ExportCLOptions::OnBrowse(wxCommandEvent& WXUNUSED(event))
    ext = wxT(".exe");
 #endif
 
-   path = FileSelector(_("Find path to command"),
+   path = FileNames::SelectFile(FileNames::Operation::Open,
+                       _("Find path to command"),
                        wxEmptyString,
                        wxEmptyString,
                        ext,
                        wxT("*") + ext,
                        wxFD_OPEN | wxRESIZE_BORDER,
                        this);
-   if (path.IsEmpty()) {
+   if (path.empty()) {
       return;
    }
 
@@ -281,9 +290,10 @@ public:
    ExportCL();
 
    // Required
-   wxWindow *OptionsCreate(wxWindow *parent, int format);
+   wxWindow *OptionsCreate(wxWindow *parent, int format) override;
 
-   int Export(AudacityProject *project,
+   ProgressResult Export(AudacityProject *project,
+               std::unique_ptr<ProgressDialog> &pDialog,
                unsigned channels,
                const wxString &fName,
                bool selectedOnly,
@@ -305,7 +315,8 @@ ExportCL::ExportCL()
    SetDescription(_("(external program)"),0);
 }
 
-int ExportCL::Export(AudacityProject *project,
+ProgressResult ExportCL::Export(AudacityProject *project,
+                      std::unique_ptr<ProgressDialog> &pDialog,
                       unsigned channels,
                       const wxString &fName,
                       bool selectionOnly,
@@ -342,32 +353,37 @@ int ExportCL::Export(AudacityProject *project,
       if (reg.Exists()) {
          wxString ipath;
          reg.QueryValue(wxT("InstallPath"), ipath);
-         if (!ipath.IsEmpty()) {
+         if (!ipath.empty()) {
             npath += wxPATH_SEP + ipath;
          }
       }
    }
 
-   wxSetEnv(wxT("PATH"),npath.c_str());
+   wxSetEnv(wxT("PATH"),npath);
 #endif
 
    // Kick off the command
    ExportCLProcess process(&output);
-   rc = wxExecute(cmd, wxEXEC_ASYNC, &process);
 
+   {
 #if defined(__WXMSW__)
-   if (!opath.IsEmpty()) {
-      wxSetEnv(wxT("PATH"),opath.c_str());
-   }
+      auto cleanup = finally( [&] {
+         if (!opath.empty()) {
+            wxSetEnv(wxT("PATH"),opath);
+         }
+      } );
 #endif
 
+      rc = wxExecute(cmd, wxEXEC_ASYNC, &process);
+   }
+
    if (!rc) {
-      wxMessageBox(wxString::Format(_("Cannot export audio to %s"),
-                                    fName.c_str()));
+      AudacityMessageBox(wxString::Format(_("Cannot export audio to %s"),
+                                    fName));
       process.Detach();
       process.CloseOutput();
 
-      return false;
+      return ProgressResult::Cancelled;
    }
 
    // Turn off logging to prevent broken pipe messages
@@ -431,17 +447,23 @@ int ExportCL::Export(AudacityProject *project,
 
    size_t numBytes = 0;
    samplePtr mixed = NULL;
-   int updateResult = eProgressSuccess;
+   auto updateResult = ProgressResult::Success;
 
    {
+      auto closeIt = finally ( [&] {
+         // Should make the process die, before propagating any exception
+         process.CloseOutput();
+      } );
+
       // Prepare the progress display
-      ProgressDialog progress(_("Export"),
-         selectionOnly ?
-         _("Exporting the selected audio using command-line encoder") :
-         _("Exporting the entire project using command-line encoder"));
+      InitProgress( pDialog, _("Export"),
+         selectionOnly
+            ? _("Exporting the selected audio using command-line encoder")
+            : _("Exporting the audio using command-line encoder") );
+      auto &progress = *pDialog;
 
       // Start piping the mixed data to the command
-      while (updateResult == eProgressSuccess && process.IsActive() && os->IsOk()) {
+      while (updateResult == ProgressResult::Success && process.IsActive() && os->IsOk()) {
          // Capture any stdout and stderr from the command
          Drain(process.GetInputStream(), &output);
          Drain(process.GetErrorStream(), &output);
@@ -474,6 +496,7 @@ int ExportCL::Export(AudacityProject *project,
          while (bytes > 0) {
             os->Write(mixed, bytes);
             if (!os->IsOk()) {
+               updateResult = ProgressResult::Cancelled;
                break;
             }
             bytes -= os->LastWrite();
@@ -485,9 +508,6 @@ int ExportCL::Export(AudacityProject *project,
       }
       // Done with the progress display
    }
-
-   // Should make the process die
-   process.CloseOutput();
 
    // Wait for process to terminate
    while (process.IsActive()) {
@@ -518,6 +538,9 @@ int ExportCL::Export(AudacityProject *project,
       dlg.Center();
 
       dlg.ShowModal();
+
+      if (process.GetStatus() != 0)
+         updateResult = ProgressResult::Failed;
    }
 
    return updateResult;
@@ -529,8 +552,8 @@ wxWindow *ExportCL::OptionsCreate(wxWindow *parent, int format)
    return safenew ExportCLOptions(parent, format);
 }
 
-movable_ptr<ExportPlugin> New_ExportCL()
+std::unique_ptr<ExportPlugin> New_ExportCL()
 {
-   return make_movable<ExportCL>();
+   return std::make_unique<ExportCL>();
 }
 

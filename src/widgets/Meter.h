@@ -16,14 +16,20 @@
 #ifndef __AUDACITY_METER__
 #define __AUDACITY_METER__
 
+#include <wx/setup.h> // for wxUSE_* macros
+#include <wx/brush.h> // member variable
 #include <wx/defs.h>
-#include <wx/timer.h>
+#include <wx/timer.h> // member variable
 
 #include "../SampleFormat.h"
-#include "Ruler.h"
+#include "Ruler.h" // member variable
+#include "ASlider.h"
+
+class AudacityProject;
 
 // Event used to notify all meters of preference changes
-DECLARE_EXPORTED_EVENT_TYPE(AUDACITY_DLL_API, EVT_METER_PREFERENCES_CHANGED, -1);
+wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API,
+                         EVT_METER_PREFERENCES_CHANGED, wxCommandEvent);
 
 // Increase this when we add support for multichannel meters
 // (most of the code is already there)
@@ -68,7 +74,7 @@ class MeterUpdateMsg
 class MeterUpdateQueue
 {
  public:
-   MeterUpdateQueue(int maxLen);
+   explicit MeterUpdateQueue(size_t maxLen);
    ~MeterUpdateQueue();
 
    bool Put(MeterUpdateMsg &msg);
@@ -79,15 +85,19 @@ class MeterUpdateQueue
  private:
    int              mStart;
    int              mEnd;
-   int              mBufferSize;
-   MeterUpdateMsg  *mBuffer;
+   size_t           mBufferSize;
+   ArrayOf<MeterUpdateMsg> mBuffer{mBufferSize};
 };
 
 class MeterAx;
 
-class Meter final : public wxPanelWrapper
+/********************************************************************//**
+\brief MeterPanel is a panel that paints the meter used for monitoring
+or playback.
+************************************************************************/
+class MeterPanel final : public ASlider
 {
-   DECLARE_DYNAMIC_CLASS(Meter)
+   //DECLARE_DYNAMIC_CLASS(MeterPanel)
 
  public:
    // These should be kept in the same order as they appear
@@ -102,15 +112,14 @@ class Meter final : public wxPanelWrapper
    };
 
 
-   Meter(AudacityProject *,
+   MeterPanel(AudacityProject *,
          wxWindow* parent, wxWindowID id,
          bool isInput,
          const wxPoint& pos = wxDefaultPosition,
          const wxSize& size = wxDefaultSize,
          Style style = HorizontalStereo,
          float fDecayRate = 60.0f);
-
-   ~Meter();
+   ~MeterPanel();
 
    bool AcceptsFocus() const override { return s_AcceptsFocus; }
    bool AcceptsFocusFromKeyboard() const override { return true; }
@@ -175,10 +184,17 @@ class Meter final : public wxPanelWrapper
    bool IsClipping() const;
 
    void StartMonitoring();
+   void StopMonitoring();
 
-   // These exist solely for the purpose of reseting the toolbars
-   void *SaveState();
-   void RestoreState(void *state);
+   // These exist solely for the purpose of resetting the toolbars
+   struct State{ bool mSaved, mMonitoring, mActive; };
+   State SaveState();
+   void RestoreState(const State &state);
+   void UpdateControl();
+   void SetMixer(wxCommandEvent & event);
+
+
+   int GetDBRange() const { return mDB ? mDBRange : -1; }
 
  private:
    static bool s_AcceptsFocus;
@@ -239,7 +255,7 @@ class Meter final : public wxPanelWrapper
 
    Style     mStyle;
    Style     mDesiredStyle;
-   bool      mGradient;
+   int       mGradient;
    bool      mDB;
    int       mDBRange;
    bool      mDecay;
@@ -294,82 +310,5 @@ class Meter final : public wxPanelWrapper
 
    DECLARE_EVENT_TABLE()
 };
-
-#if wxUSE_ACCESSIBILITY
-
-class MeterAx final : public wxWindowAccessible
-{
-public:
-   MeterAx(wxWindow * window);
-
-   virtual ~ MeterAx();
-
-   // Performs the default action. childId is 0 (the action for this object)
-   // or > 0 (the action for a child).
-   // Return wxACC_NOT_SUPPORTED if there is no default action for this
-   // window (e.g. an edit control).
-   wxAccStatus DoDefaultAction(int childId) override;
-
-   // Retrieves the address of an IDispatch interface for the specified child.
-   // All objects must support this property.
-   wxAccStatus GetChild(int childId, wxAccessible** child) override;
-
-   // Gets the number of children.
-   wxAccStatus GetChildCount(int* childCount) override;
-
-   // Gets the default action for this object (0) or > 0 (the action for a child).
-   // Return wxACC_OK even if there is no action. actionName is the action, or the empty
-   // string if there is no action.
-   // The retrieved string describes the action that is performed on an object,
-   // not what the object does as a result. For example, a toolbar button that prints
-   // a document has a default action of "Press" rather than "Prints the current document."
-   wxAccStatus GetDefaultAction(int childId, wxString *actionName) override;
-
-   // Returns the description for this object or a child.
-   wxAccStatus GetDescription(int childId, wxString *description) override;
-
-   // Gets the window with the keyboard focus.
-   // If childId is 0 and child is NULL, no object in
-   // this subhierarchy has the focus.
-   // If this object has the focus, child should be 'this'.
-   wxAccStatus GetFocus(int *childId, wxAccessible **child) override;
-
-   // Returns help text for this object or a child, similar to tooltip text.
-   wxAccStatus GetHelpText(int childId, wxString *helpText) override;
-
-   // Returns the keyboard shortcut for this object or child.
-   // Return e.g. ALT+K
-   wxAccStatus GetKeyboardShortcut(int childId, wxString *shortcut) override;
-
-   // Returns the rectangle for this object (id = 0) or a child element (id > 0).
-   // rect is in screen coordinates.
-   wxAccStatus GetLocation(wxRect& rect, int elementId) override;
-
-   // Gets the name of the specified object.
-   wxAccStatus GetName(int childId, wxString *name) override;
-
-   // Returns a role constant.
-   wxAccStatus GetRole(int childId, wxAccRole *role) override;
-
-   // Gets a variant representing the selected children
-   // of this object.
-   // Acceptable values:
-   // - a null variant (IsNull() returns TRUE)
-   // - a list variant (GetType() == wxT("list"))
-   // - an integer representing the selected child element,
-   //   or 0 if this object is selected (GetType() == wxT("long"))
-   // - a "void*" pointer to a wxAccessible child object
-   wxAccStatus GetSelections(wxVariant *selections) override;
-
-   // Returns a state constant.
-   wxAccStatus GetState(int childId, long* state) override;
-
-   // Returns a localized string representing the value for the object
-   // or child.
-   wxAccStatus GetValue(int childId, wxString* strValue) override;
-
-};
-
-#endif // wxUSE_ACCESSIBILITY
 
 #endif // __AUDACITY_METER__

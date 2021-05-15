@@ -6,18 +6,23 @@
 
   Dominic Mazzoni
 
-**********************************************************************/
+**************************************************************************//**
+\class BuiltinEffectsModule
+\brief Internal module to auto register all built in effects.  
+*****************************************************************************/
 
-#include "../Audacity.h"
+#include "../Audacity.h" // for USE_* macros
+#include "LoadEffects.h"
+
+#include "../Experimental.h"
+
 #include "../Prefs.h"
 
-#include "LoadEffects.h"
 #include "../MemoryX.h"
 
 #include "EffectManager.h"
 
 #include "Amplify.h"
-// #include "AvcCompressor.h"
 #include "AutoDuck.h"
 #include "BassTreble.h"
 #include "ChangeSpeed.h"
@@ -58,8 +63,6 @@
 #include "ChangeTempo.h"
 #endif
 
-#include "../Experimental.h"
-
 //
 // Include the SoundTouch effects, if requested
 //
@@ -79,7 +82,7 @@
    EFFECT( NOISEREDUCTION, EffectNoiseReduction, () )
 #else
 #define NOISEREDUCTION_EFFECT \
-   EFFECT( NOISEREMOVAL, EffectNoiseRemoval() )
+   EFFECT( NOISEREMOVAL, EffectNoiseRemoval, () )
 #endif
 
 //
@@ -106,36 +109,39 @@
 // Define the list of effects that will be autoregistered and how to instantiate each
 //
 #define EFFECT_LIST \
-   EFFECT( CHIRP,             EffectToneGen, (true) )      \
-   EFFECT( DTMFTONES,         EffectDtmf, () )             \
-   EFFECT( NOISE,             EffectNoise, () )            \
-   EFFECT( SILENCE,           EffectSilence, () )          \
-   EFFECT( TONE,              EffectToneGen, (false) )     \
-   EFFECT( AMPLIFY,           EffectAmplify, () )          \
-   EFFECT( BASSTREBLE,        EffectBassTreble, () )       \
-   EFFECT( CHANGESPEED,       EffectChangeSpeed, () )      \
-   EFFECT( CLICKREMOVAL,      EffectClickRemoval, () )     \
-   EFFECT( COMPRESSOR,        EffectCompressor, () )       \
-   EFFECT( DISTORTION,        EffectDistortion, () )       \
-   EFFECT( ECHO,              EffectEcho, () )             \
-   EFFECT( EQUALIZATION,      EffectEqualization, () )     \
-   EFFECT( FADEIN,            EffectFade, (true) )         \
-   EFFECT( FADEOUT,           EffectFade, (false) )        \
-   EFFECT( INVERT,            EffectInvert, () )           \
-   EFFECT( NORMALIZE,         EffectNormalize, () )        \
-   EFFECT( PHASER,            EffectPhaser, () )           \
-   EFFECT( REPAIR,            EffectRepair, () )           \
-   EFFECT( REPEAT,            EffectRepeat, () )           \
-   EFFECT( REVERB,            EffectReverb, () )           \
-   EFFECT( REVERSE,           EffectReverse, () )          \
-   EFFECT( STEREOTOMONO,      EffectStereoToMono, () )     \
-   EFFECT( TRUNCATESILENCE,   EffectTruncSilence, () )     \
-   EFFECT( WAHWAH,            EffectWahwah, () )           \
-   EFFECT( FINDCLIPPING,      EffectFindClipping, () )     \
-   NOISEREDUCTION_EFFECT                                 \
-   SOUNDTOUCH_EFFECTS                                    \
-   EFFECT( AUTODUCK,          EffectAutoDuck, () )         \
-   EFFECT( PAULSTRETCH,       EffectPaulstretch, () )      \
+   EFFECT( CHIRP,             EffectToneGen, (true) )                  \
+   EFFECT( DTMFTONES,         EffectDtmf, () )                         \
+   EFFECT( NOISE,             EffectNoise, () )                        \
+   EFFECT( SILENCE,           EffectSilence, () )                      \
+   EFFECT( TONE,              EffectToneGen, (false) )                 \
+   EFFECT( AMPLIFY,           EffectAmplify, () )                      \
+   EFFECT( BASSTREBLE,        EffectBassTreble, () )                   \
+   EFFECT( CHANGESPEED,       EffectChangeSpeed, () )                  \
+   EFFECT( CLICKREMOVAL,      EffectClickRemoval, () )                 \
+   EFFECT( COMPRESSOR,        EffectCompressor, () )                   \
+   EFFECT( DISTORTION,        EffectDistortion, () )                   \
+   EFFECT( ECHO,              EffectEcho, () )                         \
+   EFFECT( EQUALIZATION,      EffectEqualization, (kEqLegacy) )        \
+   EFFECT( FADEIN,            EffectFade, (true) )                     \
+   EFFECT( FADEOUT,           EffectFade, (false) )                    \
+   /* These two effects, not yet */ \
+   /*EFFECT( FILTERCURVE,       EffectEqualization, (kEqOptionCurve) )*/   \
+   /*EFFECT( GRAPHICEQ,         EffectEqualization, (kEqOptionGraphic) )*/ \
+   EFFECT( INVERT,            EffectInvert, () )                       \
+   EFFECT( NORMALIZE,         EffectNormalize, () )                    \
+   EFFECT( PHASER,            EffectPhaser, () )                       \
+   EFFECT( REPAIR,            EffectRepair, () )                       \
+   EFFECT( REPEAT,            EffectRepeat, () )                       \
+   EFFECT( REVERB,            EffectReverb, () )                       \
+   EFFECT( REVERSE,           EffectReverse, () )                      \
+   EFFECT( STEREOTOMONO,      EffectStereoToMono, () )                 \
+   EFFECT( TRUNCATESILENCE,   EffectTruncSilence, () )                 \
+   EFFECT( WAHWAH,            EffectWahwah, () )                       \
+   EFFECT( FINDCLIPPING,      EffectFindClipping, () )                 \
+   NOISEREDUCTION_EFFECT                                               \
+   SOUNDTOUCH_EFFECTS                                                  \
+   EFFECT( AUTODUCK,          EffectAutoDuck, () )                     \
+   EFFECT( PAULSTRETCH,       EffectPaulstretch, () )                  \
    SBSMS_EFFECTS
 
 //
@@ -162,23 +168,25 @@ enum
 // Redefine EFFECT() to add the effect's name to an array
 //
 #undef EFFECT
-#define EFFECT(n, i, args) n ## _PLUGIN_SYMBOL,
+#define EFFECT(n, i, args) results.push_back((n ## _PLUGIN_SYMBOL).Internal());
 
 //
 // Create the effect name array
 //
-static const wxChar *kEffectNames[] =
-{
-   EFFECT_LIST
-};
+static const std::vector<wxString> kEffectNames() {
+   std::vector<wxString> results;
+   EFFECT_LIST;
+   return results;
+}
 
 //
 // Create the effect name array of excluded effects
 //
-static const wxChar *kExcludedNames[] =
-{
-   EXCLUDE_LIST
-};
+static const std::vector<wxString> kExcludedNames() {
+   std::vector<wxString> results;
+   EXCLUDE_LIST;
+   return results;
+}
 
 //
 // Redefine EFFECT() to generate a case statement for the lookup switch
@@ -225,29 +233,24 @@ BuiltinEffectsModule::BuiltinEffectsModule(ModuleManagerInterface *moduleManager
 
 BuiltinEffectsModule::~BuiltinEffectsModule()
 {
-   mPath.Clear();
+   mPath.clear();
 }
 
 // ============================================================================
-// IdentInterface implementation
+// ComponentInterface implementation
 // ============================================================================
 
-wxString BuiltinEffectsModule::GetPath()
+PluginPath BuiltinEffectsModule::GetPath()
 {
    return mPath;
 }
 
-wxString BuiltinEffectsModule::GetSymbol()
+ComponentInterfaceSymbol BuiltinEffectsModule::GetSymbol()
 {
    return XO("Builtin Effects");
 }
 
-wxString BuiltinEffectsModule::GetName()
-{
-   return XO("Builtin Effects");
-}
-
-wxString BuiltinEffectsModule::GetVendor()
+VendorSymbol BuiltinEffectsModule::GetVendor()
 {
    return XO("The Audacity Team");
 }
@@ -260,7 +263,7 @@ wxString BuiltinEffectsModule::GetVersion()
 
 wxString BuiltinEffectsModule::GetDescription()
 {
-   return XO("Provides builtin effects to Audacity");
+   return _("Provides builtin effects to Audacity");
 }
 
 // ============================================================================
@@ -269,14 +272,16 @@ wxString BuiltinEffectsModule::GetDescription()
 
 bool BuiltinEffectsModule::Initialize()
 {
-   for (size_t i = 0; i < WXSIZEOF(kEffectNames); i++)
+   const auto &names = kEffectNames();
+   for (const auto &name : names)
    {
-      mNames.Add(wxString(BUILTIN_EFFECT_PREFIX) + kEffectNames[i]);
+      mNames.push_back(wxString(BUILTIN_EFFECT_PREFIX) + name);
    }
 
-   for (size_t i = 0; i < WXSIZEOF(kExcludedNames); i++)
+   const auto &excluded = kExcludedNames();
+   for (const auto &name : excluded)
    {
-      mNames.Add(wxString(BUILTIN_EFFECT_PREFIX) + kExcludedNames[i]);
+      mNames.push_back(wxString(BUILTIN_EFFECT_PREFIX) + name);
    }
 
    return true;
@@ -290,13 +295,17 @@ void BuiltinEffectsModule::Terminate()
 
 bool BuiltinEffectsModule::AutoRegisterPlugins(PluginManagerInterface & pm)
 {
-   for (size_t i = 0; i < WXSIZEOF(kEffectNames); i++)
+   wxString ignoredErrMsg;
+   const auto &names = kEffectNames();
+   for (const auto &name : names)
    {
-      wxString path(wxString(BUILTIN_EFFECT_PREFIX) + kEffectNames[i]);
+      PluginPath path(wxString(BUILTIN_EFFECT_PREFIX) + name);
 
       if (!pm.IsPluginRegistered(path))
       {
-         RegisterPlugin(pm, path);
+         // No checking of error ?
+         DiscoverPluginsAtPath(path, ignoredErrMsg,
+            PluginManagerInterface::DefaultRegistrationCallback);
       }
    }
 
@@ -304,38 +313,43 @@ bool BuiltinEffectsModule::AutoRegisterPlugins(PluginManagerInterface & pm)
    return false;
 }
 
-wxArrayString BuiltinEffectsModule::FindPlugins(PluginManagerInterface & WXUNUSED(pm))
+PluginPaths BuiltinEffectsModule::FindPluginPaths(PluginManagerInterface & WXUNUSED(pm))
 {
    return mNames;
 }
 
-bool BuiltinEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxString & path)
+unsigned BuiltinEffectsModule::DiscoverPluginsAtPath(
+   const PluginPath & path, wxString &errMsg,
+   const RegistrationCallback &callback)
 {
+   errMsg.clear();
    auto effect = Instantiate(path);
    if (effect)
    {
-      pm.RegisterPlugin(this, effect.get());
-      return true;
+      if (callback)
+         callback(this, effect.get());
+      return 1;
    }
 
-   return false;
+   errMsg = _("Unknown built-in effect name");
+   return 0;
 }
 
-bool BuiltinEffectsModule::IsPluginValid(const wxString & path, bool bFast)
+bool BuiltinEffectsModule::IsPluginValid(const PluginPath & path, bool bFast)
 {
    // bFast is unused as checking in the list is fast.
-   bFast;
-   return mNames.Index(path) != wxNOT_FOUND;
+   static_cast<void>(bFast);
+   return make_iterator_range( mNames ).contains( path );
 }
 
-IdentInterface *BuiltinEffectsModule::CreateInstance(const wxString & path)
+ComponentInterface *BuiltinEffectsModule::CreateInstance(const PluginPath & path)
 {
    // Acquires a resource for the application.
    // Safety of this depends on complementary calls to DeleteInstance on the module manager side.
    return Instantiate(path).release();
 }
 
-void BuiltinEffectsModule::DeleteInstance(IdentInterface *instance)
+void BuiltinEffectsModule::DeleteInstance(ComponentInterface *instance)
 {
    // Releases the resource.
    std::unique_ptr < Effect > {
@@ -347,12 +361,13 @@ void BuiltinEffectsModule::DeleteInstance(IdentInterface *instance)
 // BuiltinEffectsModule implementation
 // ============================================================================
 
-std::unique_ptr<Effect> BuiltinEffectsModule::Instantiate(const wxString & path)
+std::unique_ptr<Effect> BuiltinEffectsModule::Instantiate(const PluginPath & path)
 {
    wxASSERT(path.StartsWith(BUILTIN_EFFECT_PREFIX));
-   wxASSERT(mNames.Index(path) != wxNOT_FOUND);
+   auto index = make_iterator_range( mNames ).index( path );
+   wxASSERT( index != wxNOT_FOUND );
 
-   switch (mNames.Index(path))
+   switch ( index )
    {
       EFFECT_LIST;
       EXCLUDE_LIST;

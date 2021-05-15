@@ -11,6 +11,7 @@
 
 **********************************************************************/
 
+#include "../Audacity.h" // for USE_* macros
 #if USE_SOUNDTOUCH
 
 #ifndef __AUDACITY_EFFECT_CHANGETEMPO__
@@ -18,19 +19,16 @@
 
 #if USE_SBSMS
 #include "SBSMSEffect.h"
-#include <wx/checkbox.h>
 #endif
-
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
 
 #include "SoundTouchEffect.h"
 
+class wxSlider;
+class wxCheckBox;
+class wxTextCtrl;
 class ShuttleGui;
 
-#define CHANGETEMPO_PLUGIN_SYMBOL XO("Change Tempo")
+#define CHANGETEMPO_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Change Tempo") }
 
 class EffectChangeTempo final : public EffectSoundTouch
 {
@@ -38,20 +36,22 @@ public:
    EffectChangeTempo();
    virtual ~EffectChangeTempo();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
    bool SupportsAutomation() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 

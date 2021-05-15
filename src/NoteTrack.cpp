@@ -14,9 +14,12 @@
 *//*******************************************************************/
 
 
-#include "Audacity.h"
+#include "Audacity.h" // for USE_* macros
 #include "NoteTrack.h"
 
+#include "Experimental.h"
+
+#include <wx/wxcrtvararg.h>
 #include <wx/dc.h>
 #include <wx/brush.h>
 #include <wx/pen.h>
@@ -33,10 +36,13 @@
 #include "Prefs.h"
 #include "effects/TimeWarper.h"
 
-#include "Experimental.h"
+#include "InconsistencyException.h"
+
+#include "TrackPanel.h" // For TrackInfo
+#include "AllThemeResources.h"
 
 #ifdef SONIFY
-#include "portmidi.h"
+#include "../lib-src/portmidi/pm_common/portmidi.h"
 
 #define SON_PROGRAM 0
 #define SON_AutoSave 67
@@ -100,72 +106,93 @@ SONFNS(AutoSave)
 
 NoteTrack::Holder TrackFactory::NewNoteTrack()
 {
-   return std::make_unique<NoteTrack>(mDirManager);
+   return std::make_shared<NoteTrack>(mDirManager);
 }
 
-NoteTrack::NoteTrack(const std::shared_ptr<DirManager> &projDirManager):
-Track(projDirManager)
+NoteTrack::NoteTrack(const std::shared_ptr<DirManager> &projDirManager)
+   : NoteTrackBase(projDirManager)
 {
    SetDefaultName(_("Note Track"));
    SetName(GetDefaultName());
 
+   SetHeight( TrackInfo::DefaultNoteTrackHeight() );
+
    mSeq = NULL;
-   mSerializationBuffer = NULL;
    mSerializationLength = 0;
 
 #ifdef EXPERIMENTAL_MIDI_OUT
-   mGain = 0;
+   mVelocity = 0;
 #endif
-   mBottomNote = 24;
-   mPitchHeight = 5;
+   mBottomNote = MinPitch;
+   mTopNote = MaxPitch;
 
    mVisibleChannels = ALL_CHANNELS;
-   mLastMidiPosition = 0;
 }
 
 NoteTrack::~NoteTrack()
 {
-   if (mSerializationBuffer) {
-      delete [] mSerializationBuffer;
+}
+
+Alg_seq &NoteTrack::GetSeq() const
+{
+   if (!mSeq) {
+      if (!mSerializationBuffer)
+         mSeq = std::make_unique<Alg_seq>();
+      else {
+         std::unique_ptr<Alg_track> alg_track
+         { Alg_seq::unserialize
+            ( mSerializationBuffer.get(), mSerializationLength ) };
+         wxASSERT(alg_track->get_type() == 's');
+         mSeq.reset( static_cast<Alg_seq*>(alg_track.release()) );
+
+         // Preserve the invariant that at most one of the representations is
+         // valid
+         mSerializationBuffer.reset();
+         mSerializationLength = 0;
+      }
    }
+   wxASSERT(mSeq);
+   return *mSeq;
 }
 
 Track::Holder NoteTrack::Duplicate() const
 {
-   auto duplicate = std::make_unique<NoteTrack>(mDirManager);
+   auto duplicate = std::make_shared<NoteTrack>(mDirManager);
    duplicate->Init(*this);
-   // Duplicate on NoteTrack moves data from mSeq to mSerializationBuffer
-   // and from mSerializationBuffer to mSeq on alternate calls. Duplicate
-   // to the undo stack and Duplicate back to the project should result
-   // in serialized blobs on the undo stack and traversable data in the
-   // project object.
+   // The duplicate begins life in serialized state.  Often the duplicate is
+   // pushed on the Undo stack.  Then we want to un-serialize it (or a further
+   // copy) only on demand after an Undo.
    if (mSeq) {
       SonifyBeginSerialize();
-      assert(!mSerializationBuffer);
+      wxASSERT(!mSerializationBuffer);
       // serialize from this to duplicate's mSerializationBuffer
-      mSeq->serialize((void**)&duplicate->mSerializationBuffer,
+      void *buffer;
+      mSeq->serialize(&buffer,
                       &duplicate->mSerializationLength);
+      duplicate->mSerializationBuffer.reset( (char*)buffer );
       SonifyEndSerialize();
-   } else if (mSerializationBuffer) {
-      SonifyBeginUnserialize();
-      assert(!mSeq);
-      std::unique_ptr<Alg_track> alg_track{ Alg_seq::unserialize(mSerializationBuffer,
-                                                      mSerializationLength) };
-      assert(alg_track->get_type() == 's');
-      duplicate->mSeq.reset(static_cast<Alg_seq*>(alg_track.release()));
-      SonifyEndUnserialize();
-   } else assert(false); // bug if neither mSeq nor mSerializationBuffer
+   }
+   else if (mSerializationBuffer) {
+      // Copy already serialized data.
+      wxASSERT(!mSeq);
+      duplicate->mSerializationLength = this->mSerializationLength;
+      duplicate->mSerializationBuffer.reset
+         ( safenew char[ this->mSerializationLength ] );
+      memcpy( duplicate->mSerializationBuffer.get(),
+              this->mSerializationBuffer.get(), this->mSerializationLength );
+   }
+   else {
+      // We are duplicating a default-constructed NoteTrack, and that's okay
+   }
    // copy some other fields here
    duplicate->SetBottomNote(mBottomNote);
-   duplicate->SetPitchHeight(mPitchHeight);
-   duplicate->mLastMidiPosition = mLastMidiPosition;
+   duplicate->SetTopNote(mTopNote);
    duplicate->mVisibleChannels = mVisibleChannels;
    duplicate->SetOffset(GetOffset());
 #ifdef EXPERIMENTAL_MIDI_OUT
-   duplicate->SetGain(GetGain());
+   duplicate->SetVelocity(GetVelocity());
 #endif
-   // This std::move is needed to "upcast" the pointer type
-   return std::move(duplicate);
+   return duplicate;
 }
 
 
@@ -181,54 +208,34 @@ double NoteTrack::GetStartTime() const
 
 double NoteTrack::GetEndTime() const
 {
-   return GetStartTime() + (mSeq ? mSeq->get_real_dur() : 0.0);
+   return GetStartTime() + GetSeq().get_real_dur();
 }
-
 
 void NoteTrack::WarpAndTransposeNotes(double t0, double t1,
                                       const TimeWarper &warper,
                                       double semitones)
 {
-   // Since this is a duplicate and duplicates convert mSeq to
-   // a text string for saving as XML, we probably have to
-   // duplicate again to get back an mSeq
    double offset = this->GetOffset(); // track is shifted this amount
-   if (!mSeq) { // replace saveme with an (unserialized) duplicate
-      Track::Holder unt{ Duplicate() };
-      const auto nt = static_cast<NoteTrack*>(unt.get());
-      wxASSERT(!mSeq && nt->mSeq && !nt->mSerializationBuffer);
-      // swap mSeq and Buffer between this and nt
-      nt->mSerializationBuffer = mSerializationBuffer;
-      nt->mSerializationLength = mSerializationLength;
-      mSerializationBuffer = NULL;
-      mSerializationLength = 0;
-      mSeq = std::move(nt->mSeq);
-   }
-   mSeq->convert_to_seconds(); // make sure time units are right
+   auto &seq = GetSeq();
+   seq.convert_to_seconds(); // make sure time units are right
    t1 -= offset; // adjust time range to compensate for track offset
    t0 -= offset;
-   if (t1 > mSeq->get_dur()) { // make sure t0, t1 are within sequence
-      t1 = mSeq->get_dur();
+   if (t1 > seq.get_dur()) { // make sure t0, t1 are within sequence
+      t1 = seq.get_dur();
       if (t0 >= t1) return;
    }
    Alg_iterator iter(mSeq.get(), false);
    iter.begin();
    Alg_event_ptr event;
    while (0 != (event = iter.next()) && event->time < t1) {
-      if (event->is_note() && event->time >= t0 &&
-          // Allegro data structure does not restrict channels to 16.
-          // Since there is not way to select more than 16 channels,
-          // map all channel numbers mod 16. This will have no effect
-          // on MIDI files, but it will allow users to at least select
-          // all channels on non-MIDI event sequence data.
-          IsVisibleChan(event->chan % 16)) {
+      if (event->is_note() && event->time >= t0) {
          event->set_pitch(event->get_pitch() + semitones);
       }
    }
    iter.end();
    // now, use warper to warp the tempo map
-   mSeq->convert_to_beats(); // beats remain the same
-   Alg_time_map_ptr map = mSeq->get_time_map();
+   seq.convert_to_beats(); // beats remain the same
+   Alg_time_map_ptr map = seq.get_time_map();
    map->insert_beat(t0, map->time_to_beat(t0));
    map->insert_beat(t1, map->time_to_beat(t1));
    int i, len = map->length();
@@ -237,22 +244,20 @@ void NoteTrack::WarpAndTransposeNotes(double t0, double t1,
       beat.time = warper.Warp(beat.time + offset) - offset;
    }
    // about to redisplay, so might as well convert back to time now
-   mSeq->convert_to_seconds();
+   seq.convert_to_seconds();
 }
 
-
-
-int NoteTrack::DrawLabelControls(wxDC & dc, wxRect & r)
+// Draws the midi channel toggle buttons within the given rect.
+// The rect should be evenly divisible by 4 on both axis.
+void NoteTrack::DrawLabelControls
+( const NoteTrack *pTrack, wxDC & dc, const wxRect &rect, int highlightedChannel )
 {
-   int wid = 23;
-   int ht = 16;
+   dc.SetTextForeground(theTheme.Colour(clrLabelTrackText));
+   wxASSERT_MSG(rect.width % 4 == 0, "Midi channel control rect width must be divisible by 4");
+   wxASSERT_MSG(rect.height % 4 == 0, "Midi channel control rect height must be divisible by 4");
 
-   if (r.height < ht * 4) {
-      return r.y + 5 + ht * 4;
-   }
-
-   int x = r.x + (r.width / 2 - wid * 2) + 2;
-   int y = r.y + 5;
+   auto cellWidth = rect.width / 4;
+   auto cellHeight = rect.height / 4;
 
    wxRect box;
    for (int row = 0; row < 4; row++) {
@@ -261,13 +266,18 @@ int NoteTrack::DrawLabelControls(wxDC & dc, wxRect & r)
          // used by AColor and button labels
          int chanName = row * 4 + col + 1;
 
-         box.x = x + col * wid;
-         box.y = y + row * ht;
-         box.width = wid;
-         box.height = ht;
+         box.x = rect.x + col * cellWidth;
+         box.y = rect.y + row * cellHeight;
+         box.width = cellWidth;
+         box.height = cellHeight;
 
-         if (IsVisibleChan(chanName - 1)) {
-            AColor::MIDIChannel(&dc, chanName);
+         bool visible = pTrack ? pTrack->IsVisibleChan(chanName - 1) : true;
+         if (visible) {
+            // highlightedChannel counts 0 based
+            if ( chanName == highlightedChannel + 1 )
+               AColor::LightMIDIChannel(&dc, chanName);
+            else
+               AColor::MIDIChannel(&dc, chanName);
             dc.DrawRectangle(box);
 // two choices: channel is enabled (to see and play) when button is in
 // "up" position (original Audacity style) or in "down" position
@@ -293,7 +303,10 @@ int NoteTrack::DrawLabelControls(wxDC & dc, wxRect & r)
                          box.x, box.y + box.height - 1,
                          box.x + box.width - 1, box.y + box.height - 1);
          } else {
-            AColor::MIDIChannel(&dc, 0);
+            if ( chanName == highlightedChannel + 1 )
+               AColor::LightMIDIChannel(&dc, chanName);
+            else
+               AColor::MIDIChannel(&dc, 0);
             dc.DrawRectangle(box);
 #if CHANNEL_ON_IS_DOWN
             AColor::LightMIDIChannel(&dc, 0);
@@ -317,47 +330,45 @@ int NoteTrack::DrawLabelControls(wxDC & dc, wxRect & r)
 
          }
 
-         wxString t;
+         wxString text;
          wxCoord w;
          wxCoord h;
 
-         t.Printf(wxT("%d"), chanName);
-         dc.GetTextExtent(t, &w, &h);
+         text.Printf(wxT("%d"), chanName);
+         dc.GetTextExtent(text, &w, &h);
 
-         dc.DrawText(t, box.x + (box.width - w) / 2, box.y + (box.height - h) / 2);
+         dc.DrawText(text, box.x + (box.width - w) / 2, box.y + (box.height - h) / 2);
       }
    }
+   dc.SetTextForeground(theTheme.Colour(clrTrackPanelText));
    AColor::MIDIChannel(&dc, 0); // always return with gray color selected
-   return box.GetBottom();
 }
 
-bool NoteTrack::LabelClick(wxRect & r, int mx, int my, bool right)
+int NoteTrack::FindChannel(const wxRect &rect, int mx, int my)
 {
-   int wid = 23;
-   int ht = 16;
+   wxASSERT_MSG(rect.width % 4 == 0, "Midi channel control rect width must be divisible by 4");
+   wxASSERT_MSG(rect.height % 4 == 0, "Midi channel control rect height must be divisible by 4");
 
-   if (r.height < ht * 4)
-      return false;
+   auto cellWidth = rect.width / 4;
+   auto cellHeight = rect.height / 4;
 
-   int x = r.x + (r.width / 2 - wid * 2);
-   int y = r.y + 1;
-   // after adding Mute and Solo buttons, mapping is broken, so hack in the offset
-   y += 12;
+   int col = (mx - rect.x) / cellWidth;
+   int row = (my - rect.y) / cellHeight;
 
-   int col = (mx - x) / wid;
-   int row = (my - y) / ht;
+   return row * 4 + col;
+}
 
-   if (row < 0 || row >= 4 || col < 0 || col >= 4)
-      return false;
 
-   int channel = row * 4 + col;
-
-   if (right) {
-      if (mVisibleChannels == CHANNEL_BIT(channel))
-         mVisibleChannels = ALL_CHANNELS;
-      else
-         mVisibleChannels = CHANNEL_BIT(channel);
-   } else
+// Handles clicking within the midi controls rect (same as DrawLabelControls).
+// This is somewhat oddly written, as these aren't real buttons - they act
+// when the mouse goes down; you can't hold it pressed and move off of it.
+// Left-clicking toggles a single channel; right-clicking turns off all other channels.
+bool NoteTrack::LabelClick(const wxRect &rect, int mx, int my, bool right)
+{
+   auto channel = FindChannel(rect, mx, my);
+   if (right)
+      SoloVisibleChan(channel);
+   else
       ToggleVisibleChan(channel);
 
    return true;
@@ -368,54 +379,51 @@ void NoteTrack::SetSequence(std::unique_ptr<Alg_seq> &&seq)
    mSeq = std::move(seq);
 }
 
-Alg_seq* NoteTrack::GetSequence()
-{
-   return mSeq.get();
-}
-
 void NoteTrack::PrintSequence()
 {
    FILE *debugOutput;
 
    debugOutput = fopen("debugOutput.txt", "wt");
-   fprintf(debugOutput, "Importing MIDI...\n");
+   wxFprintf(debugOutput, "Importing MIDI...\n");
 
+   // This is called for debugging purposes.  Do not compute mSeq on demand
+   // with GetSeq()
    if (mSeq) {
       int i = 0;
 
       while(i < mSeq->length()) {
-         fprintf(debugOutput, "--\n");
-         fprintf(debugOutput, "type: %c\n",
+         wxFprintf(debugOutput, "--\n");
+         wxFprintf(debugOutput, "type: %c\n",
             ((Alg_event_ptr)mSeq->track_list.tracks[i])->get_type());
-         fprintf(debugOutput, "time: %f\n",
+         wxFprintf(debugOutput, "time: %f\n",
             ((Alg_event_ptr)mSeq->track_list.tracks[i])->time);
-         fprintf(debugOutput, "channel: %li\n",
+         wxFprintf(debugOutput, "channel: %li\n",
             ((Alg_event_ptr)mSeq->track_list.tracks[i])->chan);
 
          if(((Alg_event_ptr)mSeq->track_list.tracks[i])->get_type() == wxT('n'))
          {
-            fprintf(debugOutput, "pitch: %f\n",
+            wxFprintf(debugOutput, "pitch: %f\n",
                ((Alg_note_ptr)mSeq->track_list.tracks[i])->pitch);
-            fprintf(debugOutput, "duration: %f\n",
+            wxFprintf(debugOutput, "duration: %f\n",
                ((Alg_note_ptr)mSeq->track_list.tracks[i])->dur);
-            fprintf(debugOutput, "velocity: %f\n",
+            wxFprintf(debugOutput, "velocity: %f\n",
                ((Alg_note_ptr)mSeq->track_list.tracks[i])->loud);
          }
          else if(((Alg_event_ptr)mSeq->track_list.tracks[i])->get_type() == wxT('n'))
          {
-            fprintf(debugOutput, "key: %li\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->get_identifier());
-            fprintf(debugOutput, "attribute type: %c\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.attr_type());
-            fprintf(debugOutput, "attribute: %s\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.attr_name());
+            wxFprintf(debugOutput, "key: %li\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->get_identifier());
+            wxFprintf(debugOutput, "attribute type: %c\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.attr_type());
+            wxFprintf(debugOutput, "attribute: %s\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.attr_name());
 
             if(((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.attr_type() == wxT('r'))
             {
-               fprintf(debugOutput, "value: %f\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.r);
+               wxFprintf(debugOutput, "value: %f\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.r);
             }
             else if(((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.attr_type() == wxT('i')) {
-               fprintf(debugOutput, "value: %li\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.i);
+               wxFprintf(debugOutput, "value: %li\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.i);
             }
             else if(((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.attr_type() == wxT('s')) {
-               fprintf(debugOutput, "value: %s\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.s);
+               wxFprintf(debugOutput, "value: %s\n", ((Alg_update_ptr)mSeq->track_list.tracks[i])->parameter.s);
             }
             else {}
          }
@@ -424,89 +432,123 @@ void NoteTrack::PrintSequence()
       }
    }
    else {
-      fprintf(debugOutput, "No sequence defined!\n");
+      wxFprintf(debugOutput, "No sequence defined!\n");
    }
 
    fclose(debugOutput);
 }
 
-int NoteTrack::GetVisibleChannels()
-{
-   return mVisibleChannels;
-}
-
 Track::Holder NoteTrack::Cut(double t0, double t1)
 {
-   if (t1 <= t0)
-      return{};
-   double len = t1-t0;
+   if (t1 < t0)
+      THROW_INCONSISTENCY_EXCEPTION;
 
-   auto newTrack = std::make_unique<NoteTrack>(mDirManager);
+   double len = t1-t0;
+   //auto delta = -(
+      //( std::min( t1, GetEndTime() ) ) - ( std::max( t0, GetStartTime() ) )
+   //);
+
+   auto newTrack = std::make_shared<NoteTrack>(mDirManager);
 
    newTrack->Init(*this);
 
-   mSeq->convert_to_seconds();
-   newTrack->mSeq.reset(mSeq->cut(t0 - GetOffset(), len, false));
-   newTrack->SetOffset(GetOffset());
+   auto &seq = GetSeq();
+   seq.convert_to_seconds();
+   newTrack->mSeq.reset(seq.cut(t0 - GetOffset(), len, false));
+   newTrack->SetOffset(0);
+
+   // Not needed
+   // Alg_seq::cut seems to handle this
+   //AddToDuration( delta );
 
    // What should be done with the rest of newTrack's members?
-   //(mBottomNote, mDirManager, mLastMidiPosition,
+   //(mBottomNote, mDirManager,
    // mSerializationBuffer, mSerializationLength, mVisibleChannels)
 
-   // This std::move is needed to "upcast" the pointer type
-   return std::move(newTrack);
+   return newTrack;
 }
 
-Track::Holder NoteTrack::Copy(double t0, double t1) const
+Track::Holder NoteTrack::Copy(double t0, double t1, bool) const
 {
-   if (t1 <= t0)
-      return{};
+   if (t1 < t0)
+      THROW_INCONSISTENCY_EXCEPTION;
+
    double len = t1-t0;
 
-   auto newTrack = std::make_unique<NoteTrack>(mDirManager);
+   auto newTrack = std::make_shared<NoteTrack>(mDirManager);
 
    newTrack->Init(*this);
 
-   mSeq->convert_to_seconds();
-   newTrack->mSeq.reset(mSeq->copy(t0 - GetOffset(), len, false));
-   newTrack->SetOffset(GetOffset());
+   auto &seq = GetSeq();
+   seq.convert_to_seconds();
+   newTrack->mSeq.reset(seq.copy(t0 - GetOffset(), len, false));
+   newTrack->SetOffset(0);
 
    // What should be done with the rest of newTrack's members?
-   //(mBottomNote, mDirManager, mLastMidiPosition,
-   // mSerializationBuffer, mSerializationLength, mVisibleChannels)
+   // (mBottomNote, mDirManager, mSerializationBuffer,
+   // mSerializationLength, mVisibleChannels)
 
-   // This std::move is needed to "upcast" the pointer type
-   return std::move(newTrack);
+   return newTrack;
 }
 
 bool NoteTrack::Trim(double t0, double t1)
 {
-   if (t1 <= t0)
+   if (t1 < t0)
       return false;
-   mSeq->convert_to_seconds();
+   auto &seq = GetSeq();
+   //auto delta = -(
+      //( GetEndTime() - std::min( GetEndTime(), t1 ) ) +
+      //( std::max(t0, GetStartTime()) - GetStartTime() )
+   //);
+   seq.convert_to_seconds();
    // DELETE way beyond duration just in case something is out there:
-   mSeq->clear(t1 - GetOffset(), mSeq->get_dur() + 10000.0, false);
+   seq.clear(t1 - GetOffset(), seq.get_dur() + 10000.0, false);
    // Now that stuff beyond selection is cleared, clear before selection:
-   mSeq->clear(0.0, t0 - GetOffset(), false);
+   seq.clear(0.0, t0 - GetOffset(), false);
    // want starting time to be t0
    SetOffset(t0);
+
+   // Not needed
+   // Alg_seq::clear seems to handle this
+   //AddToDuration( delta );
+
    return true;
 }
 
-bool NoteTrack::Clear(double t0, double t1)
+void NoteTrack::Clear(double t0, double t1)
 {
-   // If t1 = t0, should Clear return true?
-   if (t1 <= t0)
-      return false;
+   if (t1 < t0)
+      THROW_INCONSISTENCY_EXCEPTION;
+
    double len = t1-t0;
 
-   if (mSeq)
-      mSeq->clear(t0 - GetOffset(), len, false);
+   auto &seq = GetSeq();
 
-   return true;
+   auto offset = GetOffset();
+   auto start = t0 - offset;
+   if (start < 0.0) {
+      // AlgSeq::clear will shift the cleared interval, not changing len, if
+      // start is negative.  That's not what we want to happen.
+      if (len > -start) {
+         seq.clear(0, len + start, false);
+         SetOffset(t0);
+      }
+      else
+         SetOffset(offset - len);
+   }
+   else {
+      //auto delta = -(
+      //( std::min( t1, GetEndTime() ) ) - ( std::max( t0, GetStartTime() ) )
+      //);
+      seq.clear(start, len, false);
+
+      // Not needed
+      // Alg_seq::clear seems to handle this
+      // AddToDuration( delta );
+   }
 }
 
-bool NoteTrack::Paste(double t, const Track *src)
+void NoteTrack::Paste(double t, const Track *src)
 {
    // Paste inserts src at time t. If src has a positive offset,
    // the offset is treated as silence which is also inserted. If
@@ -517,24 +559,79 @@ bool NoteTrack::Paste(double t, const Track *src)
    // the destination track).
 
    //Check that src is a non-NULL NoteTrack
-   if (src == NULL || src->GetKind() != Track::Note)
-      return false;
+   bool bOk = src && src->TypeSwitch< bool >( [&](const NoteTrack *other) {
 
-   NoteTrack* other = (NoteTrack*)src;
-   if (other->mSeq == NULL)
-      return false;
+      auto myOffset = this->GetOffset();
+      if (t < myOffset) {
+         // workaround strange behavior described at
+         // http://bugzilla.audacityteam.org/show_bug.cgi?id=1735#c3
+         SetOffset(t);
+         InsertSilence(t, myOffset - t);
+      }
 
-   if(!mSeq)
-      mSeq = std::make_unique<Alg_seq>();
+      double delta = 0.0;
+      auto &seq = GetSeq();
+      auto offset = other->GetOffset();
+      if ( offset > 0 ) {
+         seq.convert_to_seconds();
+         seq.insert_silence( t - GetOffset(), offset );
+         t += offset;
+         // Is this needed or does Alg_seq::insert_silence take care of it?
+         //delta += offset;
+      }
 
-   if (other->GetOffset() > 0) {
-      mSeq->convert_to_seconds();
-      mSeq->insert_silence(t - GetOffset(), other->GetOffset());
-      t += other->GetOffset();
+      // This seems to be needed:
+      delta += std::max( 0.0, t - GetEndTime() );
+
+      // This, not:
+      //delta += other->GetSeq().get_real_dur();
+
+      seq.paste(t - GetOffset(), &other->GetSeq());
+
+      AddToDuration( delta );
+
+      return true;
+   });
+
+   if ( !bOk )
+      // THROW_INCONSISTENCY_EXCEPTION; // ?
+      (void)0;// intentionally do nothing
+}
+
+void NoteTrack::Silence(double t0, double t1)
+{
+   if (t1 < t0)
+      THROW_INCONSISTENCY_EXCEPTION;
+
+   auto len = t1 - t0;
+
+   auto &seq = GetSeq();
+   seq.convert_to_seconds();
+   // XXX: do we want to set the all param?
+   // If it's set, then it seems like notes are silenced if they start or end in the range,
+   // otherwise only if they start in the range. --Poke
+   seq.silence(t0 - GetOffset(), len, false);
+}
+
+void NoteTrack::InsertSilence(double t, double len)
+{
+   if (len < 0)
+      THROW_INCONSISTENCY_EXCEPTION;
+
+   auto &seq = GetSeq();
+   seq.convert_to_seconds();
+   seq.insert_silence(t - GetOffset(), len);
+
+   // is this needed?
+   // AddToDuration( len );
+}
+
+void NoteTrack::SetVelocity(float velocity)
+{
+   if (mVelocity != velocity) {
+      mVelocity = velocity;
+      Notify();
    }
-   mSeq->paste(t - GetOffset(), other->mSeq.get());
-
-   return true;
 }
 
 // Call this function to manipulate the underlying sequence data. This is
@@ -542,51 +639,61 @@ bool NoteTrack::Paste(double t, const Track *src)
 bool NoteTrack::Shift(double t) // t is always seconds
 {
    if (t > 0) {
+      auto &seq = GetSeq();
       // insert an even number of measures
-      mSeq->convert_to_beats();
+      seq.convert_to_beats();
       // get initial tempo
-      double tempo = mSeq->get_tempo(0.0);
-      double beats_per_measure = mSeq->get_bar_len(0.0);
+      double tempo = seq.get_tempo(0.0);
+      double beats_per_measure = seq.get_bar_len(0.0);
       int m = ROUND(t * tempo / beats_per_measure);
       // need at least 1 measure, so if we rounded down to zero, fix it
       if (m == 0) m = 1;
       // compute NEW tempo so that m measures at NEW tempo take t seconds
       tempo = beats_per_measure * m / t; // in beats per second
-      mSeq->insert_silence(0.0, beats_per_measure * m);
-      mSeq->set_tempo(tempo * 60.0 /* bpm */, 0.0, beats_per_measure * m);
-      mSeq->write("afterShift.gro");
+      seq.insert_silence(0.0, beats_per_measure * m);
+      seq.set_tempo(tempo * 60.0 /* bpm */, 0.0, beats_per_measure * m);
+      seq.write("afterShift.gro");
    } else if (t < 0) {
-      mSeq->convert_to_seconds();
-      mSeq->clear(0, t, true);
+      auto &seq = GetSeq();
+      seq.convert_to_seconds();
+      seq.clear(0, t, true);
    } else { // offset is zero, no modifications
       return false;
    }
    return true;
 }
 
-double NoteTrack::NearestBeatTime(double time, double *beat)
+QuantizedTimeAndBeat NoteTrack::NearestBeatTime( double time ) const
 {
-   wxASSERT(mSeq);
    // Alg_seq knows nothing about offset, so remove offset time
    double seq_time = time - GetOffset();
-   seq_time = mSeq->nearest_beat_time(seq_time, beat);
+   double beat;
+   auto &seq = GetSeq();
+   seq_time = seq.nearest_beat_time(seq_time, &beat);
    // add the offset back in to get "actual" audacity track time
-   return seq_time + GetOffset();
+   return { seq_time + GetOffset(), beat };
 }
 
-bool NoteTrack::StretchRegion(double t0, double t1, double dur)
+void NoteTrack::AddToDuration( double delta )
 {
-   wxASSERT(mSeq);
-   // Alg_seq::stretch_region uses beats, so we translate time
-   // to beats first:
-   t0 -= GetOffset();
-   t1 -= GetOffset();
-   double b0 = mSeq->get_time_map()->time_to_beat(t0);
-   double b1 = mSeq->get_time_map()->time_to_beat(t1);
-   bool result = mSeq->stretch_region(b0, b1, dur);
+   auto &seq = GetSeq();
+#if 0
+   // PRL:  Would this be better ?
+   seq.set_real_dur( seq.get_real_dur() + delta );
+#else
+   seq.convert_to_seconds();
+   seq.set_dur( seq.get_dur() + delta );
+#endif
+}
+
+bool NoteTrack::StretchRegion
+   ( QuantizedTimeAndBeat t0, QuantizedTimeAndBeat t1, double newDur )
+{
+   auto &seq = GetSeq();
+   bool result = seq.stretch_region( t0.second, t1.second, newDur );
    if (result) {
-      mSeq->convert_to_seconds();
-      mSeq->set_dur(mSeq->get_dur() + dur - (t1 - t0));
+      const auto oldDur = t1.first - t0.first;
+      AddToDuration( newDur - oldDur );
    }
    return result;
 }
@@ -601,24 +708,27 @@ namespace
    }
 }
 
-Alg_seq *NoteTrack::MakeExportableSeq(std::unique_ptr<Alg_seq> &cleanup)
+Alg_seq *NoteTrack::MakeExportableSeq(std::unique_ptr<Alg_seq> &cleanup) const
 {
    cleanup.reset();
    double offset = GetOffset();
    if (offset == 0)
-      return mSeq.get();
+      return &GetSeq();
    // make a copy, deleting events that are shifted before time 0
    double start = -offset;
    if (start < 0) start = 0;
    // notes that begin before "start" are not included even if they
    // extend past "start" (because "all" parameter is set to false)
-   cleanup.reset( mSeq->copy(start, mSeq->get_dur() - start, false) );
+   cleanup.reset( GetSeq().copy(start, GetSeq().get_dur() - start, false) );
    auto seq = cleanup.get();
    if (offset > 0) {
-      // swap cleanup and mSeq so that Shift operates on the NEW copy
-      swap(mSeq, cleanup);
-      Shift(offset);
-      swap(mSeq, cleanup);  // undo the swap
+      {
+         // swap cleanup and mSeq so that Shift operates on the NEW copy
+         swap( this->mSeq, cleanup );
+         auto cleanup2 = finally( [&] { swap( this->mSeq, cleanup ); } );
+
+         const_cast< NoteTrack *>( this )->Shift(offset);
+      }
 #ifdef OLD_CODE
       // now shift events by offset. This must be done with an integer
       // number of measures, so first, find the beats-per-measure
@@ -660,27 +770,28 @@ Alg_seq *NoteTrack::MakeExportableSeq(std::unique_ptr<Alg_seq> &cleanup)
       seq->set_tempo(bps * 60.0, 0, beats_per_measure * n);
 #endif
    } else {
+      auto &mySeq = GetSeq();
       // if offset is negative, it might not be a multiple of beats, but
       // we want to preserve the relative positions of measures. I.e. we
       // should shift barlines and time signatures as well as notes.
       // Insert a time signature at the first bar-line if necessary.
 
       // Translate start from seconds to beats and call it beat:
-      double beat = mSeq->get_time_map()->time_to_beat(start);
-      // Find the time signature in mSeq in effect at start (beat):
-      int i = mSeq->time_sig.find_beat(beat);
+      double beat = mySeq.get_time_map()->time_to_beat(start);
+      // Find the time signature in mySeq in effect at start (beat):
+      int i = mySeq.time_sig.find_beat(beat);
       // i is where you would insert a NEW time sig at beat,
       // Case 1: beat coincides with a time sig at i. Time signature
       // at beat means that there is a barline at beat, so when beat
       // is shifted to 0, the relative barline positions are preserved
-      if (mSeq->time_sig.length() > 0 &&
-          within(beat, mSeq->time_sig[i].beat, ALG_EPS)) {
+      if (mySeq.time_sig.length() > 0 &&
+          within(beat, mySeq.time_sig[i].beat, ALG_EPS)) {
          // beat coincides with time signature change, so offset must
          // be a multiple of beats
          /* do nothing */ ;
       // Case 2: there is no time signature before beat.
-      } else if (i == 0 && (mSeq->time_sig.length() == 0 ||
-                            mSeq->time_sig[i].beat > beat)) {
+      } else if (i == 0 && (mySeq.time_sig.length() == 0 ||
+                            mySeq.time_sig[i].beat > beat)) {
          // If beat does not fall on an implied barline, we need to
          // insert a time signature.
          double measures = beat / 4.0;
@@ -697,7 +808,7 @@ Alg_seq *NoteTrack::MakeExportableSeq(std::unique_ptr<Alg_seq> &cleanup)
       // Case 3: i-1 must be the effective time sig position
       } else {
          i -= 1; // index the time signature in effect at beat
-         Alg_time_sig_ptr tsp = &(mSeq->time_sig[i]);
+         Alg_time_sig_ptr tsp = &(mySeq.time_sig[i]);
          double beats_per_measure = (tsp->num * 4) / tsp->den;
          double measures = (beat - tsp->beat) / beats_per_measure;
          int imeasures = ROUND(measures);
@@ -720,7 +831,7 @@ Alg_seq *NoteTrack::MakeExportableSeq(std::unique_ptr<Alg_seq> &cleanup)
 }
 
 
-bool NoteTrack::ExportMIDI(const wxString &f)
+bool NoteTrack::ExportMIDI(const wxString &f) const
 {
    std::unique_ptr<Alg_seq> cleanup;
    auto seq = MakeExportableSeq(cleanup);
@@ -728,17 +839,18 @@ bool NoteTrack::ExportMIDI(const wxString &f)
    return rslt;
 }
 
-bool NoteTrack::ExportAllegro(const wxString &f)
+bool NoteTrack::ExportAllegro(const wxString &f) const
 {
    double offset = GetOffset();
    bool in_seconds;
    gPrefs->Read(wxT("/FileFormats/AllegroStyle"), &in_seconds, true);
+   auto &seq = GetSeq();
    if (in_seconds) {
-       mSeq->convert_to_seconds();
+       seq.convert_to_seconds();
    } else {
-       mSeq->convert_to_beats();
+       seq.convert_to_beats();
    }
-   return mSeq->write(f.mb_str(), offset);
+   return seq.write(f.mb_str(), offset);
 }
 
 
@@ -755,6 +867,8 @@ bool NoteTrack::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
          double dblValue;
          if (!wxStrcmp(attr, wxT("name")) && XMLValueChecker::IsGoodString(strValue))
             mName = strValue;
+         else if (this->NoteTrackBase::HandleXMLAttribute(attr, value))
+         {}
          else if (!wxStrcmp(attr, wxT("offset")) &&
                   XMLValueChecker::IsGoodString(strValue) &&
                   Internat::CompatibleToDouble(strValue, &dblValue))
@@ -779,11 +893,14 @@ bool NoteTrack::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
          else if (!wxStrcmp(attr, wxT("velocity")) &&
                   XMLValueChecker::IsGoodString(strValue) &&
                   Internat::CompatibleToDouble(strValue, &dblValue))
-            mGain = (float) dblValue;
+            mVelocity = (float) dblValue;
 #endif
          else if (!wxStrcmp(attr, wxT("bottomnote")) &&
                   XMLValueChecker::IsGoodInt(strValue) && strValue.ToLong(&nValue))
             SetBottomNote(nValue);
+         else if (!wxStrcmp(attr, wxT("topnote")) &&
+                  XMLValueChecker::IsGoodInt(strValue) && strValue.ToLong(&nValue))
+            SetTopNote(nValue);
          else if (!wxStrcmp(attr, wxT("data"))) {
              std::string s(strValue.mb_str(wxConvUTF8));
              std::istringstream data(s);
@@ -800,33 +917,22 @@ XMLTagHandler *NoteTrack::HandleXMLChild(const wxChar * WXUNUSED(tag))
    return NULL;
 }
 
-void NoteTrack::WriteXML(XMLWriter &xmlFile)
+void NoteTrack::WriteXML(XMLWriter &xmlFile) const
+// may throw
 {
    std::ostringstream data;
-   // Normally, Duplicate is called in pairs -- once to put NoteTrack
-   // on the Undo stack, and again to move from the Undo stack to an
-   // "active" editable state. For efficiency, we do not do a "real"
-   // Duplicate followed by serialization into a binary blob. Instead,
-   // we combine the Duplicate with serialization or unserialization.
-   // Serialization and Unserialization happen on alternate calls to
-   // Duplicate and (usually) produce the right results at the right
-   // time.
-   // It turns out that this optimized Duplicate is a little too
-   // clever. There is at least one case where a track can be duplicated
-   // and then AutoSave'd. (E.g. do an "Insert Silence" effect on a
-   // NoteTrack.) In this case, mSeq will be NULL. To avoid a crash
-   // and perform WriteXML, we may need to restore NoteTracks from binary
-   // blobs to regular data structures (with an Alg_seq member).
    Track::Holder holder;
-   NoteTrack *saveme = this;
-   if (!mSeq) { // replace saveme with an (unserialized) duplicate
+   const NoteTrack *saveme = this;
+   if (!mSeq) {
+      // replace saveme with an (unserialized) duplicate, which is
+      // destroyed at end of function.
       holder = Duplicate();
       saveme = static_cast<NoteTrack*>(holder.get());
-      assert(saveme->mSeq);
    }
-   saveme->mSeq->write(data, true);
+   saveme->GetSeq().write(data, true);
    xmlFile.StartTag(wxT("notetrack"));
    xmlFile.WriteAttr(wxT("name"), saveme->mName);
+   this->NoteTrackBase::WriteXMLAttributes(xmlFile);
    xmlFile.WriteAttr(wxT("offset"), saveme->GetOffset());
    xmlFile.WriteAttr(wxT("visiblechannels"), saveme->mVisibleChannels);
    xmlFile.WriteAttr(wxT("height"), saveme->GetActualHeight());
@@ -834,13 +940,65 @@ void NoteTrack::WriteXML(XMLWriter &xmlFile)
    xmlFile.WriteAttr(wxT("isSelected"), this->GetSelected());
 
 #ifdef EXPERIMENTAL_MIDI_OUT
-   xmlFile.WriteAttr(wxT("velocity"), (double) saveme->mGain);
+   xmlFile.WriteAttr(wxT("velocity"), (double) saveme->mVelocity);
 #endif
    xmlFile.WriteAttr(wxT("bottomnote"), saveme->mBottomNote);
+   xmlFile.WriteAttr(wxT("topnote"), saveme->mTopNote);
    xmlFile.WriteAttr(wxT("data"), wxString(data.str().c_str(), wxConvUTF8));
    xmlFile.EndTag(wxT("notetrack"));
 }
 
+void NoteTrack::SetBottomNote(int note)
+{
+   if (note < MinPitch)
+      note = MinPitch;
+   else if (note > 96)
+      note = 96;
+
+   wxCHECK(note <= mTopNote, );
+
+   mBottomNote = note;
+}
+
+void NoteTrack::SetTopNote(int note)
+{
+   if (note > MaxPitch)
+      note = MaxPitch;
+
+   wxCHECK(note >= mBottomNote, );
+
+   mTopNote = note;
+}
+
+void NoteTrack::SetNoteRange(int note1, int note2)
+{
+   // Bounds check
+   if (note1 > MaxPitch)
+      note1 = MaxPitch;
+   else if (note1 < MinPitch)
+      note1 = MinPitch;
+   if (note2 > MaxPitch)
+      note2 = MaxPitch;
+   else if (note2 < MinPitch)
+      note2 = MinPitch;
+   // Swap to ensure ordering
+   if (note2 < note1) { auto tmp = note1; note1 = note2; note2 = tmp; }
+
+   mBottomNote = note1;
+   mTopNote = note2;
+}
+
+void NoteTrack::ShiftNoteRange(int offset)
+{
+   // Ensure everything stays in bounds
+   if (mBottomNote + offset < MinPitch || mTopNote + offset > MaxPitch)
+       return;
+
+   mBottomNote += offset;
+   mTopNote += offset;
+}
+
+#if 0
 void NoteTrack::StartVScroll()
 {
     mStartBottomNote = mBottomNote;
@@ -850,58 +1008,129 @@ void NoteTrack::VScroll(int start, int end)
 {
     int ph = GetPitchHeight();
     int delta = ((end - start) + ph / 2) / ph;
-    SetBottomNote(mStartBottomNote + delta);
+    ShiftNoteRange(delta);
 }
+#endif
 
-// Zoom the note track, centering the pitch at centerY,
-// amount is 1 for zoom in, and -1 for zoom out
-void NoteTrack::Zoom(int centerY, int amount)
+void NoteTrack::Zoom(const wxRect &rect, int y, float multiplier, bool center)
 {
-   // Construct track rectangle to map pitch to screen coordinates
-   // Only y and height are needed:
-   wxRect trackRect(0, GetY(), 1, GetHeight());
-   PrepareIPitchToY(trackRect);
-   int centerPitch = YToIPitch(centerY);
-   // zoom out by changing the pitch height -- a small integer
-   mPitchHeight += amount;
-   if (mPitchHeight <= 0) mPitchHeight = 1;
-   PrepareIPitchToY(trackRect); // update because mPitchHeight changed
-   int newCenterPitch = YToIPitch(GetY() + GetHeight() / 2);
-   // center the pitch that the user clicked on
-   SetBottomNote(mBottomNote + (centerPitch - newCenterPitch));
-}
-
-
-void NoteTrack::ZoomTo(int start, int end)
-{
-   wxRect trackRect(0, GetY(), 1, GetHeight());
-   PrepareIPitchToY(trackRect);
-   int topPitch = YToIPitch(start);
-   int botPitch = YToIPitch(end);
-   if (topPitch < botPitch) { // swap
-      int temp = topPitch; topPitch = botPitch; botPitch = temp;
+   NoteTrackDisplayData data = NoteTrackDisplayData(this, rect);
+   int clickedPitch = data.YToIPitch(y);
+   int extent = mTopNote - mBottomNote + 1;
+   int newExtent = (int) (extent / multiplier);
+   float position;
+   if (center) {
+      // center the pitch that the user clicked on
+      position = .5;
+   } else {
+      // align to keep the pitch that the user clicked on in the same place
+      position = extent / (clickedPitch - mBottomNote);
    }
-   if (topPitch == botPitch) { // can't divide by zero, do something else
-      Zoom(start, 1);
+   int newBottomNote = clickedPitch - (newExtent * position);
+   int newTopNote = clickedPitch + (newExtent * (1 - position));
+   SetNoteRange(newBottomNote, newTopNote);
+}
+
+
+void NoteTrack::ZoomTo(const wxRect &rect, int start, int end)
+{
+   wxRect trackRect(0, rect.GetY(), 1, rect.GetHeight());
+   NoteTrackDisplayData data = NoteTrackDisplayData(this, trackRect);
+   int pitch1 = data.YToIPitch(start);
+   int pitch2 = data.YToIPitch(end);
+   if (pitch1 == pitch2) {
+      // Just zoom in instead of zooming to show only one note
+      Zoom(rect, start, 1, true);
       return;
    }
-   int trialPitchHeight = trackRect.height / (topPitch - botPitch);
-   if (trialPitchHeight > 25) { // keep mPitchHeight in bounds [1...25]
-      trialPitchHeight = 25;
-   } else if (trialPitchHeight == 0) {
-      trialPitchHeight = 1;
-   }
-   Zoom((start + end) / 2, trialPitchHeight - mPitchHeight);
+   // It's fine for this to be in either order
+   SetNoteRange(pitch1, pitch2);
 }
 
-int NoteTrack::YToIPitch(int y)
+void NoteTrack::ZoomAllNotes()
+{
+   Alg_iterator iterator( &GetSeq(), false );
+   iterator.begin();
+   Alg_event_ptr evt;
+
+   // Go through all of the notes, finding the minimum and maximum value pitches.
+   bool hasNotes = false;
+   int minPitch = MaxPitch;
+   int maxPitch = MinPitch;
+
+   while (NULL != (evt = iterator.next())) {
+      if (evt->is_note()) {
+         int pitch = (int) evt->get_pitch();
+         hasNotes = true;
+         if (pitch < minPitch)
+            minPitch = pitch;
+         if (pitch > maxPitch)
+            maxPitch = pitch;
+      }
+   }
+
+   if (!hasNotes) {
+      // Semi-arbitary default values:
+      minPitch = 48;
+      maxPitch = 72;
+   }
+
+   SetNoteRange(minPitch, maxPitch);
+}
+
+NoteTrackDisplayData::NoteTrackDisplayData(const NoteTrack* track, const wxRect &r)
+{
+   auto span = track->GetTopNote() - track->GetBottomNote() + 1; // + 1 to make sure it includes both
+
+   mMargin = std::min((int) (r.height / (float)(span)) / 2, r.height / 4);
+
+   // Count the number of dividers between B/C and E/F
+   int numC = 0, numF = 0;
+   auto botOctave = track->GetBottomNote() / 12, botNote = track->GetBottomNote() % 12;
+   auto topOctave = track->GetTopNote() / 12, topNote = track->GetTopNote() % 12;
+   if (topOctave == botOctave)
+   {
+      if (botNote == 0) numC = 1;
+      if (topNote <= 5) numF = 1;
+   }
+   else
+   {
+      numC = topOctave - botOctave;
+      numF = topOctave - botOctave - 1;
+      if (botNote == 0) numC++;
+      if (botNote <= 5) numF++;
+      if (topOctave <= 5) numF++;
+   }
+   // Effective space, excluding the margins and the lines between some notes
+   auto effectiveHeight = r.height - (2 * (mMargin + 1)) - numC - numF;
+   // Guarenteed that both the bottom and top notes will be visible
+   // (assuming that the clamping below does not happen)
+   mPitchHeight = effectiveHeight / ((float) span);
+
+   if (mPitchHeight < MinPitchHeight)
+      mPitchHeight = MinPitchHeight;
+   if (mPitchHeight > MaxPitchHeight)
+      mPitchHeight = MaxPitchHeight;
+
+   mBottom = r.y + r.height - GetNoteMargin() - 1 - GetPitchHeight(1) +
+            botOctave * GetOctaveHeight() + GetNotePos(botNote);
+}
+
+int NoteTrackDisplayData::IPitchToY(int p) const
+{ return mBottom - (p / 12) * GetOctaveHeight() - GetNotePos(p % 12); }
+
+int NoteTrackDisplayData::YToIPitch(int y) const
 {
    y = mBottom - y; // pixels above pitch 0
    int octave = (y / GetOctaveHeight());
    y -= octave * GetOctaveHeight();
    // result is approximate because C and G are one pixel taller than
    // mPitchHeight.
+   // Poke 1-13-18: However in practice this seems not to be an issue,
+   // as long as we use mPitchHeight and not the rounded version
    return (y / mPitchHeight) + octave * 12;
 }
+
+const float NoteTrack::ZoomStep = powf( 2.0f, 0.25f );
 
 #endif // USE_MIDI

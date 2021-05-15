@@ -11,6 +11,8 @@
 
 #include "../Experimental.h"
 
+class wxChoice;
+class wxTextCtrl;
 class ShuttleGui;
 
 #ifdef EXPERIMENTAL_MIDI_OUT
@@ -20,30 +22,34 @@ class ShuttleGui;
 
 #include <wx/defs.h>
 
-#include <wx/choice.h>
-#include <wx/string.h>
-#include <wx/window.h>
-
 #include "PrefsPanel.h"
+
+class wxArrayStringEx;
+
+#define MIDI_IO_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Midi IO") }
 
 class MidiIOPrefs final : public PrefsPanel
 {
  public:
-   MidiIOPrefs(wxWindow * parent);
+   MidiIOPrefs(wxWindow * parent, wxWindowID winid);
    virtual ~MidiIOPrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+
+   bool Commit() override;
    bool Validate() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
  private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
    void GetNamesAndLabels();
 
    void OnHost(wxCommandEvent & e);
 //   void OnDevice(wxCommandEvent & e);
 
-   wxArrayString mHostNames;
-   wxArrayString mHostLabels;
+   wxArrayStringEx mHostNames;
+   wxArrayStringEx mHostLabels;
 
    wxString mPlayDevice;
 #ifdef EXPERIMENTAL_MIDI_IN
@@ -62,10 +68,11 @@ class MidiIOPrefs final : public PrefsPanel
    DECLARE_EVENT_TABLE()
 };
 
+/// A PrefsPanelFactory that creates one MidiIOPrefs panel.
 class MidiIOPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif
 

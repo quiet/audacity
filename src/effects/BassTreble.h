@@ -12,18 +12,14 @@
 #ifndef __AUDACITY_EFFECT_BASS_TREBLE__
 #define __AUDACITY_EFFECT_BASS_TREBLE__
 
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/stattext.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-#include <wx/checkbox.h>
-
 #include "Effect.h"
 
+class wxSlider;
+class wxCheckBox;
+class wxTextCtrl;
 class ShuttleGui;
 
-#define BASSTREBLE_PLUGIN_SYMBOL XO("Bass and Treble")
+#define BASSTREBLE_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Bass and Treble") }
 
 class EffectBassTrebleState
 {
@@ -39,20 +35,19 @@ public:
    double xn1Treble, xn2Treble, yn1Treble, yn2Treble;
 };
 
-WX_DECLARE_OBJARRAY(EffectBassTrebleState, EffectBassTrebleStateArray);
-
 class EffectBassTreble final : public Effect
 {
 public:
    EffectBassTreble();
    virtual ~EffectBassTreble();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
    bool SupportsRealtime() override;
@@ -70,8 +65,9 @@ public:
                                float **inbuf,
                                float **outbuf,
                                size_t numSamples) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
 
    // Effect Implementation
@@ -105,7 +101,7 @@ private:
 
 private:
    EffectBassTrebleState mMaster;
-   EffectBassTrebleStateArray mSlaves;
+   std::vector<EffectBassTrebleState> mSlaves;
 
    double      mBass;
    double      mTreble;

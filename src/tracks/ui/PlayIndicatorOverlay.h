@@ -11,9 +11,9 @@ Paul Licameli split from TrackPanel.cpp
 #ifndef __AUDACITY_PLAY_INDICATOR_OVERLAY__
 #define __AUDACITY_PLAY_INDICATOR_OVERLAY__
 
-#include <wx/event.h>
+#include <wx/event.h> // to inherit
 #include "../../MemoryX.h"
-#include "../../widgets/Overlay.h"
+#include "../../widgets/Overlay.h" // to inherit
 
 class AudacityProject;
 
@@ -37,6 +37,8 @@ protected:
    const bool mIsMaster;
    int mLastIndicatorX { -1 };
    int mNewIndicatorX { -1 };
+   bool mNewIsCapturing { false };
+   bool mLastIsCapturing { false };
 };
 
 // Master object for track panel, creates the other object for the ruler
@@ -44,12 +46,11 @@ class PlayIndicatorOverlay final : public PlayIndicatorOverlayBase
 {
 public:
    PlayIndicatorOverlay(AudacityProject *project);
-   virtual ~PlayIndicatorOverlay();
 
 private:
    void OnTimer(wxCommandEvent &event);
 
-   std::unique_ptr<PlayIndicatorOverlayBase> mPartner;
+   std::shared_ptr<PlayIndicatorOverlayBase> mPartner;
 };
 
 #endif

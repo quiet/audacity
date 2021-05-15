@@ -13,24 +13,28 @@
 #define __AUDACITY_RECORDING_PREFS__
 
 #include <wx/defs.h>
-#include <wx/textctrl.h>
-
-#include <wx/window.h>
 
 #include "PrefsPanel.h"
 
+class wxTextCtrl;
 class ShuttleGui;
+
+#define RECORDING_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Recording") }
 
 class RecordingPrefs final : public PrefsPanel
 {
  public:
-   RecordingPrefs(wxWindow * parent);
+   RecordingPrefs(wxWindow * parent, wxWindowID winid);
    virtual ~RecordingPrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+
+   bool Commit() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
  private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
    void OnToggleCustomName(wxCommandEvent & /* Evt */);
 
    wxTextCtrl *mToggleCustomName;
@@ -40,9 +44,10 @@ class RecordingPrefs final : public PrefsPanel
    DECLARE_EVENT_TABLE()
 };
 
+/// A PrefsPanelFactory that creates one RecordingPrefs panel.
 class RecordingPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif

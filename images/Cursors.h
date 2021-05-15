@@ -1,9 +1,6 @@
-// Mac only supports 16x16 pixel cursors.
-#ifdef __WXMAC__
-#define CURSORS_SIZE16
-#else
+// Mac, Win and Linux all support 32 x 32 cursors now.
+
 #define CURSORS_SIZE32
-#endif
 
 
 #ifdef CURSORS_SIZE32
@@ -57,4 +54,4 @@
 
 #endif
 
-std::unique_ptr<wxCursor> MakeCursor(int WXUNUSED(CursorId), const char * pXpm[36], int HotX, int HotY);
+std::unique_ptr<wxCursor> MakeCursor(int WXUNUSED(CursorId), const char * const pXpm[36], int HotX, int HotY);

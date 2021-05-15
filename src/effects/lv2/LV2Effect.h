@@ -9,18 +9,14 @@
 
 *********************************************************************/
 
-#include "../../Audacity.h"
+#include "../../Audacity.h" // for USE_* macros
 
 #if USE_LV2
 
-#include <wx/checkbox.h>
-#include <wx/dialog.h>
-#include <wx/dynarray.h>
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/stattext.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
+class wxArrayString;
+
+#include "../../MemoryX.h"
+#include <vector>
 
 #include "lv2/lv2plug.in/ns/ext/atom/forge.h"
 #include "lv2/lv2plug.in/ns/ext/data-access/data-access.h"
@@ -32,12 +28,20 @@
 #include <lilv/lilv.h>
 #include <suil/suil.h>
 
+#include "../../SampleFormat.h"
 #include "../../widgets/NumericTextCtrl.h"
 
 #include "LoadLV2.h"
 
+#include <unordered_map>
+
+class wxSlider;
+class wxTextCtrl;
+
 #define LV2EFFECTS_VERSION wxT("1.0.0.0")
-#define LV2EFFECTS_FAMILY wxT("LV2")
+/* i18n-hint: abbreviates
+   "Linux Audio Developer's Simple Plugin API (LADSPA) version 2" */
+#define LV2EFFECTS_FAMILY XO("LV2")
 
 /** A structure that contains information about a single LV2 plugin port. */
 class LV2Port
@@ -55,6 +59,10 @@ public:
       mHasLo = false;
       mHasHi = false;
    }
+   LV2Port( const LV2Port & ) = default;
+   LV2Port& operator = ( const LV2Port & ) = default;
+   //LV2Port( LV2Port && ) = default;
+   //LV2Port& operator = ( LV2Port && ) = default;
 
    uint32_t mIndex;
    wxString mSymbol;
@@ -81,13 +89,11 @@ public:
    LilvPort *mPort;
 
    // ScalePoints
-   wxArrayDouble mScaleValues;
+   std::vector<double> mScaleValues;
    wxArrayString mScaleLabels;
 };
 
-WX_DECLARE_OBJARRAY(LV2Port, LV2PortArray);
-WX_DECLARE_STRING_HASH_MAP(wxArrayInt, LV2GroupMap);
-WX_DEFINE_ARRAY_PTR(LilvInstance *, LV2SlaveArray);
+using LV2GroupMap = std::unordered_map<wxString, std::vector<int>>;
 
 class LV2EffectSettingsDialog;
 
@@ -99,19 +105,18 @@ public:
    LV2Effect(const LilvPlugin *plug);
    virtual ~LV2Effect();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetPath() override;
-   wxString GetSymbol() override;
-   wxString GetName() override;
-   wxString GetVendor() override;
+   PluginPath GetPath() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   VendorSymbol GetVendor() override;
    wxString GetVersion() override;
    wxString GetDescription() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
-   wxString GetFamily() override;
+   EffectFamilySymbol GetFamily() override;
    bool IsInteractive() override;
    bool IsDefault() override;
    bool IsLegacy() override;
@@ -153,8 +158,8 @@ public:
 
    bool ShowInterface(wxWindow *parent, bool forceModal = false) override;
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // EffectUIClientInterface implementation
 
@@ -165,10 +170,10 @@ public:
    bool HideUI() override;
    bool CloseUI() override;
 
-   bool LoadUserPreset(const wxString & name) override;
-   bool SaveUserPreset(const wxString & name) override;
+   bool LoadUserPreset(const RegistryPath & name) override;
+   bool SaveUserPreset(const RegistryPath & name) override;
 
-   wxArrayString GetFactoryPresets() override;
+   RegistryPaths GetFactoryPresets() override;
    bool LoadFactoryPreset(int id) override;
    bool LoadFactoryDefaults() override;
 
@@ -185,8 +190,8 @@ private:
    bool Load();
    void Unload();
 
-   bool LoadParameters(const wxString & group);
-   bool SaveParameters(const wxString & group);
+   bool LoadParameters(const RegistryPath & group);
+   bool SaveParameters(const RegistryPath & group);
 
    LilvInstance *InitInstance(float sampleRate);
    void FreeInstance(LilvInstance *handle);
@@ -204,14 +209,14 @@ private:
    static int ui_resize(LV2UI_Feature_Handle handle, int width, int height);
    int UIResize(int width, int height);
 
-   LV2_Options_Option *AddOption(const char *key, uint32_t size, const char *type, void *value);
+   size_t AddOption(const char *key, uint32_t size, const char *type, void *value);
    LV2_Feature *AddFeature(const char *uri, void *data);
 
    bool BuildFancy();
    bool BuildPlain();
 
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() /* not override */;
+   bool TransferDataFromWindow() /* not override */;
    void SetSlider(wxSlider *slider, const LV2Port & ctrl);
 
    void OnTrigger(wxCommandEvent & evt);
@@ -254,13 +259,13 @@ private:
 
    EffectHostInterface *mHost;
 
-   int mBlockSize;
+   size_t mBlockSize;
    double mSampleRate;
 
    wxLongToLongHashMap mControlsMap;
-   LV2PortArray mControls;
-   wxArrayInt mAudioInputs;
-   wxArrayInt mAudioOutputs;
+   std::vector<LV2Port> mControls;
+   std::vector<int> mAudioInputs;
+   std::vector<int> mAudioOutputs;
 
    LV2GroupMap mGroupMap;
    wxArrayString mGroups;
@@ -272,10 +277,9 @@ private:
 
    LilvInstance *mMaster;
    LilvInstance *mProcess;
-   LV2SlaveArray mSlaves;
+   std::vector<LilvInstance*> mSlaves;
 
-   float **mMasterIn;
-   float **mMasterOut;
+   FloatBuffers mMasterIn, mMasterOut;
    size_t mNumSamples;
 
    double mLength;
@@ -286,8 +290,7 @@ private:
 
    bool mUseGUI;
 
-   char **mURIMap;
-   int mNumURIMap;
+   std::vector< std::unique_ptr<char, freer> > mURIMap;
 
    LV2_URI_Map_Feature mUriMapFeature;
    LV2_URID_Map mURIDMapFeature;
@@ -295,15 +298,13 @@ private:
    LV2UI_Resize mUIResizeFeature;
    LV2_Extension_Data_Feature mExtDataFeature;
    
-   LV2_Options_Option *mBlockSizeOption;
-   LV2_Options_Option *mSampleRateOption;
+   size_t mBlockSizeOption;
+   size_t mSampleRateOption;
 
    LV2_Options_Interface *mOptionsInterface;
-   LV2_Options_Option *mOptions;
-   int mNumOptions;
+   std::vector<LV2_Options_Option> mOptions;
 
-   LV2_Feature **mFeatures;
-   int mNumFeatures;
+   std::vector<std::unique_ptr<LV2_Feature>> mFeatures;
 
    LV2_Feature *mInstanceAccessFeature;
    LV2_Feature *mParentFeature;
@@ -314,11 +315,11 @@ private:
    SuilInstance *mSuilInstance;
 
    NumericTextCtrl *mDuration;
-   wxSlider **mSliders;
-   wxTextCtrl **mFields;
+   ArrayOf<wxSlider*> mSliders;
+   ArrayOf<wxTextCtrl*> mFields;
 
    bool mFactoryPresetsLoaded;
-   wxArrayString mFactoryPresetNames;
+   RegistryPaths mFactoryPresetNames;
    wxArrayString mFactoryPresetUris;
 
    DECLARE_EVENT_TABLE()

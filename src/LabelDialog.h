@@ -13,20 +13,23 @@
 
 #include <vector>
 #include <wx/defs.h>
-#include <wx/event.h>
-#include <wx/grid.h>
-#include <wx/string.h>
 
 #include "Internat.h"
-#include "widgets/Grid.h"
-#include "widgets/wxPanelWrapper.h"
+#include "widgets/wxPanelWrapper.h" // to inherit
+#include "audacity/ComponentInterface.h" // member variable
 
+class wxArrayString;
+class wxGridEvent;
+class ChoiceEditor;
+class Grid;
+class NumericEditor;
 class TrackFactory;
 class TrackList;
 class RowData;
 class EmptyLabelRenderer;
 class LabelTrack;
 class ViewInfo;
+class ShuttleGui;
 
 typedef std::vector<RowData> RowDataArray;
 
@@ -47,16 +50,23 @@ class LabelDialog final : public wxDialogWrapper
 
                ViewInfo &viewinfo,
                double rate,
-               const wxString & format, const wxString &freqFormat);
+               const NumericFormatSymbol & format,
+               const NumericFormatSymbol &freqFormat);
    ~LabelDialog();
 
     bool Show(bool show = true) override;
 
  private:
 
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
-   bool Validate();
+   void Populate();
+   void PopulateOrExchange( ShuttleGui & S );
+   void PopulateLabels();
+   virtual void OnHelp(wxCommandEvent & event);
+   virtual wxString GetHelpPageName() {return "Labels_Editor";};
+
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
+   bool Validate() override;
    void FindAllLabels();
    void AddLabels(const LabelTrack *t);
    void FindInitialRow();
@@ -79,6 +89,9 @@ class LabelDialog final : public wxDialogWrapper
    void OnOK(wxCommandEvent &event);
    void OnCancel(wxCommandEvent &event);
 
+   void ReadSize();
+   void WriteSize();
+
  private:
 
    Grid *mGrid;
@@ -95,8 +108,7 @@ class LabelDialog final : public wxDialogWrapper
    ViewInfo *mViewInfo;
    wxArrayString mTrackNames;
    double mRate;
-   wxString mFormat;
-   wxString mFreqFormat;
+   NumericFormatSymbol mFormat, mFreqFormat;
 
    int mInitialRow;
 

@@ -30,8 +30,9 @@
 
   UndoManager can also automatically consolidate actions into
   a single state change.  If the "consolidate" argument to
-  PushState is true, then up to 3 identical events in a row
-  will result in one PushState and 2 ModifyStates.
+  PushState is true, then NEW changes may accumulate into the most
+  recent Undo state, if descriptions match and if no Undo or Redo or rollback
+  operation intervened since that state was pushed.
 
   Undo() temporarily moves down one state and returns the track
   hierarchy.  If another PushState is called, the redo information
@@ -50,9 +51,22 @@
 
 #include "MemoryX.h"
 #include <vector>
-#include <wx/string.h>
+#include <wx/event.h> // to declare custom event types
 #include "ondemand/ODTaskThread.h"
 #include "SelectedRegion.h"
+
+// Events emitted by UndoManager for the use of listeners
+
+// Project state did not change, but a new state was copied into Undo history
+// and any redo states were lost
+wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API, EVT_UNDO_PUSHED, wxCommandEvent);
+
+// Project state did not change, but current state was modified in Undo history
+wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API, EVT_UNDO_MODIFIED, wxCommandEvent);
+
+// Project state changed because of undo or redo or rollback; undo manager
+// contents did not change other than the pointer to current state
+wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API, EVT_UNDO_RESET, wxCommandEvent);
 
 class Tags;
 class Track;
@@ -60,18 +74,18 @@ class TrackList;
 
 struct UndoStackElem;
 struct UndoState {
-   UndoState(std::unique_ptr<TrackList> &&tracks_,
+   UndoState(std::shared_ptr<TrackList> &&tracks_,
       const std::shared_ptr<Tags> &tags_,
       const SelectedRegion &selectedRegion_)
       : tracks(std::move(tracks_)), tags(tags_), selectedRegion(selectedRegion_)
    {}
 
-   std::unique_ptr<TrackList> tracks;
+   std::shared_ptr<TrackList> tracks;
    std::shared_ptr<Tags> tags;
    SelectedRegion selectedRegion; // by value
 };
 
-using UndoStack = std::vector <movable_ptr<UndoStackElem>>;
+using UndoStack = std::vector <std::unique_ptr<UndoStackElem>>;
 
 using SpaceArray = std::vector <unsigned long long> ;
 
@@ -89,10 +103,13 @@ inline UndoPush operator | (UndoPush a, UndoPush b)
 inline UndoPush operator & (UndoPush a, UndoPush b)
 { return static_cast<UndoPush>(static_cast<int>(a) & static_cast<int>(b)); }
 
-class AUDACITY_DLL_API UndoManager {
+class AUDACITY_DLL_API UndoManager : public wxEvtHandler {
  public:
    UndoManager();
    ~UndoManager();
+
+   UndoManager( const UndoManager& ) = delete;
+   UndoManager& operator = ( const UndoManager& ) = delete;
 
    void PushState(const TrackList * l,
                   const SelectedRegion &selectedRegion,
@@ -107,14 +124,19 @@ class AUDACITY_DLL_API UndoManager {
    unsigned int GetNumStates();
    unsigned int GetCurrentState();
 
+   void StopConsolidating() { mayConsolidate = false; }
+
    void GetShortDescription(unsigned int n, wxString *desc);
    // Return value must first be calculated by CalculateSpaceUsage():
    wxLongLong_t GetLongDescription(unsigned int n, wxString *desc, wxString *size);
    void SetLongDescription(unsigned int n, const wxString &desc);
 
-   const UndoState &SetStateTo(unsigned int n, SelectedRegion *selectedRegion);
-   const UndoState &Undo(SelectedRegion *selectedRegion);
-   const UndoState &Redo(SelectedRegion *selectedRegion);
+   // These functions accept a callback that uses the state,
+   // and then they emit EVT_UNDO_RESET when that has finished.
+   using Consumer = std::function< void( const UndoState & ) >;
+   void SetStateTo(unsigned int n, const Consumer &consumer);
+   void Undo(const Consumer &consumer);
+   void Redo(const Consumer &consumer);
 
    bool UndoAvailable();
    bool RedoAvailable();
@@ -143,7 +165,7 @@ class AUDACITY_DLL_API UndoManager {
    UndoStack stack;
 
    wxString lastAction;
-   int consolidationCount;
+   bool mayConsolidate { false };
 
    SpaceArray space;
    unsigned long long mClipboardSpaceUsage {};

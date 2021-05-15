@@ -16,12 +16,16 @@
 
 #include "Audacity.h"
 
-#include <wx/bitmap.h>
-#include <wx/colour.h>
+#include <vector>
 #include <wx/defs.h>
-#include <wx/dynarray.h>
-#include <wx/font.h>
-#include <wx/image.h>
+#include <wx/window.h> // to inherit
+
+class wxArrayString;
+class wxBitmap;
+class wxColour;
+class wxFont;
+class wxImage;
+class wxPen;
 
 // JKC: will probably change name from 'teBmps' to 'tIndexBmp';
 typedef int teBmps; /// The index of a bitmap resource in Theme Resources.
@@ -41,16 +45,20 @@ enum teResourceFlags
    resFlagPaired =0x01,
    resFlagCursor =0x02,
    resFlagNewLine = 0x04,
-   resFlagInternal = 0x08  // For image manipulation.  Don't save or load.
+   resFlagInternal = 0x08,  // For image manipulation.  Don't save or load.
+   resFlagSkip = 0x10
 };
 
-WX_DECLARE_USER_EXPORTED_OBJARRAY(wxImage,  ArrayOfImages, AUDACITY_DLL_API);
-WX_DECLARE_USER_EXPORTED_OBJARRAY(wxBitmap, ArrayOfBitmaps, AUDACITY_DLL_API);
-WX_DECLARE_USER_EXPORTED_OBJARRAY(wxColour, ArrayOfColours, AUDACITY_DLL_API);
+enum teThemeType
+{
+   themeClassic,
+   themeDark,
+   themeLight,
+   themeHiContrast,
+   themeFromFile,
+};
 
-//WX_DECLARE_OBJARRAY(wxImage,  ArrayOfImages);
-//WX_DECLARE_OBJARRAY(wxBitmap, ArrayOfBitmaps);
-//WX_DECLARE_OBJARRAY(wxColour, ArrayOfColours);
+
 
 class AUDACITY_DLL_API FlowPacker
 {
@@ -62,6 +70,7 @@ public:
    void SetNewGroup( int iGroupSize );
    void SetColourGroup( );
    wxRect Rect();
+   wxRect RectInner();
    void RectMid( int &x, int &y );
 
    // These 4 should become private again...
@@ -69,6 +78,7 @@ public:
    int mxPos;
    int myPos;
    int myHeight;
+   int mBorderWidth;
 
 private:
    int iImageGroupSize;
@@ -93,28 +103,37 @@ public:
 public:
    virtual void EnsureInitialised()=0;
    virtual void ApplyUpdatedImages()=0;
-   void LoadThemeAtStartUp( bool bLookForExternalFiles );
+   void LoadTheme( teThemeType Theme );
    void RegisterImage( int &iIndex,char const** pXpm, const wxString & Name);
    void RegisterImage( int &iIndex, const wxImage &Image, const wxString & Name );
    void RegisterColour( int &iIndex, const wxColour &Clr, const wxString & Name );
 
+   teThemeType GetFallbackThemeType();
+   teThemeType ThemeTypeOfTypeName( const wxString & Name );
    void CreateImageCache(bool bBinarySave = true);
-   bool ReadImageCache( bool bBinaryRead = true, bool bOkIfNotFound=false);
+   bool ReadImageCache( teThemeType type = themeFromFile, bool bOkIfNotFound=false);
    void LoadComponents( bool bOkIfNotFound =false);
    void SaveComponents();
-   void ReadThemeInternal();
    void SaveThemeAsCode();
    void WriteImageDefs( );
    void WriteImageMap( );
+   static bool LoadPreferredTheme();
+   bool IsUsingSystemTextColour(){ return bIsUsingSystemTextColour;};
+   void RecolourBitmap( int iIndex, wxColour From, wxColour To );
+   void RecolourTheme();
 
+   int ColourDistance( wxColour & From, wxColour & To );
    wxColour & Colour( int iIndex );
    wxBitmap & Bitmap( int iIndex );
    wxImage  & Image( int iIndex );
    wxCursor & Cursor( int iIndex );
    wxFont   & Font( int iIndex );
    wxSize ImageSize( int iIndex );
+   bool bRecolourOnLoad;  // Request to recolour.
+   bool bIsUsingSystemTextColour;
 
    void ReplaceImage( int iIndex, wxImage * pImage );
+   void RotateImageInto( int iTo, int iFrom, bool bClockwise );
 
    void SetBrushColour( wxBrush & Brush, int iIndex );
    void SetPenColour(   wxPen & Pen, int iIndex );
@@ -126,12 +145,13 @@ public:
    wxImage MakeImageWithAlpha( wxBitmap & Bmp );
 
 protected:
-   ArrayOfImages mImages;
-   ArrayOfBitmaps mBitmaps;
+   // wxImage, wxBitmap copy cheaply using reference counting
+   std::vector<wxImage> mImages;
+   std::vector<wxBitmap> mBitmaps;
    wxArrayString mBitmapNames;
-   wxArrayInt mBitmapFlags;
+   std::vector<int> mBitmapFlags;
 
-   ArrayOfColours mColours;
+   std::vector<wxColour> mColours;
    wxArrayString mColourNames;
    FlowPacker mFlow;
 };
@@ -149,6 +169,24 @@ public:
    void RegisterImages();
    void RegisterColours();
    bool mbInitialised;
+};
+
+// A bit cheeky - putting a themable wxStaticText control into
+// theme, rather than in a new file.  Saves sorting out makefiles (for now).
+class wxWindow;
+class wxString;
+class wxPaintEvent;
+
+class auStaticText : public wxWindow
+{
+public:
+   auStaticText(wxWindow* parent, wxString text);
+   void OnPaint(wxPaintEvent & evt);
+   bool AcceptsFocus() const override { return false; }
+   void OnErase(wxEraseEvent& event) {
+      static_cast<void>(event);
+   };
+   DECLARE_EVENT_TABLE();
 };
 
 extern AUDACITY_DLL_API Theme theTheme;

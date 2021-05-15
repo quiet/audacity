@@ -18,10 +18,13 @@
 #include "Reverb.h"
 
 #include <wx/arrstr.h>
+#include <wx/checkbox.h>
 #include <wx/intl.h>
+#include <wx/slider.h>
+#include <wx/spinctrl.h>
 
-#include "../Audacity.h"
 #include "../Prefs.h"
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../widgets/valnum.h"
 
@@ -44,16 +47,16 @@ enum
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name          Type     Key                  Def      Min      Max   Scale
-Param( RoomSize,     double,  XO("RoomSize"),      75,      0,       100,  1  );
-Param( PreDelay,     double,  XO("Delay"),         10,      0,       200,  1  );
-Param( Reverberance, double,  XO("Reverberance"),  50,      0,       100,  1  );
-Param( HfDamping,    double,  XO("HfDamping"),     50,      0,       100,  1  );
-Param( ToneLow,      double,  XO("ToneLow"),       100,     0,       100,  1  );
-Param( ToneHigh,     double,  XO("ToneHigh"),      100,     0,       100,  1  );
-Param( WetGain,      double,  XO("WetGain"),       -1,      -20,     10,   1  );
-Param( DryGain,      double,  XO("DryGain"),       -1,      -20,     10,   1  );
-Param( StereoWidth,  double,  XO("StereoWidth"),   100,     0,       100,  1  );
-Param( WetOnly,      bool,    XO("WetOnly"),       false,   false,   true, 1  );
+Param( RoomSize,     double,  wxT("RoomSize"),      75,      0,       100,  1  );
+Param( PreDelay,     double,  wxT("Delay"),         10,      0,       200,  1  );
+Param( Reverberance, double,  wxT("Reverberance"),  50,      0,       100,  1  );
+Param( HfDamping,    double,  wxT("HfDamping"),     50,      0,       100,  1  );
+Param( ToneLow,      double,  wxT("ToneLow"),       100,     0,       100,  1  );
+Param( ToneHigh,     double,  wxT("ToneHigh"),      100,     0,       100,  1  );
+Param( WetGain,      double,  wxT("WetGain"),       -1,      -20,     10,   1  );
+Param( DryGain,      double,  wxT("DryGain"),       -1,      -20,     10,   1  );
+Param( StereoWidth,  double,  wxT("StereoWidth"),   100,     0,       100,  1  );
+Param( WetOnly,      bool,    wxT("WetOnly"),       false,   false,   true, 1  );
 
 static const struct
 {
@@ -128,19 +131,24 @@ EffectReverb::~EffectReverb()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectReverb::GetSymbol()
+ComponentInterfaceSymbol EffectReverb::GetSymbol()
 {
    return REVERB_PLUGIN_SYMBOL;
 }
 
 wxString EffectReverb::GetDescription()
 {
-   return XO("Adds ambience or a \"hall effect\"");
+   return _("Adds ambience or a \"hall effect\"");
 }
 
-// EffectIdentInterface implementation
+wxString EffectReverb::ManualPage()
+{
+   return wxT("Reverb");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectReverb::GetType()
 {
@@ -173,7 +181,7 @@ bool EffectReverb::ProcessInitialize(sampleCount WXUNUSED(totalLen), ChannelName
 
    mP = (Reverb_priv_t *) calloc(sizeof(*mP), mNumChans);
 
-   for (int i = 0; i < mNumChans; i++)
+   for (unsigned int i = 0; i < mNumChans; i++)
    {
       reverb_create(&mP[i].reverb,
                     mSampleRate,
@@ -194,7 +202,7 @@ bool EffectReverb::ProcessInitialize(sampleCount WXUNUSED(totalLen), ChannelName
 
 bool EffectReverb::ProcessFinalize()
 {
-   for (int i = 0; i < mNumChans; i++)
+   for (unsigned int i = 0; i < mNumChans; i++)
    {
       reverb_delete(&mP[i].reverb);
    }
@@ -209,7 +217,7 @@ size_t EffectReverb::ProcessBlock(float **inBlock, float **outBlock, size_t bloc
    float *ichans[2] = {NULL, NULL};
    float *ochans[2] = {NULL, NULL};
 
-   for (int c = 0; c < mNumChans; c++)
+   for (unsigned int c = 0; c < mNumChans; c++)
    {
       ichans[c] = inBlock[c];
       ochans[c] = outBlock[c];
@@ -222,7 +230,7 @@ size_t EffectReverb::ProcessBlock(float **inBlock, float **outBlock, size_t bloc
    while (remaining)
    {
       auto len = std::min(remaining, decltype(remaining)(BLOCK));
-      for (int c = 0; c < mNumChans; c++)
+      for (unsigned int c = 0; c < mNumChans; c++)
       {
          // Write the input samples to the reverb fifo.  Returned value is the address of the
          // fifo buffer which contains a copy of the input samples.
@@ -255,7 +263,7 @@ size_t EffectReverb::ProcessBlock(float **inBlock, float **outBlock, size_t bloc
 
       remaining -= len;
 
-      for (int c = 0; c < mNumChans; c++)
+      for (unsigned int c = 0; c < mNumChans; c++)
       {
          ichans[c] += len;
          ochans[c] += len;
@@ -264,8 +272,21 @@ size_t EffectReverb::ProcessBlock(float **inBlock, float **outBlock, size_t bloc
 
    return blockLen;
 }
+bool EffectReverb::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( mParams.mRoomSize,       RoomSize );
+   S.SHUTTLE_PARAM( mParams.mPreDelay,       PreDelay );
+   S.SHUTTLE_PARAM( mParams.mReverberance,   Reverberance );
+   S.SHUTTLE_PARAM( mParams.mHfDamping,      HfDamping );
+   S.SHUTTLE_PARAM( mParams.mToneLow,        ToneLow );
+   S.SHUTTLE_PARAM( mParams.mToneHigh,       ToneHigh );
+   S.SHUTTLE_PARAM( mParams.mWetGain,        WetGain );
+   S.SHUTTLE_PARAM( mParams.mDryGain,        DryGain );
+   S.SHUTTLE_PARAM( mParams.mStereoWidth,    StereoWidth );
+   S.SHUTTLE_PARAM( mParams.mWetOnly,        WetOnly );
+   return true;
+}
 
-bool EffectReverb::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectReverb::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_RoomSize, mParams.mRoomSize);
    parms.Write(KEY_PreDelay, mParams.mPreDelay);
@@ -281,7 +302,7 @@ bool EffectReverb::GetAutomationParameters(EffectAutomationParameters & parms)
    return true;
 }
 
-bool EffectReverb::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectReverb::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyDouble(RoomSize);
    ReadAndVerifyDouble(PreDelay);
@@ -308,13 +329,13 @@ bool EffectReverb::SetAutomationParameters(EffectAutomationParameters & parms)
    return true;
 }
 
-wxArrayString EffectReverb::GetFactoryPresets()
+RegistryPaths EffectReverb::GetFactoryPresets()
 {
-   wxArrayString names;
+   RegistryPaths names;
 
    for (size_t i = 0; i < WXSIZEOF(FactoryPresets); i++)
    {
-      names.Add(wxGetTranslation(FactoryPresets[i].name));
+      names.push_back(wxGetTranslation(FactoryPresets[i].name));
    }
 
    return names;
@@ -392,7 +413,7 @@ bool EffectReverb::Startup()
          gPrefs->Read(path + wxT("WetOnly"), &mParams.mWetOnly, DEF_WetOnly);
          gPrefs->Read(path + wxT("name"), &name, wxEmptyString);
       
-         if (!name.IsEmpty())
+         if (!name.empty())
          {
             name.Prepend(wxT(" - "));
          }
@@ -420,7 +441,7 @@ void EffectReverb::PopulateOrExchange(ShuttleGui & S)
          AddSpinCtrl( p, DEF_ ## n, MAX_ ## n, MIN_ ## n); \
       S.SetStyle(wxSL_HORIZONTAL); \
       m ## n ## S = S.Id(ID_ ## n). \
-         AddSlider(wxT(""), DEF_ ## n, MAX_ ## n, MIN_ ## n);
+         AddSlider( {}, DEF_ ## n, MAX_ ## n, MIN_ ## n);
 
       SpinSlider(RoomSize,       _("&Room Size (%):"))
       SpinSlider(PreDelay,       _("&Pre-delay (ms):"))
@@ -440,7 +461,7 @@ void EffectReverb::PopulateOrExchange(ShuttleGui & S)
    S.StartHorizontalLay(wxCENTER, false);
    {
       mWetOnlyC = S.Id(ID_WetOnly).
-         AddCheckBox(_("Wet O&nly"), DEF_WetOnly ? wxT("true") : wxT("false"));
+         AddCheckBox(_("Wet O&nly"), DEF_WetOnly);
    }
    S.EndHorizontalLay();
 
@@ -523,7 +544,7 @@ void EffectReverb::SetTitle(const wxString & name)
 {
    wxString title(_("Reverb"));
 
-   if (!name.IsEmpty())
+   if (!name.empty())
    {
       title += wxT(": ") + name;
    }

@@ -12,45 +12,45 @@
 #ifndef __AUDACITY_KEY_CONFIG_PREFS__
 #define __AUDACITY_KEY_CONFIG_PREFS__
 
-#include "../Experimental.h"
-
+class CommandManager;
 class ShuttleGui;
 
-#if defined(EXPERIMENTAL_KEY_VIEW)
-
 #include <wx/defs.h>
-#include <wx/imaglist.h>
-#include <wx/listctrl.h>
-#include <wx/radiobut.h>
-#include <wx/srchctrl.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-#include <wx/timer.h>
-
-#include "../commands/CommandManager.h"
-#include "../widgets/KeyView.h"
+#include <wx/timer.h> // member variable
 
 #include "PrefsPanel.h"
 
+class wxRadioButton;
 class wxStaticText;
+class wxTextCtrl;
+class KeyView;
+struct NormalizedKeyString;
+enum ViewByType : int;
+
+#define KEY_CONFIG_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Key Config") }
 
 class KeyConfigPrefs final : public PrefsPanel
 {
 public:
-   KeyConfigPrefs(wxWindow * parent);
-   ~KeyConfigPrefs();
-   bool Apply() override;
+   KeyConfigPrefs(wxWindow * parent, wxWindowID winid, const CommandID &name);
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+
+   bool Commit() override;
    void Cancel() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
 private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
-   void RefreshBindings();
-   wxString NameFromKey(const wxString & key);
-   void SetKeyForSelected(const wxString & key);
+   void RefreshBindings(bool bSort);
+   void FilterKeys( std::vector<NormalizedKeyString> & arr );
+   CommandID NameFromKey(const NormalizedKeyString & key);
+   void SetKeyForSelected(const NormalizedKeyString & key);
 
    void OnViewBy(wxCommandEvent & e);
    void OnDefaults(wxCommandEvent & e);
+   void OnImportDefaults(wxCommandEvent & e);
    void OnImport(wxCommandEvent & e);
    void OnExport(wxCommandEvent & e);
    void OnSet(wxCommandEvent & e);
@@ -83,74 +83,25 @@ private:
    CommandManager *mManager;
    int mCommandSelected;
 
-   wxArrayString mNames;
-   wxArrayString mDefaultKeys;
-   wxArrayString mKeys;
-   wxArrayString mNewKeys; // Used for work in progress.
+   CommandIDs mNames;
+   std::vector<NormalizedKeyString> mDefaultKeys; // The full set.
+   std::vector<NormalizedKeyString> mStandardDefaultKeys; // The reduced set.
+   std::vector<NormalizedKeyString> mKeys;
+   std::vector<NormalizedKeyString> mNewKeys; // Used for work in progress.
 
    DECLARE_EVENT_TABLE()
 };
 
-#else
 
-#include <wx/defs.h>
-#include <wx/listctrl.h>
-#include <wx/textctrl.h>
-#include <wx/string.h>
-
-#include "../commands/CommandManager.h"
-
-#include "PrefsPanel.h"
-
-class KeyConfigPrefs final : public PrefsPanel
-{
- public:
-   KeyConfigPrefs(wxWindow * parent);
-   ~KeyConfigPrefs();
-   bool Apply() override;
-   void Cancel() override;
-
- private:
-   void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
-   void CreateList();
-   void RepopulateBindingsList();
-   wxString NameFromKey( const wxString & key );
-   void SetKeyForSelected( const wxString & key );
-
-   void OnDefaults(wxCommandEvent & e);
-   void OnImport(wxCommandEvent & e);
-   void OnExport(wxCommandEvent & e);
-   void OnSet(wxCommandEvent & e);
-   void OnClear(wxCommandEvent & e);
-   void OnCategory(wxCommandEvent & e);
-   void OnItemSelected(wxListEvent & e);
-   void OnKeyDown(wxListEvent & e);
-
-   void OnCaptureKeyDown(wxKeyEvent & e);
-   void OnCaptureChar(wxKeyEvent & e);
-
-   wxChoice *mCat;
-   wxTextCtrl *mKey;
-   wxListCtrl *mList;
-
-   CommandManager *mManager;
-   int mCommandSelected;
-
-   wxArrayString mCats;
-   wxArrayString mNames;
-   wxArrayString mDefaultKeys;
-   wxArrayString mKeys;
-   wxArrayString mNewKeys; // Used for work in progress.
-
-   DECLARE_EVENT_TABLE()
-};
-
-#endif
-
+/// A PrefsPanelFactory that creates one KeyConfigPrefs panel.
 class KeyConfigPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   KeyConfigPrefsFactory(const CommandID &name = {})
+      : mName{ name } {}
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
+
+private:
+   CommandID mName;
 };
 #endif

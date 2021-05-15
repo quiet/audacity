@@ -20,14 +20,17 @@ It is also a place to document colour usage policy in Audacity
 #include "Audacity.h"
 #include "AColor.h"
 
+#include "Experimental.h"
+
+#include <wx/window.h>
 #include <wx/colour.h>
 #include <wx/dc.h>
 #include <wx/dcmemory.h>
+#include <wx/graphics.h>
 #include <wx/settings.h>
 #include <wx/utils.h>
 
 #include "Theme.h"
-#include "Experimental.h"
 #include "AllThemeResources.h"
 
 void DCUnchanger::operator () (wxDC *pDC) const
@@ -87,6 +90,9 @@ wxBrush AColor::tooltipBrush;
 wxPen AColor::sparePen;
 wxBrush AColor::spareBrush;
 
+wxPen AColor::uglyPen;
+wxBrush AColor::uglyBrush;
+
 //
 // Draw an upward or downward pointing arrow.
 //
@@ -114,51 +120,51 @@ void AColor::Arrow(wxDC & dc, wxCoord x, wxCoord y, int width, bool down)
 }
 
 //
-// Draw a line while accounting for differences in wxWidgets versions
+// Draw a line, inclusive of endpoints,
+// compensating for differences in wxWidgets versions across platforms
 //
 void AColor::Line(wxDC & dc, wxCoord x1, wxCoord y1, wxCoord x2, wxCoord y2)
 {
-   // As of 2.8.9 (possibly earlier), wxDC::DrawLine() on the Mac draws the
-   // last point since it is now based on the NEW wxGraphicsContext system.
-   // Make the other platforms do the same thing since the other platforms
-   // "may" follow they get wxGraphicsContext going.
+   const wxPoint points[] { { x1, y1 }, { x2, y2 } };
+   Lines( dc, 2, points );
+}
+
+// Draw lines, INCLUSIVE of all endpoints
+void AColor::Lines(wxDC &dc, size_t nPoints, const wxPoint points[])
+{
+   if ( nPoints <= 1 ) {
+      if (nPoints == 1)
+         dc.DrawPoint( points[0] );
+      return;
+   }
+
+   for (size_t ii = 0; ii < nPoints - 1; ++ii) {
+      const auto &p1 = points[ii];
+      const auto &p2 = points[ii + 1];
+
+      // As of 2.8.9 (possibly earlier), wxDC::DrawLine() on the Mac draws the
+      // last point since it is now based on the NEW wxGraphicsContext system.
+      // Make the other platforms do the same thing since the other platforms
+      // "may" follow they get wxGraphicsContext going.
+
+      // PRL:  as of 3.1.1, I still observe that on Mac, the last point is
+      // included, contrary to what documentation says.  Also that on Windows,
+      // sometimes it is the first point that is excluded.
+
 #if defined(__WXMAC__) || defined(__WXGTK3__)
-   dc.DrawLine(x1, y1, x2, y2);
+      dc.DrawLine(p1, p2);
 #else
-   bool point = false;
-
-   if (x1 == x2) {
-      if (y1 < y2) {
-         y2++;
+      dc.DrawPoint(p1);
+      if ( p1 != p2 ) {
+         dc.DrawLine(p1, p2);
       }
-      else if (y2 < y1) {
-         y1++;
-      }
-      else {
-         point = true;
-      }
-   }
-   else if (y1 == y2) {
-      if (x1 < x2) {
-         x2++;
-      }
-      else if (x2 < x1) {
-         x1++;
-      }
-      else {
-         point = true;
-      }
-   }
-   else {
-      dc.DrawPoint(x2, y2);
+#endif
    }
 
-   if (point) {
-      dc.DrawPoint(x2, y2);
-   }
-   else {
-      dc.DrawLine(x1, y1, x2, y2);
-   }
+#if defined(__WXMAC__) || defined(__WXGTK3__)
+      ;
+#else
+      dc.DrawPoint( points[ nPoints - 1 ] );
 #endif
 }
 
@@ -175,20 +181,8 @@ void AColor::DrawFocus(wxDC & dc, wxRect & rect)
          x2 = rect.GetRight(),
          y2 = rect.GetBottom();
 
-#ifdef __WXMAC__
-   // Why must this be different?
-   // Otherwise nothing is visible if you do as for the
-   // other platforms.
-   dc.SetPen(wxPen(wxT("MEDIUM GREY"), 1, wxSOLID));
-
-   dc.SetLogicalFunction(wxCOPY);
-#else
-   dc.SetPen(wxPen(wxT("MEDIUM GREY"), 0, wxSOLID));
-
-   // this seems to be closer than what Windows does than wxINVERT although
-   // I'm still not sure if it's correct
-   dc.SetLogicalFunction(wxAND_REVERSE);
-#endif
+   // -1 for brush, so it just sets the pen colour, and does not change the brush.
+   UseThemeColour( &dc, -1, clrTrackPanelText );
 
    wxCoord z;
    for ( z = x1 + 1; z < x2; z += 2 )
@@ -206,7 +200,6 @@ void AColor::DrawFocus(wxDC & dc, wxRect & rect)
    for ( z = y2 - shift; z > y1; z -= 2 )
       dc.DrawPoint(x1, z);
 
-   dc.SetLogicalFunction(wxCOPY);
 }
 
 void AColor::Bevel(wxDC & dc, bool up, const wxRect & r)
@@ -228,17 +221,36 @@ void AColor::Bevel(wxDC & dc, bool up, const wxRect & r)
    AColor::Line(dc, r.x, r.y + r.height, r.x + r.width, r.y + r.height);
 }
 
-void AColor::Bevel2(wxDC & dc, bool up, const wxRect & r)
+void AColor::Bevel2
+(wxDC & dc, bool up, const wxRect & r, bool bSel, bool bHighlight)
 {
-   wxBitmap & Bmp = theTheme.Bitmap( up ? bmpUpButtonLarge : bmpDownButtonLarge );
+   int index = 0;
+   // There are eight button states in the TCP.
+   // A theme might not differentiate between them all.  That's up to 
+   // the theme designer.
+   //   Button highlighted (i.e. hovered over) or not.
+   //   Track selected or not
+   //   Button up or down.
+   // Highlight in most themes is lighter than not highlighted.
+   if ( bHighlight && bSel)
+      index = up ? bmpHiliteUpButtonExpandSel : bmpHiliteButtonExpandSel;
+   else if ( bHighlight )
+      index = up ? bmpHiliteUpButtonExpand : bmpHiliteButtonExpand;
+   else if( bSel )
+      index = up ? bmpUpButtonExpandSel : bmpDownButtonExpandSel;
+   else
+      index = up ? bmpUpButtonExpand : bmpDownButtonExpand;
+
+   wxBitmap & Bmp = theTheme.Bitmap( index );
    wxMemoryDC memDC;
    memDC.SelectObject(Bmp);
    int h = wxMin( r.height, Bmp.GetHeight() );
 
 
    dc.Blit( r.x,r.y,r.width/2, h, &memDC, 0, 0 );
-   dc.Blit( r.x+r.width/2,r.y,r.width/2, h, &memDC, 
-      Bmp.GetWidth() - r.width/2, 0 );
+   int r2 = r.width - r.width/2;
+   dc.Blit( r.x+r.width/2,r.y,r2, h, &memDC, 
+      Bmp.GetWidth() - r2, 0 );
 }
 
 wxColour AColor::Blend( const wxColour & c1, const wxColour & c2 )
@@ -250,15 +262,18 @@ wxColour AColor::Blend( const wxColour & c1, const wxColour & c2 )
    return c3;
 }
 
-void AColor::BevelTrackInfo(wxDC & dc, bool up, const wxRect & r)
+void AColor::BevelTrackInfo(wxDC & dc, bool up, const wxRect & r, bool highlight)
 {
 #ifndef EXPERIMENTAL_THEMING
    Bevel( dc, up, r );
 #else
+   // Note that the actually drawn rectangle extends one pixel right of and
+   // below the given
+
    wxColour col;
    col = Blend( theTheme.Colour( clrTrackInfo ), up ? wxColour( 255,255,255):wxColour(0,0,0));
 
-   wxPen pen( col );
+   wxPen pen( highlight ? uglyPen : col );
    dc.SetPen( pen );
 
    dc.DrawLine(r.x, r.y, r.x + r.width, r.y);
@@ -267,31 +282,68 @@ void AColor::BevelTrackInfo(wxDC & dc, bool up, const wxRect & r)
    col = Blend( theTheme.Colour( clrTrackInfo ), up ? wxColour(0,0,0): wxColour(255,255,255));
 
    pen.SetColour( col );
-   dc.SetPen( pen );
+   dc.SetPen( highlight ? uglyPen : pen );
 
    dc.DrawLine(r.x + r.width, r.y, r.x + r.width, r.y + r.height);
-   dc.DrawLine(r.x, r.y + r.height, r.x + r.width + 1, r.y + r.height);
+   dc.DrawLine(r.x, r.y + r.height, r.x + r.width, r.y + r.height);
 #endif
 }
 
-void AColor::UseThemeColour( wxDC * dc, int iIndex )
+// Set colour of and select brush and pen.
+// Use -1 to omit brush or pen.
+// If pen omitted, then the same colour as the brush will be used.
+// alpha for the brush is normally 255, but if set will make a difference 
+// on mac (only) currently.
+void AColor::UseThemeColour( wxDC * dc, int iBrush, int iPen, int alpha )
 {
    if (!inited)
       Init();
-   wxColour col = theTheme.Colour( iIndex );
-   spareBrush.SetColour( col );
-   dc->SetBrush( spareBrush );
+   // do nothing if no colours set.
+   if( (iBrush == -1) && ( iPen ==-1))
+      return;
+   wxColour col = wxColour(0,0,0);
+   if( iBrush !=-1 ){
+      col = theTheme.Colour( iBrush );
+      col.Set( col.Red(), col.Green(), col.Blue(), alpha);
+      spareBrush.SetColour( col );
+      dc->SetBrush( spareBrush );
+   }
+   if( iPen != -1)
+      col = theTheme.Colour( iPen );
    sparePen.SetColour( col );
    dc->SetPen( sparePen );
 }
 
-void AColor::Light(wxDC * dc, bool selected)
+void AColor::UseThemeColour( wxGraphicsContext * gc, int iBrush, int iPen, int alpha )
+{
+   if (!inited)
+      Init();
+   // do nothing if no colours set.
+   if( (iBrush == -1) && ( iPen ==-1))
+      return;
+   wxColour col = wxColour(0,0,0);
+   if( iBrush !=-1 ){
+      col = theTheme.Colour( iBrush );
+      col.Set( col.Red(), col.Green(), col.Blue(), alpha);
+      spareBrush.SetColour( col );
+      gc->SetBrush( spareBrush );
+   }
+   if( iPen != -1)
+      col = theTheme.Colour( iPen );
+   sparePen.SetColour( col );
+   gc->SetPen( sparePen );
+}
+
+
+void AColor::Light(wxDC * dc, bool selected, bool highlight)
 {
    if (!inited)
       Init();
    int index = (int) selected;
-   dc->SetBrush(lightBrush[index]);
-   dc->SetPen(lightPen[index]);
+   auto &brush = highlight ? AColor::uglyBrush : lightBrush[index];
+   dc->SetBrush( brush );
+   auto &pen = highlight ? AColor::uglyPen : lightPen[index];
+   dc->SetPen( pen );
 }
 
 void AColor::Medium(wxDC * dc, bool selected)
@@ -303,15 +355,6 @@ void AColor::Medium(wxDC * dc, bool selected)
    dc->SetPen(mediumPen[index]);
 }
 
-#if 0
-#ifdef EXPERIMENTAL_THEMING
-   UseThemeColour( dc, selected ? clrMediumSelected : clrMedium);
-#endif
-#ifdef EXPERIMENTAL_THEMING
-   UseThemeColour( dc, selected ? clrLightSelected : clrLight);
-#endif
-#endif
-
 void AColor::MediumTrackInfo(wxDC * dc, bool selected)
 {
 #ifdef EXPERIMENTAL_THEMING
@@ -322,19 +365,21 @@ void AColor::MediumTrackInfo(wxDC * dc, bool selected)
 }
 
 
-void AColor::Dark(wxDC * dc, bool selected)
+void AColor::Dark(wxDC * dc, bool selected, bool highlight)
 {
    if (!inited)
       Init();
    int index = (int) selected;
-   dc->SetBrush(darkBrush[index]);
-   dc->SetPen(darkPen[index]);
+   auto &brush = highlight ? AColor::uglyBrush : darkBrush[index];
+   dc->SetBrush( brush );
+   auto &pen = highlight ? AColor::uglyPen : darkPen[index];
+   dc->SetPen( pen );
 }
 
 void AColor::TrackPanelBackground(wxDC * dc, bool selected)
 {
 #ifdef EXPERIMENTAL_THEMING
-   UseThemeColour( dc, selected ? clrDarkSelected : clrDark);
+   UseThemeColour( dc, selected ? clrMediumSelected : clrTrackBackground );
 #else
    Dark( dc, selected );
 #endif
@@ -344,13 +389,9 @@ void AColor::CursorColor(wxDC * dc)
 {
    if (!inited)
       Init();
-#if defined(__WXMAC__) || defined(__WXGTK3__)
+
    dc->SetLogicalFunction(wxCOPY);
-   dc->SetPen(wxColor(0, 0, 0, 128));
-#else
-   dc->SetLogicalFunction(wxINVERT);
    dc->SetPen(cursorPen);
-#endif
 }
 
 void AColor::IndicatorColor(wxDC * dc, bool bIsNotRecording)
@@ -414,10 +455,36 @@ void AColor::Solo(wxDC * dc, bool on, bool selected)
    }
 }
 
+bool AColor::gradient_inited = 0;
+
 void AColor::ReInit()
 {
    inited=false;
    Init();
+   gradient_inited=0;
+   PreComputeGradient();
+}
+
+wxColour InvertOfColour( const wxColour & c )
+{
+   return wxColour( 255-c.Red(), 255-c.Green(), 255-c.Blue() );
+}
+
+// Fix up the cursor colour, if it is 'unacceptable'.
+// Unacceptable if it is too close to the background colour.
+wxColour CursorColour( )
+{
+   wxColour cCursor = theTheme.Colour( clrCursorPen );
+   wxColour cBack = theTheme.Colour( clrMedium );
+
+   int d = theTheme.ColourDistance( cCursor, cBack );
+
+   // Pen colour is fine, if there is plenty of contrast.
+   if( d  > 200 )
+      return clrCursorPen;
+
+   // otherwise return same colour as a selection.
+   return theTheme.Colour( clrSelected );
 }
 
 void AColor::Init()
@@ -425,11 +492,17 @@ void AColor::Init()
    if (inited)
       return;
 
-   wxColour light =
-       wxSystemSettings::GetColour(wxSYS_COLOUR_3DHIGHLIGHT);
-   wxColour med = wxSystemSettings::GetColour(wxSYS_COLOUR_3DFACE);
-   wxColour dark =
-       wxSystemSettings::GetColour(wxSYS_COLOUR_3DSHADOW);
+   wxColour light = theTheme.Colour( clrLight ); 
+   // wxSystemSettings::GetColour(wxSYS_COLOUR_3DHIGHLIGHT);
+   wxColour med = theTheme.Colour( clrMedium ); 
+   // wxSystemSettings::GetColour(wxSYS_COLOUR_3DFACE);
+   wxColour dark = theTheme.Colour( clrDark ); 
+   // wxSystemSettings::GetColour(wxSYS_COLOUR_3DSHADOW);
+
+   wxColour lightSelected = theTheme.Colour( clrLightSelected ); 
+   wxColour medSelected = theTheme.Colour( clrMediumSelected ); 
+   wxColour darkSelected = theTheme.Colour( clrDarkSelected ); 
+
 
    clippingPen.SetColour(0xCC, 0x11, 0x00);
 
@@ -455,7 +528,7 @@ void AColor::Init()
    theTheme.SetBrushColour( muteBrush[1],      clrMuteButtonVetoed);
    theTheme.SetBrushColour( soloBrush,         clrMuteButtonActive);
 
-   theTheme.SetPenColour(   cursorPen,         clrCursorPen);
+   cursorPen.SetColour( CursorColour()  );
    theTheme.SetPenColour(   indicatorPen[0],   clrRecordingPen);
    theTheme.SetPenColour(   indicatorPen[1],   clrPlaybackPen);
    theTheme.SetBrushColour( indicatorBrush[0], clrRecordingBrush);
@@ -470,6 +543,9 @@ void AColor::Init()
    tooltipPen.SetColour( wxSystemSettingsNative::GetColour(wxSYS_COLOUR_INFOTEXT) );
    tooltipBrush.SetColour( wxSystemSettingsNative::GetColour(wxSYS_COLOUR_INFOBK) );
 
+   uglyPen.SetColour( wxColour{ 0, 255, 0 } ); // saturated green
+   uglyBrush.SetColour( wxColour{ 255, 0, 255 } ); // saturated magenta
+
    // A tiny gradient of yellow surrounding the current focused track
    theTheme.SetPenColour(   trackFocusPens[0],  clrTrackFocus0);
    theTheme.SetPenColour(   trackFocusPens[1],  clrTrackFocus1);
@@ -479,7 +555,6 @@ void AColor::Init()
    // been snapped to the nearest boundary.
    theTheme.SetPenColour(   snapGuidePen,      clrSnapGuide);
 
-#if defined(__WXMSW__) || defined(__WXGTK__)
    // unselected
    lightBrush[0].SetColour(light);
    mediumBrush[0].SetColour(med);
@@ -489,58 +564,17 @@ void AColor::Init()
    darkPen[0].SetColour(dark);
 
    // selected
-   lightBrush[1].SetColour(204, 204, 255);
-   mediumBrush[1].SetColour(200, 200, 214);
-   darkBrush[1].SetColour(148, 148, 170);
-   lightPen[1].SetColour(204, 204, 255);
-   mediumPen[1].SetColour(200, 200, 214);
-   darkPen[1].SetColour(0, 0, 0);
-
-#else
-
-#if defined(__WXMAC__)          // && defined(TARGET_CARBON)
-
-   // unselected
-   lightBrush[0].SetColour(246, 246, 255);
-   mediumBrush[0].SetColour(220, 220, 220);
-   darkBrush[0].SetColour(140, 140, 160);
-   lightPen[0].SetColour(246, 246, 255);
-   mediumPen[0].SetColour(220, 220, 220);
-   darkPen[0].SetColour(140, 140, 160);
-
-   // selected
-   lightBrush[1].SetColour(204, 204, 255);
-   mediumBrush[1].SetColour(180, 180, 192);
-   darkBrush[1].SetColour(148, 148, 170);
-   lightPen[1].SetColour(204, 204, 255);
-   mediumPen[1].SetColour(180, 180, 192);
-   darkPen[1].SetColour(148, 148, 170);
-
-#else
-
-   // unselected
-   lightBrush[0].SetColour(255, 255, 255);
-   mediumBrush[0].SetColour(204, 204, 204);
-   darkBrush[0].SetColour(130, 130, 130);
-   lightPen[0].SetColour(255, 255, 255);
-   mediumPen[0].SetColour(204, 204, 204);
-   darkPen[0].SetColour(130, 130, 130);
-
-   // selected
-   lightBrush[1].SetColour(204, 204, 255);
-   mediumBrush[1].SetColour(180, 180, 192);
-   darkBrush[1].SetColour(148, 148, 170);
-   lightPen[1].SetColour(204, 204, 255);
-   mediumPen[1].SetColour(180, 180, 192);
-   darkPen[1].SetColour(0, 0, 0);
-
-#endif
-
-#endif
+   lightBrush[1].SetColour(lightSelected);
+   mediumBrush[1].SetColour(medSelected);
+   darkBrush[1].SetColour(darkSelected);
+   lightPen[1].SetColour(lightSelected);
+   mediumPen[1].SetColour(medSelected);
+   darkPen[1].SetColour(darkSelected);
 
    inited = true;
 }
 
+// These colours are chosen so that black text shows up OK on them.
 const int AColor_midicolors[16][3] = {
    {255, 102, 102},             // 1=salmon
    {204, 0, 0},                 // 2=red
@@ -548,7 +582,7 @@ const int AColor_midicolors[16][3] = {
    {255, 255, 0},               // 4=yellow
    {0, 204, 0},                 // 5=green
    {0, 204, 204},               // 6=turquoise
-   {0, 0, 204},                 // 7=blue
+   {125, 125, 255},             // 7=blue
    {153, 0, 255},               // 8=blue-violet
 
    {140, 97, 54},               // 9=brown
@@ -556,10 +590,10 @@ const int AColor_midicolors[16][3] = {
    {255, 175, 40},              // 11=lt orange
    {102, 255, 102},             // 12=lt green
    {153, 255, 255},             // 13=lt turquoise
-   {153, 153, 255},             // 14=lt blue
+   {190, 190, 255},             // 14=lt blue
    {204, 102, 255},             // 15=lt blue-violet
-   {255, 51, 204}
-};                              // 16=lt red-violet
+   {255, 51, 204}               // 16=lt red-violet
+};
 
 void AColor::MIDIChannel(wxDC * dc, int channel /* 1 - 16 */ )
 {
@@ -567,12 +601,12 @@ void AColor::MIDIChannel(wxDC * dc, int channel /* 1 - 16 */ )
       const int *colors = AColor_midicolors[channel - 1];
 
       dc->SetPen(wxPen(wxColour(colors[0],
-                                colors[1], colors[2]), 1, wxSOLID));
+                                colors[1], colors[2]), 1, wxPENSTYLE_SOLID));
       dc->SetBrush(wxBrush(wxColour(colors[0],
-                                    colors[1], colors[2]), wxSOLID));
+                                    colors[1], colors[2]), wxBRUSHSTYLE_SOLID));
    } else {
-      dc->SetPen(wxPen(wxColour(153, 153, 153), 1, wxSOLID));// DONT-THEME Midi, unused.
-      dc->SetBrush(wxBrush(wxColour(153, 153, 153), wxSOLID));
+      dc->SetPen(wxPen(wxColour(153, 153, 153), 1, wxPENSTYLE_SOLID));
+      dc->SetBrush(wxBrush(wxColour(153, 153, 153), wxBRUSHSTYLE_SOLID));
    }
 
 }
@@ -584,13 +618,13 @@ void AColor::LightMIDIChannel(wxDC * dc, int channel /* 1 - 16 */ )
 
       dc->SetPen(wxPen(wxColour(127 + colors[0] / 2,
                                 127 + colors[1] / 2,
-                                127 + colors[2] / 2), 1, wxSOLID));
+                                127 + colors[2] / 2), 1, wxPENSTYLE_SOLID));
       dc->SetBrush(wxBrush(wxColour(127 + colors[0] / 2,
                                     127 + colors[1] / 2,
-                                    127 + colors[2] / 2), wxSOLID));
+                                    127 + colors[2] / 2), wxBRUSHSTYLE_SOLID));
    } else {
-      dc->SetPen(wxPen(wxColour(204, 204, 204), 1, wxSOLID));
-      dc->SetBrush(wxBrush(wxColour(204, 204, 204), wxSOLID));
+      dc->SetPen(wxPen(wxColour(204, 204, 204), 1, wxPENSTYLE_SOLID));
+      dc->SetBrush(wxBrush(wxColour(204, 204, 204), wxBRUSHSTYLE_SOLID));
    }
 
 }
@@ -602,18 +636,18 @@ void AColor::DarkMIDIChannel(wxDC * dc, int channel /* 1 - 16 */ )
 
       dc->SetPen(wxPen(wxColour(colors[0] / 2,
                                 colors[1] / 2,
-                                colors[2] / 2), 1, wxSOLID));
+                                colors[2] / 2), 1, wxPENSTYLE_SOLID));
       dc->SetBrush(wxBrush(wxColour(colors[0] / 2,
                                     colors[1] / 2,
-                                    colors[2] / 2), wxSOLID));
+                                    colors[2] / 2), wxBRUSHSTYLE_SOLID));
    } else {
-      dc->SetPen(wxPen(wxColour(102, 102, 102), 1, wxSOLID));
-      dc->SetBrush(wxBrush(wxColour(102, 102, 102), wxSOLID));
+      dc->SetPen(wxPen(wxColour(102, 102, 102), 1, wxPENSTYLE_SOLID));
+      dc->SetBrush(wxBrush(wxColour(102, 102, 102), wxBRUSHSTYLE_SOLID));
    }
 
 }
 
-bool AColor::gradient_inited = 0;
+
 
 unsigned char AColor::gradient_pre[ColorGradientTotal][2][gradientSteps][3];
 
@@ -634,13 +668,17 @@ void AColor::PreComputeGradient() {
                      r = g = b = 0.84 - 0.84 * value;
                   } else {
                      const int gsteps = 4;
-                     float gradient[gsteps + 1][3] = {
-                        {float(0.75), float(0.75), float(0.75)},    // lt gray
-                        {float(0.30), float(0.60), float(1.00)},    // lt blue
-                        {float(0.90), float(0.10), float(0.90)},    // violet
-                        {float(1.00), float(0.00), float(0.00)},    // red
-                        {float(1.00), float(1.00), float(1.00)}     // white
-                     };
+                     float gradient[gsteps + 1][3];
+                     theTheme.Colour( clrSpectro1 ) = theTheme.Colour( clrUnselected );
+                     theTheme.Colour( clrSpectro1Sel ) = theTheme.Colour( clrSelected );
+                     int clrFirst = (selected == ColorGradientUnselected ) ? clrSpectro1 : clrSpectro1Sel;
+                     for(int j=0;j<(gsteps+1);j++){
+                        wxColour c = theTheme.Colour( clrFirst+j );
+                        gradient[ j] [0] = c.Red()/255.0;
+                        gradient[ j] [1] = c.Green()/255.0;
+                        gradient[ j] [2] = c.Blue()/255.0;
+                     }
+
 
                      int left = (int)(value * gsteps);
                      int right = (left == gsteps ? gsteps : left + 1);

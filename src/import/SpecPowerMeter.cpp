@@ -2,16 +2,16 @@
 
   Audacity: A Digital Audio Editor
 
-  SpecPowerMeter.cpp
+  SpecPowerCalculation.cpp
 
   Philipp Sibler
 
 ******************************************************************//**
 
-\class SpecPowerMeter
-\brief SpecPowerMeter is a simple spectral power level meter.
+\class SpecPowerCalculation
+\brief SpecPowerCalculation is a simple spectral power level meter.
 
-SpecPowerMeter operates in the Fourier domain and allows power level
+SpecPowerCalculation operates in the Fourier domain and allows power level
 measurements in subbands or in the entire signal band.  
 
 *//*******************************************************************/
@@ -24,28 +24,19 @@ measurements in subbands or in the entire signal band.
 
 #include "../FFT.h"
 
-SpecPowerMeter::SpecPowerMeter(size_t sigLen)
+SpecPowerCalculation::SpecPowerCalculation(size_t sigLen)
   : mSigLen(sigLen)
+  , mSigI{ sigLen, true }
+  , mSigFR{ sigLen }
+  , mSigFI{ sigLen }
 {
-
-   // Init buffers
-   mSigI = new float[sigLen];
-   mSigFR = new float[sigLen];
-   mSigFI = new float[sigLen];
-   for (int n = 0; n < sigLen; n++)
-   {
-      mSigI[n] = 0.0f;
-   }
 }
 
-SpecPowerMeter::~SpecPowerMeter()
+SpecPowerCalculation::~SpecPowerCalculation()
 {
-   delete[] mSigI;
-   delete[] mSigFR;
-   delete[] mSigFI;
 }
 
-float SpecPowerMeter::CalcPower(float* sig, float fc, float bw)
+float SpecPowerCalculation::CalcPower(float* sig, float fc, float bw)
 {
    float pwr;
    int loBin, hiBin;
@@ -59,15 +50,15 @@ float SpecPowerMeter::CalcPower(float* sig, float fc, float bw)
    }
    
    // Calc the FFT
-   FFT(mSigLen, 0, sig, mSigI, mSigFR, mSigFI);
+   FFT(mSigLen, 0, sig, mSigI.get(), mSigFR.get(), mSigFI.get());
    
    // Calc the in-band power
-   pwr = CalcBinPower(mSigFR, mSigFI, loBin, hiBin);
+   pwr = CalcBinPower(mSigFR.get(), mSigFI.get(), loBin, hiBin);
    
    return pwr;     
 }
 
-float SpecPowerMeter::CalcBinPower(float* sig_f_r, float* sig_f_i, int loBin, int hiBin)
+float SpecPowerCalculation::CalcBinPower(float* sig_f_r, float* sig_f_i, int loBin, int hiBin)
 {
    float pwr = 0.0f;
    
@@ -79,7 +70,7 @@ float SpecPowerMeter::CalcBinPower(float* sig_f_r, float* sig_f_i, int loBin, in
    return pwr;
 }
 
-int SpecPowerMeter::Freq2Bin(float fc)
+int SpecPowerCalculation::Freq2Bin(float fc)
 {
    int bin;
    

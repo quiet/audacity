@@ -21,6 +21,9 @@ most commonly asked questions about Audacity.
 
 
 #include "Audacity.h"
+#include "SplashDialog.h"
+
+#include "Experimental.h"
 
 #include <wx/dialog.h>
 #include <wx/html/htmlwin.h>
@@ -31,10 +34,10 @@ most commonly asked questions about Audacity.
 #include <wx/intl.h>
 #include <wx/image.h>
 
-#include "SplashDialog.h"
 #include "FileNames.h"
 #include "Internat.h"
 #include "ShuttleGui.h"
+#include "widgets/ErrorDialog.h"
 #include "widgets/LinkingHtmlWindow.h"
 
 #include "Theme.h"
@@ -42,7 +45,12 @@ most commonly asked questions about Audacity.
 #include "Prefs.h"
 #include "HelpText.h"
 
+// DA: Logo for Splash Dialog (welcome dialog)
+#ifdef EXPERIMENTAL_DA
+#include "../images/DarkAudacityLogoWithName.xpm"
+#else
 #include "../images/AudacityLogoWithName.xpm"
+#endif
 
 SplashDialog * SplashDialog::pSelf=NULL;
 
@@ -64,7 +72,6 @@ SplashDialog::SplashDialog(wxWindow * parent)
       wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
 {
    SetName(GetTitle());
-   this->SetBackgroundColour(theTheme.Colour( clrAboutBoxBackground ));
    m_pLogo = NULL; //v
    ShuttleGui S( this, eIsCreating );
    Populate( S );
@@ -77,7 +84,6 @@ SplashDialog::SplashDialog(wxWindow * parent)
 
 void SplashDialog::Populate( ShuttleGui & S )
 {
-   this->SetBackgroundColour(theTheme.Colour( clrAboutBoxBackground ));
    bool bShow;
    gPrefs->Read(wxT("/GUI/ShowSplashScreen"), &bShow, true );
    S.StartVerticalLay(1);
@@ -85,11 +91,18 @@ void SplashDialog::Populate( ShuttleGui & S )
    //v For now, change to AudacityLogoWithName via old-fashioned ways, not Theme.
    m_pLogo = std::make_unique<wxBitmap>((const char **) AudacityLogoWithName_xpm); //v
 
+
    // JKC: Resize to 50% of size.  Later we may use a smaller xpm as
    // our source, but this allows us to tweak the size - if we want to.
    // It also makes it easier to revert to full size if we decide to.
    const float fScale=0.5f;// smaller size.
    wxImage RescaledImage( m_pLogo->ConvertToImage() );
+   wxColour MainColour( 
+      RescaledImage.GetRed(1,1), 
+      RescaledImage.GetGreen(1,1), 
+      RescaledImage.GetBlue(1,1));
+   this->SetBackgroundColour(MainColour);
+
    // wxIMAGE_QUALITY_HIGH not supported by wxWidgets 2.6.1, or we would use it here.
    RescaledImage.Rescale( (int)(LOGOWITHNAME_WIDTH * fScale), (int)(LOGOWITHNAME_HEIGHT *fScale) );
    wxBitmap RescaledBitmap( RescaledImage );
@@ -102,6 +115,15 @@ void SplashDialog::Populate( ShuttleGui & S )
 
    S.Prop(0).AddWindow( icon );
 
+#if  (0)
+   icon->Bind(wxEVT_LEFT_DOWN,
+              [this]( wxMouseEvent const & event ) ->void {
+                 if ( event.ShiftDown() && event.ControlDown())
+                    wxLaunchDefaultBrowser("https://www.audacityteam.org");
+              }
+         );
+#endif
+
    mpHtml = safenew LinkingHtmlWindow(S.GetParent(), -1,
                                          wxDefaultPosition,
                                          wxSize(506, 280),
@@ -112,7 +134,7 @@ void SplashDialog::Populate( ShuttleGui & S )
    S.SetStretchyCol( 1 );// Column 1 is stretchy...
    {
       S.SetBorder( 5 );
-      S.Id( DontShowID).AddCheckBox( _("Don't show this again at start up"), bShow ? wxT("false") : wxT("true") );
+      S.Id( DontShowID).AddCheckBox( _("Don't show this again at start up"), !bShow );
       wxButton *ok = safenew wxButton(S.GetParent(), wxID_OK);
       ok->SetDefault();
       S.SetBorder( 5 );

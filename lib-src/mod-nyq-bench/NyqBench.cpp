@@ -14,6 +14,7 @@
 #include <wx/filedlg.h>
 #include <wx/font.h>
 #include <wx/fontdlg.h>
+#include <wx/menu.h>
 #include <wx/msgdlg.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
@@ -22,9 +23,9 @@
 #include <wx/textctrl.h>
 #include <wx/toolbar.h>
 
-#include "AudacityApp.h"
 #include "AudioIO.h"
 #include "LabelTrack.h"
+#include "Menus.h"
 #include "ModuleManager.h"
 #include "Prefs.h"
 #include "Project.h"
@@ -32,6 +33,8 @@
 #include "effects/EffectManager.h"
 #include "effects/nyquist/Nyquist.h"
 #include "../images/AudacityLogo.xpm"
+#include "../../src/commands/CommandContext.h"
+#include "widgets/ErrorDialog.h"
 
 #include "NyqBench.h"
 
@@ -139,6 +142,11 @@ extern "C"
 {
    static NyqBench *gBench = NULL;
 
+   static CommandHandlerObject &findme(AudacityProject&)
+   {
+      return *NyqBench::GetBench();
+   }
+
    #ifdef _MSC_VER
       #define DLL_API _declspec(dllexport)
    #else
@@ -163,7 +171,9 @@ extern "C"
    int ModuleDispatch(ModuleDispatchTypes type){
       switch (type){
          case AppQuiting: {
-            wxASSERT(gBench != NULL);
+            //It is perfectly OK for gBench to be NULL.
+            //Can happen if the menu item was never invoked.
+            //wxASSERT(gBench != NULL);
             if (gBench) {
                gBench->Destroy();
                gBench = NULL;
@@ -179,15 +189,17 @@ extern "C"
 
             wxMenuBar * pBar = p->GetMenuBar();
             wxASSERT(pBar != NULL );
-            wxMenu * pMenu = pBar->GetMenu( 2 );  // Menu 2 is the View Menu.
+            wxMenu * pMenu = pBar->GetMenu( 9 );  // Menu 9 is the Tools Menu.
             wxASSERT( pMenu != NULL );
 
             c->SetCurrentMenu(pMenu);
             c->AddSeparator();
-            c->SetDefaultFlags(AudioIONotBusyFlag, AudioIONotBusyFlag);
             c->AddItem(wxT("NyqBench"),
-                       _("&Nyquist Workbench..."),
-                       FNT(NyqBench, NyqBench::GetBench(), &NyqBench::ShowNyqBench));
+               _("&Nyquist Workbench..."),
+               true,
+               findme,
+               static_cast<CommandFunctorPointer>(&NyqBench::ShowNyqBench),
+               AudioIONotBusyFlag);
 
             c->ClearCurrentMenu();
          }
@@ -1080,7 +1092,7 @@ void NyqBench::OnSave(wxCommandEvent & e)
 
    if (!mScript->SaveFile(mPath.GetFullPath()))
    {
-      wxMessageBox(_("Script was not saved."),
+      AudacityMessageBox(_("Script was not saved."),
                    _("Warning"),
                    wxICON_EXCLAMATION,
                    this);
@@ -1110,7 +1122,7 @@ void NyqBench::OnSaveAs(wxCommandEvent & e)
 
    if (!mScript->SaveFile(mPath.GetFullPath()))
    {
-      wxMessageBox(_("Script was not saved."),
+      AudacityMessageBox(_("Script was not saved."),
                    _("Warning"),
                    wxICON_EXCLAMATION,
                    this);
@@ -1392,7 +1404,7 @@ void NyqBench::OnGo(wxCommandEvent & e)
       mRunning = true;
       UpdateWindowUI();
 
-      p->OnEffect(ID);
+      PluginActions::DoEffect(ID, CommandContext(*p), 0);
 
       mRunning = false;
       UpdateWindowUI();
@@ -1485,7 +1497,7 @@ void NyqBench::OnFindDialog(wxFindDialogEvent & e)
    }
 
    if (pos == wxString::npos) {
-      wxMessageBox(_("No matches found"),
+      AudacityMessageBox(_("No matches found"),
                    _("Nyquist Effect Workbench"),
                    wxOK | wxCENTER,
                    e.GetDialog());
@@ -1622,7 +1634,7 @@ bool NyqBench::Validate()
 {
    if (mScript->GetLastPosition() > 0 && mScript->IsModified()) {
       int ans;
-      ans = wxMessageBox(_("Code has been modified.  Are you sure?"),
+      ans = AudacityMessageBox(_("Code has been modified. Are you sure?"),
                          _("Warning"),
                          wxYES_NO | wxICON_QUESTION,
                          this);
@@ -1768,7 +1780,7 @@ void NyqBench::LoadFile()
 // Connects Audacity menu item to an action in this dll.
 // Only one action implemented so far.
 //----------------------------------------------------------------------------
-void NyqBench::ShowNyqBench()
+void NyqBench::ShowNyqBench(const CommandContext &)
 {
    Show();
 }

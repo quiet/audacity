@@ -20,18 +20,26 @@ class WaveTrack;
 class wxCheckBox;
 class wxChoice;
 
+class wxArrayStringEx;
+
+#define WAVEFORM_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Waveform") }
+
 class WaveformPrefs final : public PrefsPanel
 {
 public:
-   WaveformPrefs(wxWindow * parent, WaveTrack *wt);
+   WaveformPrefs(wxWindow * parent, wxWindowID winid, WaveTrack *wt);
    virtual ~WaveformPrefs();
-   bool Apply() override;
-   bool ShowsApplyButton() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+   wxString HelpPageName() override;
+
+   bool Commit() override;
+   bool ShowsPreviewButton() override;
    bool Validate() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
 private:
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
 
    void OnControl(wxCommandEvent&);
    void OnScale(wxCommandEvent&);
@@ -47,20 +55,20 @@ private:
    wxChoice *mScaleChoice;
    wxChoice *mRangeChoice;
 
-   wxArrayString mScaleChoices;
-   wxArrayString mRangeCodes;
-   wxArrayString mRangeChoices;
+   wxArrayStringEx mRangeCodes;
+   wxArrayStringEx mRangeChoices;
 
    WaveformSettings mTempSettings;
 
    bool mPopulating;
 };
 
+/// A PrefsPanelFactory that creates one WaveformPrefs panel.
 class WaveformPrefsFactory final : public PrefsPanelFactory
 {
 public:
    explicit WaveformPrefsFactory(WaveTrack *wt = 0);
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 
 private:
    WaveTrack *const mWt;

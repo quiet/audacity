@@ -30,19 +30,25 @@ EffectSilence::~EffectSilence()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectSilence::GetSymbol()
+ComponentInterfaceSymbol EffectSilence::GetSymbol()
 {
    return SILENCE_PLUGIN_SYMBOL;
 }
 
 wxString EffectSilence::GetDescription()
 {
-   return XO("Creates audio of zero amplitude");
+   return _("Creates audio of zero amplitude");
 }
 
-// EffectIdentInterface implementation
+wxString EffectSilence::ManualPage()
+{
+   return wxT("Silence");
+}
+
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectSilence::GetType()
 {
@@ -59,17 +65,14 @@ void EffectSilence::PopulateOrExchange(ShuttleGui & S)
       {
          S.AddPrompt(_("Duration:"));
          mDurationT = safenew
-            NumericTextCtrl(NumericConverter::TIME,
-                              S.GetParent(),
-                              wxID_ANY,
+            NumericTextCtrl(S.GetParent(), wxID_ANY,
+                              NumericConverter::TIME,
                               GetDurationFormat(),
                               GetDuration(),
-                              mProjectRate,
-                              wxDefaultPosition,
-                              wxDefaultSize,
-                              true);
+                               mProjectRate,
+                               NumericTextCtrl::Options{}
+                                  .AutoPos(true));
          mDurationT->SetName(_("Duration"));
-         mDurationT->EnableMenu();
          S.AddWindow(mDurationT, wxALIGN_CENTER | wxALL);
       }
       S.EndHorizontalLay();
@@ -97,7 +100,6 @@ bool EffectSilence::GenerateTrack(WaveTrack *tmp,
                                   const WaveTrack & WXUNUSED(track),
                                   int WXUNUSED(ntrack))
 {
-   bool bResult = tmp->InsertSilence(0.0, GetDuration());
-   wxASSERT(bResult);
-   return bResult;
+   tmp->InsertSilence(0.0, GetDuration());
+   return true;
 }

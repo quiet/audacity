@@ -13,23 +13,20 @@
 #ifndef __AUDACITY_TRANSCRIPTION_TOOLBAR__
 #define __AUDACITY_TRANSCRIPTION_TOOLBAR__
 
-#include "ToolBar.h"
 #include "../Experimental.h"
 
+#include "ToolBar.h"
+
 #include "../MemoryX.h"
-#include <wx/brush.h>
-#include <wx/pen.h>
+#include <wx/brush.h> // member variable
 
 #include "audacity/Types.h"
 #include "../Theme.h"
 
-class wxBitmap;
-class wxBrush;
 class wxChoice;
 class wxCommandEvent;
 class wxImage;
 class wxKeyEvent;
-class wxPen;
 
 class AButton;
 class ASlider;
@@ -72,7 +69,7 @@ class TranscriptionToolBar final : public ToolBar {
    TranscriptionToolBar();
    virtual ~TranscriptionToolBar();
 
-   void Create(wxWindow *parent);
+   void Create(wxWindow *parent) override;
 
    void OnKeyEvent(wxKeyEvent & event);
    void OnPlaySpeed(wxCommandEvent & event);
@@ -82,6 +79,8 @@ class TranscriptionToolBar final : public ToolBar {
    void Repaint(wxDC * WXUNUSED(dc)) override {};
    void EnableDisableButtons() override;
    void UpdatePrefs() override;
+   int GetInitialWidth()  override { return 191; }
+   int GetMinToolbarWidth() override { return 125; }
 
    void OnFocus(wxFocusEvent &event);
    void OnCaptureKey(wxCommandEvent &event);
@@ -122,14 +121,15 @@ class TranscriptionToolBar final : public ToolBar {
  private:
 
    void InitializeTranscriptionToolBar();
-   AButton *AddButton(
+   static AButton *AddButton(
+      TranscriptionToolBar *pBar,
       teBmps eFore, teBmps eDisabled,
       int id,
       const wxChar *label);
    void MakeAlternateImages(
       teBmps eFore, teBmps eDisabled,
       int id, unsigned altIdx);
-   void GetSamples(WaveTrack *t, sampleCount *s0, sampleCount *slen);
+   void GetSamples(const WaveTrack *t, sampleCount *s0, sampleCount *slen);
    void SetButton(bool newstate, AButton *button);
    void RegenerateTooltips() override;
 
@@ -148,12 +148,10 @@ class TranscriptionToolBar final : public ToolBar {
    wxChoice *mKeyTypeChoice;
 #endif
 
-   wxBrush mBackgroundBrush;
-   wxPen mBackgroundPen;
    int mBackgroundWidth;
    int mBackgroundHeight;
 
-   std::unique_ptr<TimeTrack> mTimeTrack;
+   std::shared_ptr<TimeTrack> mTimeTrack;
 
  public:
 

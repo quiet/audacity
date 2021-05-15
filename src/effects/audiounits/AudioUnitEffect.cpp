@@ -14,14 +14,16 @@
 
 *//*******************************************************************/
 
-#include "../../Audacity.h"
+#include "../../Audacity.h" // for USE_* macros
 
 #if USE_AUDIO_UNITS
+#include "AudioUnitEffect.h"
 
 #include <wx/defs.h>
 #include <wx/button.h>
 #include <wx/control.h>
 #include <wx/dir.h>
+#include <wx/crt.h>
 
 #ifdef __WXMAC__
 #include <wx/evtloop.h>
@@ -40,7 +42,7 @@
 #include "../../widgets/valnum.h"
 #include "../../widgets/wxPanelWrapper.h"
 
-#include "AudioUnitEffect.h"
+#include "../../Internat.h"
 
 struct CFReleaser
    { void operator () (const void *p) const { if (p) CFRelease(p); } };
@@ -97,29 +99,25 @@ AudioUnitEffectsModule::AudioUnitEffectsModule(ModuleManagerInterface *moduleMan
 
 AudioUnitEffectsModule::~AudioUnitEffectsModule()
 {
-   mPath.Clear();
+   mPath.clear();
 }
 
 // ============================================================================
-// IdentInterface implementation
+// ComponentInterface implementation
 // ============================================================================
 
-wxString AudioUnitEffectsModule::GetPath()
+PluginPath AudioUnitEffectsModule::GetPath()
 {
    return mPath;
 }
 
-wxString AudioUnitEffectsModule::GetSymbol()
+ComponentInterfaceSymbol AudioUnitEffectsModule::GetSymbol()
 {
-   return wxT("Audio Unit Effects");
-}
-
-wxString AudioUnitEffectsModule::GetName()
-{
+   /* i18n-hint: Audio Unit is the name of an Apple audio software protocol */
    return XO("Audio Unit Effects");
 }
 
-wxString AudioUnitEffectsModule::GetVendor()
+VendorSymbol AudioUnitEffectsModule::GetVendor()
 {
    return XO("The Audacity Team");
 }
@@ -132,12 +130,17 @@ wxString AudioUnitEffectsModule::GetVersion()
 
 wxString AudioUnitEffectsModule::GetDescription()
 {
-   return XO("Provides Audio Unit Effects support to Audacity");
+   return _("Provides Audio Unit Effects support to Audacity");
 }
 
 // ============================================================================
 // ModuleInterface implementation
 // ============================================================================
+
+FileExtensions AudioUnitEffectsModule::GetFileExtensions()
+{
+   return {{ _T("au") }};
+}
 
 bool AudioUnitEffectsModule::Initialize()
 {
@@ -157,9 +160,9 @@ bool AudioUnitEffectsModule::AutoRegisterPlugins(PluginManagerInterface & pm)
    return true;
 }
 
-wxArrayString AudioUnitEffectsModule::FindPlugins(PluginManagerInterface & pm)
+PluginPaths AudioUnitEffectsModule::FindPluginPaths(PluginManagerInterface & pm)
 {
-   wxArrayString effects;
+   PluginPaths effects;
 
    LoadAudioUnitsOfType(kAudioUnitType_Effect, effects);
    LoadAudioUnitsOfType(kAudioUnitType_Generator, effects);
@@ -170,28 +173,36 @@ wxArrayString AudioUnitEffectsModule::FindPlugins(PluginManagerInterface & pm)
    return effects;
 }
 
-bool AudioUnitEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxString & path)
+unsigned AudioUnitEffectsModule::DiscoverPluginsAtPath(
+   const PluginPath & path, wxString &errMsg,
+   const RegistrationCallback &callback)
 {
+   errMsg.clear();
    wxString name;
    AudioComponent component = FindAudioUnit(path, name);
    if (component == NULL)
    {
-      return false;
+      errMsg = _("Could not find component");
+      return 0;
    }
 
    AudioUnitEffect effect(path, name, component);
    if (!effect.SetHost(NULL))
    {
-      return false;
+      // TODO:  Is it worth it to discriminate all the ways SetHost might
+      // return false?
+      errMsg = _("Could not initialize component");
+      return 0;
    }
 
-   pm.RegisterPlugin(this, &effect);
+   if(callback)
+      callback(this, &effect);
 
-   return true;
+   return 1;
 }
 
 bool AudioUnitEffectsModule::IsPluginValid(
-   const wxString & path, bool bFast)
+   const PluginPath & path, bool bFast)
 {
    if( bFast )
       return true;
@@ -199,7 +210,7 @@ bool AudioUnitEffectsModule::IsPluginValid(
    return FindAudioUnit(path, name) != NULL;
 }
 
-IdentInterface *AudioUnitEffectsModule::CreateInstance(const wxString & path)
+ComponentInterface *AudioUnitEffectsModule::CreateInstance(const PluginPath & path)
 {
    // Acquires a resource for the application.
    wxString name;
@@ -213,7 +224,7 @@ IdentInterface *AudioUnitEffectsModule::CreateInstance(const wxString & path)
    return safenew AudioUnitEffect(path, name, component);
 }
 
-void AudioUnitEffectsModule::DeleteInstance(IdentInterface *instance)
+void AudioUnitEffectsModule::DeleteInstance(ComponentInterface *instance)
 {
    std::unique_ptr < AudioUnitEffect > {
       dynamic_cast<AudioUnitEffect *>(instance)
@@ -225,7 +236,7 @@ void AudioUnitEffectsModule::DeleteInstance(IdentInterface *instance)
 // ============================================================================
 
 void AudioUnitEffectsModule::LoadAudioUnitsOfType(OSType inAUType,
-                                                  wxArrayString & effects)
+                                                  PluginPaths & effects)
 {
    AudioComponentDescription desc;
    AudioComponent component;
@@ -253,11 +264,11 @@ void AudioUnitEffectsModule::LoadAudioUnitsOfType(OSType inAUType,
          {
             wxString name = wxCFStringRef::AsString(cfName);
       
-            effects.Add(wxString::Format(wxT("%-4.4s/%-4.4s/%-4.4s/%s"),
-                        FromOSType(found.componentManufacturer).c_str(),
-                        FromOSType(found.componentType).c_str(),
-                        FromOSType(found.componentSubType).c_str(),
-                        name.c_str()));
+            effects.push_back(wxString::Format(wxT("%-4.4s/%-4.4s/%-4.4s/%s"),
+                        FromOSType(found.componentManufacturer),
+                        FromOSType(found.componentType),
+                        FromOSType(found.componentSubType),
+                        name));
          }
       }
 
@@ -265,7 +276,7 @@ void AudioUnitEffectsModule::LoadAudioUnitsOfType(OSType inAUType,
    }
 }
 
-AudioComponent AudioUnitEffectsModule::FindAudioUnit(const wxString & path,
+AudioComponent AudioUnitEffectsModule::FindAudioUnit(const PluginPath & path,
                                                      wxString & name)
 {
    wxStringTokenizer tokens(path, wxT("/"));
@@ -290,7 +301,7 @@ wxString AudioUnitEffectsModule::FromOSType(OSType type)
                 (type & 0x0000ff00) << 8  |
                 (type & 0x000000ff) << 24;
    
-   return wxString::FromUTF8((char *)&rev, 4).c_str();
+   return wxString::FromUTF8((char *)&rev, 4);
 }
 
 OSType AudioUnitEffectsModule::ToOSType(const wxString & type)
@@ -327,8 +338,6 @@ private:
    bool mUseLatency;
    wxString mUIType;
 
-   wxArrayString mUITypes;
-
    DECLARE_EVENT_TABLE()
 };
 
@@ -340,10 +349,6 @@ AudioUnitEffectOptionsDialog::AudioUnitEffectOptionsDialog(wxWindow * parent, Ef
 :  wxDialogWrapper(parent, wxID_ANY, wxString(_("Audio Unit Effect Options")))
 {
    mHost = host;
-
-   mUITypes.Add(_("Full"));
-   mUITypes.Add(_("Generic"));
-   mUITypes.Add(_("Basic"));
 
    mHost->GetSharedConfig(wxT("Options"), wxT("UseLatency"), mUseLatency, true);
    mHost->GetSharedConfig(wxT("Options"), wxT("UIType"), mUIType, wxT("Full"));
@@ -389,14 +394,14 @@ void AudioUnitEffectOptionsDialog::PopulateOrExchange(ShuttleGui & S)
             S.AddVariableText(wxString() +
                _("Select \"Full\" to use the graphical interface if supplied by the Audio Unit.") +
                _(" Select \"Generic\" to use the system supplied generic interface.") +
-               _(" Select \"Basic\" for A basic text-only interface. ") +
+               _(" Select \"Basic\" for a basic text-only interface.") +
                _(" Reopen the effect for this to take effect."))->Wrap(650);
 
             S.StartHorizontalLay(wxALIGN_LEFT);
             {
                S.TieChoice(_("Select &interface"),
                            mUIType,
-                           &mUITypes);
+                           { _("Full"), _("Generic"), _("Basic") });
             }
             S.EndHorizontalLay();
          }
@@ -509,13 +514,13 @@ void AudioUnitEffectExportDialog::PopulateOrExchange(ShuttleGui & S)
 
    S.AddStandardButtons();
 
-   wxArrayString presets;
+   RegistryPaths presets;
 
    mEffect->mHost->GetPrivateConfigSubgroups(mEffect->mHost->GetUserPresetsGroup(wxEmptyString), presets);
 
-   presets.Sort();
+   std::sort( presets.begin(), presets.end() );
 
-   for (size_t i = 0, cnt = presets.GetCount(); i < cnt; i++)
+   for (size_t i = 0, cnt = presets.size(); i < cnt; i++)
    {
       mList->InsertItem(i, presets[i]);
    }
@@ -552,9 +557,9 @@ void AudioUnitEffectExportDialog::OnOk(wxCommandEvent & WXUNUSED(evt))
       wxString path;
       path.Printf(wxT("%s/%s/%s/%s.aupreset"),
                   PRESET_USER_PATH,
-                  mEffect->mVendor.c_str(),
-                  mEffect->mName.c_str(),
-                  name.c_str());
+                  mEffect->mVendor,
+                  mEffect->mName,
+                  name);
       wxFileName fn(path);
       fn.Normalize();
       fn.Mkdir(0755, wxPATH_MKDIR_FULL);
@@ -683,21 +688,25 @@ void AudioUnitEffectImportDialog::PopulateOrExchange(ShuttleGui & S)
 
    S.AddStandardButtons();
 
-   wxArrayString presets;
+   FilePaths presets;
 
    // Make sure the user preset directory exists
    wxString path;
    path.Printf(wxT("%s/%s/%s"),
                PRESET_LOCAL_PATH,
-               mEffect->mVendor.c_str(),
-               mEffect->mName.c_str());
+               mEffect->mVendor,
+               mEffect->mName);
    wxFileName fn(path);
    fn.Normalize();
    
    // Get all presets in the local domain for this effect
    wxDir::GetAllFiles(fn.GetFullPath(), &presets, wxT("*.aupreset"));
 
-   fn.PrependDir(wxT("~"));
+   path.Printf(wxT("%s/%s/%s"),
+               PRESET_USER_PATH,
+               mEffect->mVendor,
+               mEffect->mName);
+   fn = path;
    fn.Normalize();
 
    // Get all presets in the user domain for this effect
@@ -705,7 +714,7 @@ void AudioUnitEffectImportDialog::PopulateOrExchange(ShuttleGui & S)
    
    presets.Sort();
 
-   for (size_t i = 0, cnt = presets.GetCount(); i < cnt; i++)
+   for (size_t i = 0, cnt = presets.size(); i < cnt; i++)
    {
       fn = presets[i];
       mList->InsertItem(i, fn.GetName());
@@ -744,8 +753,8 @@ void AudioUnitEffectImportDialog::OnOk(wxCommandEvent & WXUNUSED(evt))
 
       wxString path;
       path.Printf(wxT("%s/%s.aupreset"),
-                  item.GetText().c_str(),
-                  mList->GetItemText(sel).c_str());
+                  item.GetText(),
+                  mList->GetItemText(sel));
 
       // Create the CFURL for the path
       CFunique_ptr<const __CFURL> url {
@@ -810,7 +819,7 @@ void AudioUnitEffectImportDialog::OnOk(wxCommandEvent & WXUNUSED(evt))
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-AudioUnitEffect::AudioUnitEffect(const wxString & path,
+AudioUnitEffect::AudioUnitEffect(const PluginPath & path,
                                  const wxString & name,
                                  AudioComponent component,
                                  AudioUnitEffect *master)
@@ -830,9 +839,6 @@ AudioUnitEffect::AudioUnitEffect(const wxString & path,
    mUIHost = NULL;
    mDialog = NULL;
    mParent = NULL;
-
-   mInputList = NULL;
-   mOutputList = NULL;
 
    mUnitInitialized = false;
 
@@ -858,27 +864,22 @@ AudioUnitEffect::~AudioUnitEffect()
 }
 
 // ============================================================================
-// IdentInterface implementation
+// ComponentInterface implementation
 // ============================================================================
 
-wxString AudioUnitEffect::GetPath()
+PluginPath AudioUnitEffect::GetPath()
 {
    return mPath;
 }
 
-wxString AudioUnitEffect::GetSymbol()
+ComponentInterfaceSymbol AudioUnitEffect::GetSymbol()
 {
    return mName;
 }
 
-wxString AudioUnitEffect::GetName()
+VendorSymbol AudioUnitEffect::GetVendor()
 {
-   return GetSymbol();
-}
-
-wxString AudioUnitEffect::GetVendor()
-{
-   return mVendor;
+   return { mVendor };
 }
 
 wxString AudioUnitEffect::GetVersion()
@@ -895,11 +896,12 @@ wxString AudioUnitEffect::GetVersion()
 
 wxString AudioUnitEffect::GetDescription()
 {
-   return wxT("N/A");
+   /* i18n-hint: Can mean "not available," "not applicable," "no answer" */
+   return _("n/a");
 }
 
 // ============================================================================
-// EffectIdentInterface implementation
+// EffectComponentInterface implementation
 // ============================================================================
 
 EffectType AudioUnitEffect::GetType()
@@ -922,7 +924,7 @@ EffectType AudioUnitEffect::GetType()
    return EffectTypeProcess;
 }
 
-wxString AudioUnitEffect::GetFamily()
+EffectFamilySymbol AudioUnitEffect::GetFamily()
 {
    return AUDIOUNITEFFECTS_FAMILY;
 }
@@ -965,17 +967,16 @@ bool AudioUnitEffect::SupportsAutomation()
    }
 
    UInt32 cnt = dataSize / sizeof(AudioUnitParameterID);
-   AudioUnitParameterID *array = new AudioUnitParameterID[cnt];
+   ArrayOf < AudioUnitParameterID > array{cnt};
 
    result = AudioUnitGetProperty(mUnit,
                                  kAudioUnitProperty_ParameterList,
                                  kAudioUnitScope_Global,
                                  0,
-                                 array,
+                                 array.get(),
                                  &dataSize);  
    if (result != noErr)
    {
-      delete [] array;
       return false;
    }
 
@@ -991,20 +992,16 @@ bool AudioUnitEffect::SupportsAutomation()
                                     &dataSize);  
       if (result != noErr)
       {
-         delete [] array;
          return false;
       }
 
       if (info.flags & kAudioUnitParameterFlag_IsWritable)
       {
          // All we need is one
-         delete [] array;
          return true;
       }
    }
 
-   delete [] array;
-   
    return false;
 }
 
@@ -1096,17 +1093,16 @@ bool AudioUnitEffect::SetHost(EffectHostInterface *host)
 
       // And get them
       UInt32 cnt = dataSize / sizeof(AudioUnitParameterID);
-      AudioUnitParameterID *array = new AudioUnitParameterID[cnt];
+      ArrayOf<AudioUnitParameterID> array {cnt};
    
       result = AudioUnitGetProperty(mUnit,
                                     kAudioUnitProperty_ParameterList,
                                     kAudioUnitScope_Global,
                                     0,
-                                    array,
+                                    array.get(),
                                     &dataSize);  
       if (result != noErr)
       {
-         delete [] array;
          return false;
       }
 
@@ -1119,12 +1115,9 @@ bool AudioUnitEffect::SetHost(EffectHostInterface *host)
                                               &event);
          if (result != noErr)
          {
-            delete [] array;
             return false;
          }
       }
-
-      delete [] array;
 
       event.mEventType = kAudioUnitEvent_PropertyChange;
       event.mArgument.mProperty.mAudioUnit = mUnit;
@@ -1246,11 +1239,11 @@ bool AudioUnitEffect::ProcessInitialize(sampleCount WXUNUSED(totalLen), ChannelN
 {
    OSStatus result;
 
-   mInputList = new AudioBufferList[mAudioIns];
-   mInputList->mNumberBuffers = mAudioIns;
+   mInputList.reinit( mAudioIns );
+   mInputList[0].mNumberBuffers = mAudioIns;
    
-   mOutputList = new AudioBufferList[mAudioOuts];
-   mOutputList->mNumberBuffers = mAudioOuts;
+   mOutputList.reinit( mAudioOuts );
+   mOutputList[0].mNumberBuffers = mAudioOuts;
 
    memset(&mTimeStamp, 0, sizeof(AudioTimeStamp));
    mTimeStamp.mSampleTime = 0; // This is a double-precision number that should
@@ -1273,7 +1266,7 @@ bool AudioUnitEffect::ProcessInitialize(sampleCount WXUNUSED(totalLen), ChannelN
                                  sizeof(AURenderCallbackStruct));
    if (result != noErr)
    {
-      printf("Setting input render callback failed.\n");
+      wxPrintf("Setting input render callback failed.\n");
       return false;
    }
 
@@ -1294,35 +1287,26 @@ bool AudioUnitEffect::ProcessFinalize()
 {
    mReady = false;
 
-   if (mOutputList)
-   {
-      delete [] mOutputList;
-      mOutputList = NULL;
-   }
-
-   if (mInputList)
-   {
-      delete [] mInputList;
-      mInputList = NULL;
-   }
+   mOutputList.reset();
+   mInputList.reset();
 
    return true;
 }
 
 size_t AudioUnitEffect::ProcessBlock(float **inBlock, float **outBlock, size_t blockLen)
 {
-   for (int i = 0; i < mAudioIns; i++)
+   for (size_t i = 0; i < mAudioIns; i++)
    {
-      mInputList->mBuffers[i].mNumberChannels = 1;
-      mInputList->mBuffers[i].mData = inBlock[i];
-      mInputList->mBuffers[i].mDataByteSize = sizeof(float) * blockLen;
+      mInputList[0].mBuffers[i].mNumberChannels = 1;
+      mInputList[0].mBuffers[i].mData = inBlock[i];
+      mInputList[0].mBuffers[i].mDataByteSize = sizeof(float) * blockLen;
    }
 
-   for (int i = 0; i < mAudioOuts; i++)
+   for (size_t i = 0; i < mAudioOuts; i++)
    {
-      mOutputList->mBuffers[i].mNumberChannels = 1;
-      mOutputList->mBuffers[i].mData = outBlock[i];
-      mOutputList->mBuffers[i].mDataByteSize = sizeof(float) * blockLen;
+      mOutputList[0].mBuffers[i].mNumberChannels = 1;
+      mOutputList[0].mBuffers[i].mData = outBlock[i];
+      mOutputList[0].mBuffers[i].mDataByteSize = sizeof(float) * blockLen;
    }
 
    AudioUnitRenderActionFlags flags = 0;
@@ -1333,10 +1317,10 @@ size_t AudioUnitEffect::ProcessBlock(float **inBlock, float **outBlock, size_t b
                             &mTimeStamp,
                             0,
                             blockLen,
-                            mOutputList);
+                            mOutputList.get());
    if (result != noErr)
    {
-      printf("Render failed: %d %4.4s\n", (int)result, (char *)&result);
+      wxPrintf("Render failed: %d %4.4s\n", (int)result, (char *)&result);
       return 0;
    }
 
@@ -1347,26 +1331,14 @@ size_t AudioUnitEffect::ProcessBlock(float **inBlock, float **outBlock, size_t b
 
 bool AudioUnitEffect::RealtimeInitialize()
 {
-   mMasterIn = new float *[mAudioIns];
-
-   for (int i = 0; i < mAudioIns; i++)
-   {
-      mMasterIn[i] = new float[mBlockSize];
-      memset(mMasterIn[i], 0, mBlockSize * sizeof(float));
-   }
-
-   mMasterOut = new float *[mAudioOuts];
-   for (int i = 0; i < mAudioOuts; i++)
-   {
-      mMasterOut[i] = new float[mBlockSize];
-   }
-
+   mMasterIn.reinit(mAudioIns, mBlockSize, true);
+   mMasterOut.reinit( mAudioOuts, mBlockSize );
    return ProcessInitialize(0);
 }
 
 bool AudioUnitEffect::RealtimeAddProcessor(unsigned numChannels, float sampleRate)
 {
-   auto slave = make_movable<AudioUnitEffect>(mPath, mName, mComponent, this);
+   auto slave = std::make_unique<AudioUnitEffect>(mPath, mName, mComponent, this);
    if (!slave->SetHost(NULL))
       return false;
 
@@ -1389,17 +1361,8 @@ bool AudioUnitEffect::RealtimeFinalize()
       mSlaves[i]->ProcessFinalize();
    mSlaves.clear();
 
-   for (int i = 0; i < mAudioIns; i++)
-   {
-      delete [] mMasterIn[i];
-   }
-   delete [] mMasterIn;
-
-   for (int i = 0; i < mAudioOuts; i++)
-   {
-      delete [] mMasterOut[i];
-   }
-   delete [] mMasterOut;
+   mMasterIn.reset();
+   mMasterOut.reset();
 
    return ProcessFinalize();
 }
@@ -1424,10 +1387,8 @@ bool AudioUnitEffect::RealtimeResume()
 
 bool AudioUnitEffect::RealtimeProcessStart()
 {
-   for (int i = 0; i < mAudioIns; i++)
-   {
-      memset(mMasterIn[i], 0, mBlockSize * sizeof(float));
-   }
+   for (size_t i = 0; i < mAudioIns; i++)
+      memset(mMasterIn[i].get(), 0, mBlockSize * sizeof(float));
 
    mNumSamples = 0;
 
@@ -1441,7 +1402,7 @@ size_t AudioUnitEffect::RealtimeProcess(int group,
 {
    wxASSERT(numSamples <= mBlockSize);
 
-   for (int c = 0; c < mAudioIns; c++)
+   for (size_t c = 0; c < mAudioIns; c++)
    {
       for (decltype(numSamples) s = 0; s < numSamples; s++)
       {
@@ -1455,7 +1416,10 @@ size_t AudioUnitEffect::RealtimeProcess(int group,
 
 bool AudioUnitEffect::RealtimeProcessEnd()
 {
-   ProcessBlock(mMasterIn, mMasterOut, mNumSamples);
+   ProcessBlock(
+      reinterpret_cast<float**>(mMasterIn.get()),
+      reinterpret_cast<float**>(mMasterOut.get()),
+      mNumSamples);
 
    return true;
 }
@@ -1464,9 +1428,13 @@ bool AudioUnitEffect::ShowInterface(wxWindow *parent, bool forceModal)
 {
    if (mDialog)
    {
-      mDialog->Close(true);
+      if( mDialog->Close(true) )
+         mDialog = nullptr;
       return false;
    }
+
+   // mDialog is null
+   auto cleanup = valueRestorer( mDialog );
 
    mDialog = mHost->CreateUI(parent, this);
    if (!mDialog)
@@ -1477,17 +1445,17 @@ bool AudioUnitEffect::ShowInterface(wxWindow *parent, bool forceModal)
    if ((SupportsRealtime() || GetType() == EffectTypeAnalyze) && !forceModal)
    {
       mDialog->Show();
+      cleanup.release();
 
       return false;
    }
 
    bool res = mDialog->ShowModal() != 0;
-   mDialog = NULL;
 
    return res;
 }
 
-bool AudioUnitEffect::GetAutomationParameters(EffectAutomationParameters & parms)
+bool AudioUnitEffect::GetAutomationParameters(CommandParameters & parms)
 {
    OSStatus result;
    UInt32 dataSize;
@@ -1505,17 +1473,16 @@ bool AudioUnitEffect::GetAutomationParameters(EffectAutomationParameters & parms
    }
 
    UInt32 cnt = dataSize / sizeof(AudioUnitParameterID);
-   AudioUnitParameterID *array = new AudioUnitParameterID[cnt];
+   ArrayOf<AudioUnitParameterID> array {cnt};
 
    result = AudioUnitGetProperty(mUnit,
                                  kAudioUnitProperty_ParameterList,
                                  kAudioUnitScope_Global,
                                  0,
-                                 array,
+                                 array.get(),
                                  &dataSize);  
    if (result != noErr)
    {
-      delete [] array;
       return false;
    }
 
@@ -1531,7 +1498,6 @@ bool AudioUnitEffect::GetAutomationParameters(EffectAutomationParameters & parms
                                     &dataSize);  
       if (result != noErr)
       {
-         delete [] array;
          return false;
       }
 
@@ -1541,7 +1507,7 @@ bool AudioUnitEffect::GetAutomationParameters(EffectAutomationParameters & parms
          name = wxCFStringRef::AsString(info.cfNameString);
       }
 
-      if (name.IsEmpty())
+      if (name.empty())
       {
          continue;
       }
@@ -1554,18 +1520,15 @@ bool AudioUnitEffect::GetAutomationParameters(EffectAutomationParameters & parms
                                      &value);
       if (result != noErr)
       {
-         delete [] array;
          return false;
       }
       parms.Write(name, value);
    }
 
-   delete [] array;
-
    return true;
 }
 
-bool AudioUnitEffect::SetAutomationParameters(EffectAutomationParameters & parms)
+bool AudioUnitEffect::SetAutomationParameters(CommandParameters & parms)
 {
    OSStatus result;
    UInt32 dataSize;
@@ -1583,17 +1546,16 @@ bool AudioUnitEffect::SetAutomationParameters(EffectAutomationParameters & parms
    }
 
    UInt32 cnt = dataSize / sizeof(AudioUnitParameterID);
-   AudioUnitParameterID *array = new AudioUnitParameterID[cnt];
+   ArrayOf<AudioUnitParameterID> array {cnt};
 
    result = AudioUnitGetProperty(mUnit,
                                  kAudioUnitProperty_ParameterList,
                                  kAudioUnitScope_Global,
                                  0,
-                                 array,
+                                 array.get(),
                                  &dataSize);  
    if (result != noErr)
    {
-      delete [] array;
       return false;
    }
 
@@ -1609,7 +1571,6 @@ bool AudioUnitEffect::SetAutomationParameters(EffectAutomationParameters & parms
                                     &dataSize);  
       if (result != noErr)
       {
-         delete [] array;
          return false;
       }
 
@@ -1619,7 +1580,7 @@ bool AudioUnitEffect::SetAutomationParameters(EffectAutomationParameters & parms
          name = wxCFStringRef::AsString(info.cfNameString);
       }
 
-      if (name.IsEmpty())
+      if (name.empty())
       {
          continue;
       }
@@ -1628,7 +1589,6 @@ bool AudioUnitEffect::SetAutomationParameters(EffectAutomationParameters & parms
       double d = 0.0;
       if (!parms.Read(name, &d))
       {
-         delete [] array;
          return false;
       }
 
@@ -1641,12 +1601,9 @@ bool AudioUnitEffect::SetAutomationParameters(EffectAutomationParameters & parms
                                      0);
       if (result != noErr)
       {
-         delete [] array;
          return false;
       }
    }
-
-   delete [] array;
 
    AudioUnitParameter aup;
    aup.mAudioUnit = mUnit;
@@ -1658,12 +1615,12 @@ bool AudioUnitEffect::SetAutomationParameters(EffectAutomationParameters & parms
    return true;
 }
 
-bool AudioUnitEffect::LoadUserPreset(const wxString & name)
+bool AudioUnitEffect::LoadUserPreset(const RegistryPath & name)
 {
    return LoadParameters(name);
 }
 
-bool AudioUnitEffect::SaveUserPreset(const wxString & name)
+bool AudioUnitEffect::SaveUserPreset(const RegistryPath & name)
 {
    return SaveParameters(name);
 }
@@ -1718,10 +1675,10 @@ bool AudioUnitEffect::LoadFactoryDefaults()
    return LoadParameters(mHost->GetFactoryDefaultsGroup());
 }
 
-wxArrayString AudioUnitEffect::GetFactoryPresets()
+RegistryPaths AudioUnitEffect::GetFactoryPresets()
 {
    OSStatus result;
-   wxArrayString presets;
+   RegistryPaths presets;
 
    // Retrieve the list of factory presets
    CFArrayRef array{};
@@ -1738,7 +1695,7 @@ wxArrayString AudioUnitEffect::GetFactoryPresets()
       for (CFIndex i = 0, cnt = CFArrayGetCount(array); i < cnt; i++)
       {
          AUPreset *preset = (AUPreset *) CFArrayGetValueAtIndex(array, i);
-         presets.Add(wxCFStringRef::AsString(preset->presetName));
+         presets.push_back(wxCFStringRef::AsString(preset->presetName));
       }
    }
                         
@@ -1781,7 +1738,7 @@ bool AudioUnitEffect::PopulateUI(wxWindow *parent)
    }
    else
    {
-      auto pControl = std::make_unique<AUControl>();
+      auto pControl = Destroy_ptr<AUControl>( safenew AUControl );
       if (!pControl)
       {
          return false;
@@ -1795,7 +1752,7 @@ bool AudioUnitEffect::PopulateUI(wxWindow *parent)
       {
          auto innerSizer = std::make_unique<wxBoxSizer>(wxVERTICAL);
 
-         innerSizer->Add(pControl.release(), 1, wxEXPAND);
+         innerSizer->Add((mpControl = pControl.release()), 1, wxEXPAND);
          container->SetSizer(innerSizer.release());
       }
 
@@ -1856,6 +1813,8 @@ bool AudioUnitEffect::CloseUI()
 #ifdef __WX_EVTLOOP_BUSY_WAITING__
    wxEventLoop::SetBusyWaiting(false);
 #endif
+   if (mpControl)
+      mpControl->Close(), mpControl = nullptr;
 #endif
 
    mParent->RemoveEventHandler(this);
@@ -1906,7 +1865,7 @@ void AudioUnitEffect::ShowOptions()
 // AudioUnitEffect Implementation
 // ============================================================================
 
-bool AudioUnitEffect::LoadParameters(const wxString & group)
+bool AudioUnitEffect::LoadParameters(const RegistryPath & group)
 {
    wxString parms;
    if (!mHost->GetPrivateConfig(group, wxT("Parameters"), parms, wxEmptyString))
@@ -1914,7 +1873,7 @@ bool AudioUnitEffect::LoadParameters(const wxString & group)
       return false;
    }
 
-   EffectAutomationParameters eap;
+   CommandParameters eap;
    if (!eap.SetParameters(parms))
    {
       return false;
@@ -1923,9 +1882,9 @@ bool AudioUnitEffect::LoadParameters(const wxString & group)
    return SetAutomationParameters(eap);
 }
 
-bool AudioUnitEffect::SaveParameters(const wxString & group)
+bool AudioUnitEffect::SaveParameters(const RegistryPath & group)
 {
-   EffectAutomationParameters eap;
+   CommandParameters eap;
    if (!GetAutomationParameters(eap))
    {
       return false;
@@ -1989,7 +1948,9 @@ bool AudioUnitEffect::SetRateAndChannels()
                                  sizeof(Float64));
    if (result != noErr)
    {
-      printf("%ls Didn't accept sample rate on global\n", GetName().wx_str());
+      wxPrintf("%ls Didn't accept sample rate on global\n",
+               // Exposing internal name only in debug printf
+               GetSymbol().Internal().wx_str());
       return false;
    }
 
@@ -2003,7 +1964,9 @@ bool AudioUnitEffect::SetRateAndChannels()
                                     sizeof(Float64));
       if (result != noErr)
       {
-         printf("%ls Didn't accept sample rate on input\n", GetName().wx_str());
+         wxPrintf("%ls Didn't accept sample rate on input\n",
+               // Exposing internal name only in debug printf
+               GetSymbol().Internal().wx_str());
          return false;
       }
 
@@ -2015,7 +1978,9 @@ bool AudioUnitEffect::SetRateAndChannels()
                                     sizeof(AudioStreamBasicDescription));
       if (result != noErr)
       {
-         printf("%ls didn't accept stream format on input\n", GetName().wx_str());
+         wxPrintf("%ls didn't accept stream format on input\n",
+               // Exposing internal name only in debug printf
+               GetSymbol().Internal().wx_str());
          return false;
       }
    }
@@ -2030,7 +1995,9 @@ bool AudioUnitEffect::SetRateAndChannels()
                                     sizeof(Float64));
       if (result != noErr)
       {
-         printf("%ls Didn't accept sample rate on output\n", GetName().wx_str());
+         wxPrintf("%ls Didn't accept sample rate on output\n",
+               // Exposing internal name only in debug printf
+               GetSymbol().Internal().wx_str());
          return false;
       }
    
@@ -2044,7 +2011,9 @@ bool AudioUnitEffect::SetRateAndChannels()
    
       if (result != noErr)
       {
-         printf("%ls didn't accept stream format on output\n", GetName().wx_str());
+         wxPrintf("%ls didn't accept stream format on output\n",
+               // Exposing internal name only in debug printf
+               GetSymbol().Internal().wx_str());
          return false;
       }
    }
@@ -2052,7 +2021,7 @@ bool AudioUnitEffect::SetRateAndChannels()
    result = AudioUnitInitialize(mUnit);
    if (result != noErr)
    {
-      printf("Couldn't initialize audio unit\n");
+      wxPrintf("Couldn't initialize audio unit\n");
       return false;
    }
 
@@ -2064,8 +2033,6 @@ bool AudioUnitEffect::SetRateAndChannels()
 bool AudioUnitEffect::CopyParameters(AudioUnit srcUnit, AudioUnit dstUnit)
 {
    OSStatus result;
-   int numParameters, i;
-   AudioUnitParameterID *parameters;
    Float32 parameterValue;
    UInt32 size;
 
@@ -2081,31 +2048,30 @@ bool AudioUnitEffect::CopyParameters(AudioUnit srcUnit, AudioUnit dstUnit)
                                    &size);
    if (result != 0)
    {
-      printf("Couldn't get number of parameters\n");
+      wxPrintf("Couldn't get number of parameters\n");
       return false;
    }
 
    // Now get the list of all parameter IDs
 
-   numParameters = size / sizeof(AudioUnitParameterID);
-   parameters = new AudioUnitParameterID[numParameters];
+   auto numParameters = size / sizeof(AudioUnitParameterID);
+   ArrayOf<AudioUnitParameterID> parameters{ numParameters };
    result = AudioUnitGetProperty(srcUnit,
                                    kAudioUnitProperty_ParameterList,
                                    kAudioUnitScope_Global,
                                    0,
-                                   parameters,
+                                   parameters.get(),
                                    &size);
    if (result != 0)
    {
-      printf("Couldn't get parameter list\n");
-      delete[] parameters;
+      wxPrintf("Couldn't get parameter list\n");
       return false;
    }
 
    // Copy the parameters from the main unit to the unit specific to
    // this track
 
-   for (i = 0; i < numParameters; i++)
+   for (unsigned i = 0; i < numParameters; i++)
    {
       result = AudioUnitGetParameter(srcUnit,
                                        parameters[i],
@@ -2114,7 +2080,7 @@ bool AudioUnitEffect::CopyParameters(AudioUnit srcUnit, AudioUnit dstUnit)
                                        &parameterValue);
       if (result != 0)
       {
-         printf("Couldn't get parameter %d: ID=%d\n", i, (int)parameters[i]);
+         wxPrintf("Couldn't get parameter %d: ID=%d\n", i, (int)parameters[i]);
          continue;
       }
 
@@ -2126,11 +2092,9 @@ bool AudioUnitEffect::CopyParameters(AudioUnit srcUnit, AudioUnit dstUnit)
                                        0);
       if (result != 0)
       {
-         printf("Couldn't set parameter %d: ID=%d\n", i, (int)parameters[i]);
+         wxPrintf("Couldn't set parameter %d: ID=%d\n", i, (int)parameters[i]);
       }
    }
-
-   delete[] parameters;
 
    return true;
 }
@@ -2152,9 +2116,7 @@ OSStatus AudioUnitEffect::Render(AudioUnitRenderActionFlags *inActionFlags,
                                  AudioBufferList *ioData)
 {
    for (int i = 0; i < ioData->mNumberBuffers; i++)
-   {
-      ioData->mBuffers[i].mData = mInputList->mBuffers[i].mData;
-   }
+      ioData->mBuffers[i].mData = mInputList[0].mBuffers[i].mData;
 
    return 0;
 }
@@ -2246,7 +2208,8 @@ void AudioUnitEffect::GetChannelCounts()
       return;
    }
 
-   AUChannelInfo *info = (AUChannelInfo *) malloc(dataSize);
+   ArrayOf<char> buffer{ dataSize };
+   auto info = (AUChannelInfo *) buffer.get();
 
    // Retrieve the channel info
    result = AudioUnitGetProperty(mUnit,
@@ -2261,7 +2224,6 @@ void AudioUnitEffect::GetChannelCounts()
       mAudioIns = 2;
       mAudioOuts = 2;
 
-      free(info);
       return;
    }
 

@@ -15,14 +15,14 @@
 #define __AUDACITY_METER_TOOLBAR__
 
 #include "ToolBar.h"
-#include "../Project.h"
 
 class wxDC;
 class wxGridBagSizer;
 class wxSizeEvent;
 class wxWindow;
 
-class Meter;
+class AudacityProject;
+class MeterPanel;
 
 
 // Constants used as bit pattern
@@ -36,7 +36,7 @@ class MeterToolBar final : public ToolBar {
    MeterToolBar(AudacityProject *project, int type);
    virtual ~MeterToolBar();
 
-   void Create(wxWindow *parent);
+   void Create(wxWindow *parent) override;
 
    void Populate() override;
    void ReCreateButtons() override;
@@ -47,10 +47,11 @@ class MeterToolBar final : public ToolBar {
    void OnSize(wxSizeEvent & event);
    bool Expose(bool show) override;
 
-   int GetInitialWidth() {return (mWhichMeters == 
+   int GetInitialWidth() override {return (mWhichMeters ==
       (kWithRecordMeter + kWithPlayMeter)) ? 338 : 460;} // Separate bars used to be smaller.
-   int GetMinToolbarWidth() { return 50; }
-   wxSize GetDockedSize();
+   int GetMinToolbarWidth()  override { return 150; }
+   wxSize GetDockedSize() override;
+   virtual void SetDocked(ToolDock *dock, bool pushed)override;
 
  private:
    void RegenerateTooltips() override;
@@ -58,8 +59,8 @@ class MeterToolBar final : public ToolBar {
    AudacityProject *mProject;
    int mWhichMeters;
    wxGridBagSizer *mSizer;
-   Meter *mPlayMeter;
-   Meter *mRecordMeter;
+   MeterPanel *mPlayMeter;
+   MeterPanel *mRecordMeter;
 
  public:
 

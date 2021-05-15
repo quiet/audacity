@@ -17,35 +17,33 @@
 
 #include <vector>
 #include <wx/defs.h>
-#include <wx/string.h>
 #include "widgets/NumericTextCtrl.h"
+#include "Internat.h"
 
 class AudacityProject;
 class Track;
-class TrackArray;
+using TrackArray = std::vector< Track* >;
 class TrackClipArray;
 class WaveClip;
 class WaveTrack;
 class TrackList;
 class ZoomInfo;
+class wxDC;
 
 class TrackClip
 {
 public:
    TrackClip(Track *t, WaveClip *c);
 
-#ifndef __AUDACITY_OLD_STD__
-   // TrackClip(TrackClip&&) = default; is not supported by vs2013/5 so explicit version needed
-   TrackClip(TrackClip&&);
-#endif
-
    ~TrackClip();
 
    Track *track;
    Track *origTrack;
-   WaveTrack *dstTrack;
    WaveClip *clip;
-   movable_ptr<WaveClip> holder;
+
+   // These fields are used only during time-shift dragging
+   WaveTrack *dstTrack;
+   std::shared_ptr<WaveClip> holder;
 };
 
 class TrackClipArray : public std::vector < TrackClip > {};
@@ -74,10 +72,20 @@ public:
 
 using SnapPointArray = std::vector < SnapPoint > ;
 
+struct SnapResults {
+   double timeSnappedTime{ 0.0 };
+   double outTime{ 0.0 };
+   wxInt64 outCoord{ -1 };
+   bool snappedPoint{ false };
+   bool snappedTime{ false };
+
+   bool Snapped() const { return snappedPoint || snappedTime; }
+};
+
 class SnapManager
 {
 public:
-   SnapManager(TrackList *tracks,
+   SnapManager(const TrackList *tracks,
                const ZoomInfo *zoomInfo,
                const TrackClipArray *clipExclusions = NULL,
                const TrackArray *trackExclusions = NULL,
@@ -89,17 +97,14 @@ public:
    // Returns true if the output time is not the same as the input.
    // Pass rightEdge=true if this is the right edge of a selection,
    // and false if it's the left edge.
-   bool Snap(Track *currentTrack,
+   SnapResults Snap(Track *currentTrack,
              double t,
-             bool rightEdge,
-             double *outT,
-             bool *snappedPoint,
-             bool *snappedTime);
+             bool rightEdge);
 
-   static wxArrayString GetSnapLabels();
-   static wxArrayString GetSnapValues();
-   static const wxString & GetSnapValue(int index);
-   static int GetSnapIndex(const wxString & value);
+   static wxArrayStringEx GetSnapLabels();
+
+   // The two coordinates need not be ordered:
+   static void Draw( wxDC *dc, wxInt64 snap0, wxInt64 snap1 );
 
 private:
 
@@ -114,7 +119,7 @@ private:
 private:
 
    const AudacityProject *mProject;
-   TrackList *mTracks;
+   const TrackList *mTracks;
    const TrackClipArray *mClipExclusions;
    const TrackArray *mTrackExclusions;
    const ZoomInfo *mZoomInfo;
@@ -130,7 +135,7 @@ private:
 
    int mSnapTo;
    double mRate;
-   wxString mFormat;
+   NumericFormatSymbol mFormat;
 };
 
 #endif

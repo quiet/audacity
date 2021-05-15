@@ -15,11 +15,10 @@
 
 #include <wx/defs.h>
 
-#include <wx/window.h>
-
 #include "PrefsPanel.h"
 
 
+class wxArrayString;
 class ShuttleGui;
 
 enum {
@@ -31,28 +30,35 @@ enum {
 };
 
 
+#define MODULE_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Module") }
+
 class ModulePrefs final : public PrefsPanel
 {
  public:
-   ModulePrefs(wxWindow * parent);
+   ModulePrefs(wxWindow * parent, wxWindowID winid);
    ~ModulePrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
 
-   static int GetModuleStatus( const wxString &fname );
-   static void SetModuleStatus( const wxString &fname, int iStatus );
+   bool Commit() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
+
+   static int GetModuleStatus( const FilePath &fname );
+   static void SetModuleStatus( const FilePath &fname, int iStatus );
 
  private:
    void GetAllModuleStatuses();
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
    wxArrayString mModules;
-   wxArrayInt    mStatuses;
-   wxArrayString mPaths;
+   std::vector<int> mStatuses;
+   FilePaths mPaths;
 };
 
+/// A PrefsPanelFactory that creates one ModulePrefs panel.
 class ModulePrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif

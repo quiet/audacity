@@ -23,12 +23,14 @@ other settings.
 *//********************************************************************/
 
 #include "../Audacity.h"
+#include "DevicePrefs.h"
 
 #include <wx/defs.h>
 
 #include <wx/choice.h>
 #include <wx/intl.h>
 #include <wx/log.h>
+#include <wx/textctrl.h>
 
 #include "portaudio.h"
 
@@ -37,8 +39,6 @@ other settings.
 #include "../Prefs.h"
 #include "../ShuttleGui.h"
 #include "../DeviceManager.h"
-
-#include "DevicePrefs.h"
 
 enum {
    HostID = 10000,
@@ -52,14 +52,32 @@ BEGIN_EVENT_TABLE(DevicePrefs, PrefsPanel)
    EVT_CHOICE(RecordID, DevicePrefs::OnDevice)
 END_EVENT_TABLE()
 
-DevicePrefs::DevicePrefs(wxWindow * parent)
-:  PrefsPanel(parent, _("Devices"))
+DevicePrefs::DevicePrefs(wxWindow * parent, wxWindowID winid, int Options)
+:  PrefsPanel(parent, winid, _("Devices")), mOptions( Options )
 {
+   mRecord = nullptr;
+   mPlay = nullptr;
    Populate();
 }
 
 DevicePrefs::~DevicePrefs()
 {
+}
+
+
+ComponentInterfaceSymbol DevicePrefs::GetSymbol()
+{
+   return DEVICE_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString DevicePrefs::GetDescription()
+{
+   return _("Preferences for Device");
+}
+
+wxString DevicePrefs::HelpPageName()
+{
+   return "Devices_Preferences";
 }
 
 void DevicePrefs::Populate()
@@ -85,6 +103,7 @@ void DevicePrefs::Populate()
    OnHost(e);
 }
 
+
 /*
  * Get names of device hosts.
  */
@@ -98,9 +117,9 @@ void DevicePrefs::GetNamesAndLabels()
       const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
       if ((info!=NULL)&&(info->maxOutputChannels > 0 || info->maxInputChannels > 0)) {
          wxString name = wxSafeConvertMB2WX(Pa_GetHostApiInfo(info->hostApi)->name);
-         if (mHostNames.Index(name) == wxNOT_FOUND) {
-            mHostNames.Add(name);
-            mHostLabels.Add(name);
+         if ( ! make_iterator_range( mHostNames ).contains( name ) ) {
+            mHostNames.push_back(name);
+            mHostLabels.push_back(name);
          }
       }
    }
@@ -108,9 +127,13 @@ void DevicePrefs::GetNamesAndLabels()
 
 void DevicePrefs::PopulateOrExchange(ShuttleGui & S)
 {
-   wxArrayString empty;
+
+   bool bHasPlay = (mOptions==0) || (mOptions==1);
+   bool bHasRecord = (mOptions==0) || (mOptions==2);
+   bool bHasLatency = (mOptions==0);
 
    S.SetBorder(2);
+   if( bHasLatency ) S.StartScroller();
 
    S.StartStatic(_("Interface"));
    {
@@ -122,7 +145,6 @@ void DevicePrefs::PopulateOrExchange(ShuttleGui & S)
                              wxT(""),
                              mHostNames,
                              mHostLabels);
-         S.SetSizeHints(mHostNames);
 
          S.AddPrompt(_("Using:"));
          S.AddFixedText(wxString(wxSafeConvertMB2WX(Pa_GetVersionText())));
@@ -131,36 +153,71 @@ void DevicePrefs::PopulateOrExchange(ShuttleGui & S)
    }
    S.EndStatic();
 
-   S.StartStatic(_("Playback"));
+   if( bHasPlay )
    {
-      S.StartMultiColumn(2);
+      S.StartStatic(_("Playback"));
       {
-         S.Id(PlayID);
-         mPlay = S.AddChoice(_("&Device:"),
-                             wxEmptyString,
-                             &empty);
+         S.StartMultiColumn(2);
+         {
+            S.Id(PlayID);
+            mPlay = S.AddChoice(_("&Device:"),
+                             {} );
+         }
+         S.EndMultiColumn();
       }
-      S.EndMultiColumn();
+      S.EndStatic();
    }
-   S.EndStatic();
 
-   S.StartStatic(_("Recording"));
+   if( bHasRecord )
    {
-      S.StartMultiColumn(2);
+      S.StartStatic(_("Recording"));
       {
-         S.Id(RecordID);
-         mRecord = S.AddChoice(_("De&vice:"),
-                               wxEmptyString,
-                               &empty);
+         S.StartMultiColumn(2);
+         {
+            S.Id(RecordID);
+            mRecord = S.AddChoice(_("De&vice:"),
+                               {} );
 
-         S.Id(ChannelsID);
-         mChannels = S.AddChoice(_("Cha&nnels:"),
-                                 wxEmptyString,
-                                 &empty);
+            S.Id(ChannelsID);
+            mChannels = S.AddChoice(_("Cha&nnels:"),
+                                 {} );
+         }
+         S.EndMultiColumn();
       }
-      S.EndMultiColumn();
+      S.EndStatic();
    }
-   S.EndStatic();
+
+   if( bHasLatency ) {
+      // These previously lived in recording preferences.
+      // However they are liable to become device specific.
+      // Buffering also affects playback, not just recording, so is a device characteristic.
+      S.StartStatic( _("Latency"));
+      {
+         S.StartThreeColumn();
+         {
+            wxTextCtrl *w;
+            // only show the following controls if we use Portaudio v19, because
+            // for Portaudio v18 we always use default buffer sizes
+            w = S.TieNumericTextBox(_("&Buffer length:"),
+                                    wxT("/AudioIO/LatencyDuration"),
+                                    DEFAULT_LATENCY_DURATION,
+                                    9);
+            S.AddUnits(_("milliseconds"));
+            if( w ) w->SetName(w->GetName() + wxT(" ") + _("milliseconds"));
+
+         w = S.TieNumericTextBox(_("&Latency compensation:"),
+                                    wxT("/AudioIO/LatencyCorrection"),
+                                    DEFAULT_LATENCY_CORRECTION,
+                                    9);
+            S.AddUnits(_("milliseconds"));
+            if( w ) w->SetName(w->GetName() + wxT(" ") + _("milliseconds"));
+         }
+         S.EndThreeColumn();
+      }
+      S.EndStatic();
+   }
+   if( bHasLatency ) S.EndScroller();
+
 }
 
 void DevicePrefs::OnHost(wxCommandEvent & e)
@@ -206,78 +263,91 @@ void DevicePrefs::OnHost(wxCommandEvent & e)
    wxString recDevice;
 
    recDevice = mRecordDevice;
-   if (this->mRecordSource != wxT(""))
+   if (!this->mRecordSource.empty())
       recDevice += wxT(": ") + mRecordSource;
 
-   mRecord->Clear();
-   for (i = 0; i < inMaps.size(); i++) {
-      if (index == inMaps[i].hostIndex) {
-         device   = MakeDeviceSourceString(&inMaps[i]);
-         devindex = mRecord->Append(device);
-         // We need to const cast here because SetClientData is a wx function
-         // It is okay beause the original variable is non-const.
-         mRecord->SetClientData(devindex, const_cast<DeviceSourceMap *>(&inMaps[i]));
-         if (device == recDevice) {  /* if this is the default device, select it */
-            mRecord->SetSelection(devindex);
+   if( mRecord )
+   {
+      mRecord->Clear();
+      for (i = 0; i < inMaps.size(); i++) {
+         if (index == inMaps[i].hostIndex) {
+            device   = MakeDeviceSourceString(&inMaps[i]);
+            devindex = mRecord->Append(device);
+            // We need to const cast here because SetClientData is a wx function
+            // It is okay beause the original variable is non-const.
+            mRecord->SetClientData(devindex, const_cast<DeviceSourceMap *>(&inMaps[i]));
+            if (device == recDevice) {  /* if this is the default device, select it */
+               mRecord->SetSelection(devindex);
+            }
          }
+      }
+      if (mRecord->GetCount() == 0) {
+         recordnames.push_back(_("No devices found"));
+         mRecord->Append(recordnames[0], (void *) NULL);
+         mRecord->SetSelection(0);
       }
    }
 
-   mPlay->Clear();
-   for (i = 0; i < outMaps.size(); i++) {
-      if (index == outMaps[i].hostIndex) {
-         device   = MakeDeviceSourceString(&outMaps[i]);
-         devindex = mPlay->Append(device);
-         mPlay->SetClientData(devindex, const_cast<DeviceSourceMap *>(&outMaps[i]));
-         if (device == mPlayDevice) {  /* if this is the default device, select it */
-            mPlay->SetSelection(devindex);
+   if( mPlay )
+   {
+      mPlay->Clear();
+      for (i = 0; i < outMaps.size(); i++) {
+         if (index == outMaps[i].hostIndex) {
+            device   = MakeDeviceSourceString(&outMaps[i]);
+            devindex = mPlay->Append(device);
+            mPlay->SetClientData(devindex, const_cast<DeviceSourceMap *>(&outMaps[i]));
+            if (device == mPlayDevice) {  /* if this is the default device, select it */
+               mPlay->SetSelection(devindex);
+            }
          }
       }
-   }
 
-   /* deal with not having any devices at all */
-   if (mPlay->GetCount() == 0) {
-      playnames.Add(_("No devices found"));
-      mPlay->Append(playnames[0], (void *) NULL);
-      mPlay->SetSelection(0);
-   }
-   if (mRecord->GetCount() == 0) {
-      recordnames.Add(_("No devices found"));
-      mRecord->Append(recordnames[0], (void *) NULL);
-      mRecord->SetSelection(0);
-   }
-
-   /* what if we have no device selected? we should choose the default on
-    * this API, as defined by PortAudio. We then fall back to using 0 only if
-    * that fails */
-   if (mPlay->GetCount() && mPlay->GetSelection() == wxNOT_FOUND) {
-      DeviceSourceMap *defaultMap = DeviceManager::Instance()->GetDefaultOutputDevice(index);
-      if (defaultMap)
-         mPlay->SetStringSelection(MakeDeviceSourceString(defaultMap));
-
-      if (mPlay->GetSelection() == wxNOT_FOUND) {
+      /* deal with not having any devices at all */
+      if (mPlay->GetCount() == 0) {
+      playnames.push_back(_("No devices found"));
+         mPlay->Append(playnames[0], (void *) NULL);
          mPlay->SetSelection(0);
       }
+      recordnames.push_back(_("No devices found"));
+
+      /* what if we have no device selected? we should choose the default on
+       * this API, as defined by PortAudio. We then fall back to using 0 only if
+       * that fails */
+      if (mPlay->GetCount() && mPlay->GetSelection() == wxNOT_FOUND) {
+         DeviceSourceMap *defaultMap = DeviceManager::Instance()->GetDefaultOutputDevice(index);
+         if (defaultMap)
+            mPlay->SetStringSelection(MakeDeviceSourceString(defaultMap));
+
+         if (mPlay->GetSelection() == wxNOT_FOUND) {
+            mPlay->SetSelection(0);
+         }
+      }
    }
 
-   if (mRecord->GetCount() && mRecord->GetSelection() == wxNOT_FOUND) {
+
+   if (mRecord && mRecord->GetCount() && mRecord->GetSelection() == wxNOT_FOUND) {
       DeviceSourceMap *defaultMap = DeviceManager::Instance()->GetDefaultInputDevice(index);
       if (defaultMap)
          mRecord->SetStringSelection(MakeDeviceSourceString(defaultMap));
 
-      if (mPlay->GetSelection() == wxNOT_FOUND) {
+      if (mPlay && mPlay->GetSelection() == wxNOT_FOUND) {
          mPlay->SetSelection(0);
       }
    }
 
    ShuttleGui S(this, eIsCreating);
-   S.SetSizeHints(mPlay, mPlay->GetStrings());
-   S.SetSizeHints(mRecord, mRecord->GetStrings());
+   if( mPlay )
+      S.SetSizeHints(mPlay, mPlay->GetStrings());
+   if( mRecord )
+      S.SetSizeHints(mRecord, mRecord->GetStrings());
    OnDevice(e);
 }
 
 void DevicePrefs::OnDevice(wxCommandEvent & WXUNUSED(event))
 {
+   if( !mRecord )
+      return;
+
    int ndx = mRecord->GetCurrentSelection();
    if (ndx == wxNOT_FOUND) {
       ndx = 0;
@@ -309,7 +379,7 @@ void DevicePrefs::OnDevice(wxCommandEvent & WXUNUSED(event))
       cnt = 256;
    }
 
-   wxArrayString channelnames;
+   wxArrayStringEx channelnames;
 
    // Channel counts, mono, stereo etc...
    for (int i = 0; i < cnt; i++) {
@@ -325,7 +395,7 @@ void DevicePrefs::OnDevice(wxCommandEvent & WXUNUSED(event))
          name = wxString::Format(wxT("%d"), i + 1);
       }
 
-      channelnames.Add(name);
+      channelnames.push_back(name);
       int index = mChannels->Append(name);
       if (i == mRecordChannels - 1) {
          mChannels->SetSelection(index);
@@ -341,13 +411,13 @@ void DevicePrefs::OnDevice(wxCommandEvent & WXUNUSED(event))
    Layout();
 }
 
-bool DevicePrefs::Apply()
+bool DevicePrefs::Commit()
 {
    ShuttleGui S(this, eIsSavingToPrefs);
    PopulateOrExchange(S);
    DeviceSourceMap *map = NULL;
 
-   if (mPlay->GetCount() > 0) {
+   if (mPlay && mPlay->GetCount() > 0) {
       map = (DeviceSourceMap *) mPlay->GetClientData(
             mPlay->GetSelection());
    }
@@ -356,7 +426,7 @@ bool DevicePrefs::Apply()
    }
 
    map = NULL;
-   if (mRecord->GetCount() > 0) {
+   if (mRecord && mRecord->GetCount() > 0) {
       map = (DeviceSourceMap *) mRecord->GetClientData(mRecord->GetSelection());
    }
    if (map) {
@@ -378,8 +448,8 @@ bool DevicePrefs::Apply()
    return true;
 }
 
-PrefsPanel *DevicePrefsFactory::Create(wxWindow *parent)
+PrefsPanel *DevicePrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew DevicePrefs(parent);
+   return safenew DevicePrefs(parent, winid);
 }

@@ -12,6 +12,7 @@
 #include "LyricsWindow.h"
 #include "Lyrics.h"
 #include "AudioIO.h"
+#include "Prefs.h" // for RTL_WORKAROUND
 #include "Project.h"
 #include "TrackPanel.h" // for EVT_TRACK_PANEL_TIMER
 
@@ -45,11 +46,11 @@ const wxSize gSize = wxSize(LYRICS_DEFAULT_WIDTH, LYRICS_DEFAULT_HEIGHT);
 LyricsWindow::LyricsWindow(AudacityProject *parent):
    wxFrame(parent, -1,
             wxString::Format(_("Audacity Karaoke%s"),
-                              ((parent->GetName() == wxEmptyString) ?
+                              ((parent->GetProjectName().empty()) ?
                                  wxT("") :
                                  wxString::Format(
                                    wxT(" - %s"),
-                                   parent->GetName()))),
+                                   parent->GetProjectName()))),
             wxPoint(100, 300), gSize,
             //v Bug in wxFRAME_FLOAT_ON_PARENT:
             // If both the project frame and LyricsWindow are minimized and you restore LyricsWindow,
@@ -113,31 +114,24 @@ LyricsWindow::LyricsWindow(AudacityProject *parent):
    //
    //pToolBar->Realize();
 
-   mLyricsPanel = safenew Lyrics(this, -1, panelPos, panelSize);
+   mLyricsPanel = safenew LyricsPanel(this, -1, parent, panelPos, panelSize);
+   RTL_WORKAROUND(mLyricsPanel);
 
    //vvv Highlight style is broken in ported version.
    //switch (mLyricsPanel->GetLyricsStyle())
    //{
-   //   case Lyrics::kBouncingBallLyrics:
+   //   case LyricsPanel::kBouncingBallLyrics:
    //      pRadioButton_BouncingBall->SetValue(true); break;
-   //   case Lyrics::kHighlightLyrics:
+   //   case LyricsPanel::kHighlightLyrics:
    //   default:
    //      pRadioButton_Highlight->SetValue(true); break;
    //}
 
    // Events from the project don't propagate directly to this other frame, so...
-   mProject->Connect(EVT_TRACK_PANEL_TIMER,
-      wxCommandEventHandler(LyricsWindow::OnTimer),
-      NULL,
+   mProject->Bind(EVT_TRACK_PANEL_TIMER,
+      &LyricsWindow::OnTimer,
       this);
-}
-
-LyricsWindow::~LyricsWindow()
-{
-   mProject->Disconnect(EVT_TRACK_PANEL_TIMER,
-      wxCommandEventHandler(LyricsWindow::OnTimer),
-      NULL,
-      this);
+   Center();
 }
 
 void LyricsWindow::OnCloseWindow(wxCloseEvent & WXUNUSED(event))
@@ -147,12 +141,12 @@ void LyricsWindow::OnCloseWindow(wxCloseEvent & WXUNUSED(event))
 
 void LyricsWindow::OnStyle_BouncingBall(wxCommandEvent & WXUNUSED(event))
 {
-   mLyricsPanel->SetLyricsStyle(Lyrics::kBouncingBallLyrics);
+   mLyricsPanel->SetLyricsStyle(LyricsPanel::kBouncingBallLyrics);
 }
 
 void LyricsWindow::OnStyle_Highlight(wxCommandEvent & WXUNUSED(event))
 {
-   mLyricsPanel->SetLyricsStyle(Lyrics::kHighlightLyrics);
+   mLyricsPanel->SetLyricsStyle(LyricsPanel::kHighlightLyrics);
 }
 
 void LyricsWindow::OnTimer(wxCommandEvent &event)
@@ -164,7 +158,8 @@ void LyricsWindow::OnTimer(wxCommandEvent &event)
    else
    {
       // Reset lyrics display.
-      GetLyricsPanel()->Update(mProject->GetSel0());
+      const auto &selectedRegion = mProject->GetViewInfo().selectedRegion;
+      GetLyricsPanel()->Update(selectedRegion.t0());
    }
 
    // Let other listeners get the notification

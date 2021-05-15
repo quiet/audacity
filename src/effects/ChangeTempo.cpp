@@ -18,21 +18,37 @@
 #include "../Audacity.h" // for USE_SOUNDTOUCH
 
 #if USE_SOUNDTOUCH
+#include "ChangeTempo.h"
 
 #if USE_SBSMS
-#include "sbsms.h"
+#include "../../../lib-src/header-substitutes/sbsms.h"
 #include <wx/valgen.h>
 #endif
 
 #include <math.h>
 
 #include <wx/intl.h>
+#include <wx/checkbox.h>
+#include <wx/slider.h>
 
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../widgets/valnum.h"
 #include "TimeWarper.h"
 
-#include "ChangeTempo.h"
+// Soundtouch defines these as well, which are also in generated configmac.h
+// and configunix.h, so get rid of them before including,
+// to avoid compiler warnings, and be sure to do this
+// after all other #includes, to avoid any mischief that might result
+// from doing the un-definitions before seeing any wx headers.
+#undef PACKAGE_NAME
+#undef PACKAGE_STRING
+#undef PACKAGE_TARNAME
+#undef PACKAGE_VERSION
+#undef PACKAGE_BUGREPORT
+#undef PACKAGE
+#undef VERSION
+#include "SoundTouch.h"
 
 enum
 {
@@ -48,8 +64,8 @@ enum
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name          Type     Key               Def   Min      Max      Scale
-Param( Percentage,   double,  XO("Percentage"), 0.0,  -99.0,   3000.0,  1  );
-Param( UseSBSMS,     bool,    XO("SBSMS"),     false, false,   true,    1  );
+Param( Percentage,   double,  wxT("Percentage"), 0.0,  -95.0,   3000.0,  1  );
+Param( UseSBSMS,     bool,    wxT("SBSMS"),     false, false,   true,    1  );
 
 // We warp the slider to go up to 400%, but user can enter higher values.
 static const double kSliderMax = 100.0;         // warped above zero to actually go up to 400%
@@ -90,19 +106,24 @@ EffectChangeTempo::~EffectChangeTempo()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectChangeTempo::GetSymbol()
+ComponentInterfaceSymbol EffectChangeTempo::GetSymbol()
 {
    return CHANGETEMPO_PLUGIN_SYMBOL;
 }
 
 wxString EffectChangeTempo::GetDescription()
 {
-   return XO("Change the tempo of a selection without changing its pitch");
+   return _("Changes the tempo of a selection without changing its pitch");
 }
 
-// EffectIdentInterface implementation
+wxString EffectChangeTempo::ManualPage()
+{
+   return wxT("Change_Tempo");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectChangeTempo::GetType()
 {
@@ -115,8 +136,13 @@ bool EffectChangeTempo::SupportsAutomation()
 }
 
 // EffectClientInterface implementation
+bool EffectChangeTempo::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( m_PercentChange, Percentage );
+   S.SHUTTLE_PARAM( mUseSBSMS, UseSBSMS );
+   return true;
+}
 
-bool EffectChangeTempo::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectChangeTempo::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_Percentage, m_PercentChange);
    parms.Write(KEY_UseSBSMS, mUseSBSMS);
@@ -124,7 +150,7 @@ bool EffectChangeTempo::GetAutomationParameters(EffectAutomationParameters & par
    return true;
 }
 
-bool EffectChangeTempo::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectChangeTempo::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyDouble(Percentage);
    m_PercentChange = Percentage;
@@ -171,21 +197,20 @@ bool EffectChangeTempo::Process()
    if (mUseSBSMS)
    {
       double tempoRatio = 1.0 + m_PercentChange / 100.0;
-      SelectedRegion region(mT0, mT1);
       EffectSBSMS proxy;
       proxy.mProxyEffectName = XO("High Quality Tempo Change");
       proxy.setParameters(tempoRatio, 1.0);
-      success = proxy.DoEffect(mUIParent, mProjectRate, mTracks, mFactory, &region, false);
+      success = Delegate(proxy, mUIParent, false);
    }
    else
 #endif
    {
-      mSoundTouch = std::make_unique<SoundTouch>();
+      mSoundTouch = std::make_unique<soundtouch::SoundTouch>();
       mSoundTouch->setTempoChange(m_PercentChange);
       double mT1Dashed = mT0 + (mT1 - mT0)/(m_PercentChange/100.0 + 1.0);
-      SetTimeWarper(std::make_unique<RegionTimeWarper>(mT0, mT1,
-               std::make_unique<LinearTimeWarper>(mT0, mT0, mT1, mT1Dashed )));
-      success = EffectSoundTouch::Process();
+      RegionTimeWarper warper{ mT0, mT1,
+         std::make_unique<LinearTimeWarper>(mT0, mT0, mT1, mT1Dashed )  };
+      success = EffectSoundTouch::ProcessWithTimeWarper(warper);
    }
 
    if(success)
@@ -205,7 +230,7 @@ void EffectChangeTempo::PopulateOrExchange(ShuttleGui & S)
       //
       S.StartMultiColumn(2, wxCENTER);
       {
-         FloatingPointValidator<double> vldPercentage(3, &m_PercentChange, NUM_VAL_THREE_TRAILING_ZEROES);
+         FloatingPointValidator<double> vldPercentage(3, &m_PercentChange, NumValidatorStyle::THREE_TRAILING_ZEROES);
          vldPercentage.SetRange(MIN_Percentage, MAX_Percentage);
          m_pTextCtrl_PercentChange = S.Id(ID_PercentChange)
             .AddTextBox(_("Percent Change:"), wxT(""), 12);
@@ -218,7 +243,7 @@ void EffectChangeTempo::PopulateOrExchange(ShuttleGui & S)
       {
          S.SetStyle(wxSL_HORIZONTAL);
          m_pSlider_PercentChange = S.Id(ID_PercentChange)
-            .AddSlider(wxT(""), 0, (int)kSliderMax, (int)MIN_Percentage);
+            .AddSlider( {}, 0, (int)kSliderMax, (int)MIN_Percentage);
          m_pSlider_PercentChange->SetName(_("Percent Change"));
       }
       S.EndHorizontalLay();
@@ -227,13 +252,13 @@ void EffectChangeTempo::PopulateOrExchange(ShuttleGui & S)
       {
          S.StartHorizontalLay(wxALIGN_CENTER);
          {
-            FloatingPointValidator<double> vldFromBPM(3, &m_FromBPM, NUM_VAL_THREE_TRAILING_ZEROES | NUM_VAL_ZERO_AS_BLANK);
+            FloatingPointValidator<double> vldFromBPM(3, &m_FromBPM, NumValidatorStyle::THREE_TRAILING_ZEROES | NumValidatorStyle::ZERO_AS_BLANK);
             m_pTextCtrl_FromBPM = S.Id(ID_FromBPM)
                .AddTextBox(_("from"), wxT(""), 12);
             m_pTextCtrl_FromBPM->SetName(_("Beats per minute, from"));
             m_pTextCtrl_FromBPM->SetValidator(vldFromBPM);
 
-            FloatingPointValidator<double> vldToBPM(3, &m_ToBPM, NUM_VAL_THREE_TRAILING_ZEROES | NUM_VAL_ZERO_AS_BLANK);
+            FloatingPointValidator<double> vldToBPM(3, &m_ToBPM, NumValidatorStyle::THREE_TRAILING_ZEROES | NumValidatorStyle::ZERO_AS_BLANK);
             m_pTextCtrl_ToBPM = S.Id(ID_ToBPM)
                .AddTextBox(_("to"), wxT(""), 12);
             m_pTextCtrl_ToBPM->SetName(_("Beats per minute, to"));
@@ -249,13 +274,13 @@ void EffectChangeTempo::PopulateOrExchange(ShuttleGui & S)
          S.StartHorizontalLay(wxALIGN_CENTER);
          {
             int precission = 2;
-            FloatingPointValidator<double> vldFromLength(precission, &m_FromLength, NUM_VAL_TWO_TRAILING_ZEROES);
+            FloatingPointValidator<double> vldFromLength(precission, &m_FromLength, NumValidatorStyle::TWO_TRAILING_ZEROES);
             m_pTextCtrl_FromLength = S.Id(ID_FromLength)
                .AddTextBox(_("from"), wxT(""), 12);
             m_pTextCtrl_FromLength->SetValidator(vldFromLength);
             m_pTextCtrl_FromLength->Enable(false); // Disable because the value comes from the user selection.
 
-            FloatingPointValidator<double> vldToLength(2, &m_ToLength, NUM_VAL_TWO_TRAILING_ZEROES);
+            FloatingPointValidator<double> vldToLength(2, &m_ToLength, NumValidatorStyle::TWO_TRAILING_ZEROES);
 
             // min and max need same precision as what we're validating (bug 963)
             double minLength = (m_FromLength * 100.0) / (100.0 + MAX_Percentage);
@@ -276,7 +301,7 @@ void EffectChangeTempo::PopulateOrExchange(ShuttleGui & S)
       S.StartMultiColumn(2);
       {
          mUseSBSMSCheckBox = S.AddCheckBox(_("Use high quality stretching (slow)"),
-                                             mUseSBSMS? wxT("true") : wxT("false"));
+                                             mUseSBSMS);
          mUseSBSMSCheckBox->SetValidator(wxGenericValidator(&mUseSBSMS));
       }
       S.EndMultiColumn();
@@ -308,8 +333,9 @@ bool EffectChangeTempo::TransferDataToWindow()
    m_bLoopDetect = false;
 
    // Set the accessibility name here because we need m_pTextCtrl_FromLength to have had its value set
-   m_pTextCtrl_ToLength->SetName(_("Length in seconds from") + wxT(" ") +  m_pTextCtrl_FromLength->GetValue()
-               +wxT(", ") + _("to"));
+   m_pTextCtrl_ToLength->SetName(
+      wxString::Format( _("Length in seconds from %s, to"),
+         m_pTextCtrl_FromLength->GetValue() ) );
 
    return true;
 }

@@ -21,6 +21,7 @@ around to NEW positions.
 *//**********************************************************************/
 
 #include "../Audacity.h"
+#include "Grabber.h"
 
 #include <wx/defs.h>
 #include <wx/dcclient.h>
@@ -28,10 +29,9 @@ around to NEW positions.
 #include <wx/intl.h>
 #include <wx/window.h>
 
-#include "Grabber.h"
-#include "../Experimental.h"
-
 #include "../AColor.h"
+#include "../AllThemeResources.h"
+#include "../Internat.h"
 
 ////////////////////////////////////////////////////////////
 /// Methods for Grabber
@@ -43,6 +43,7 @@ BEGIN_EVENT_TABLE(Grabber, wxWindow)
    EVT_ENTER_WINDOW(Grabber::OnEnter)
    EVT_LEAVE_WINDOW(Grabber::OnLeave)
    EVT_LEFT_DOWN(Grabber::OnLeftDown)
+   EVT_ERASE_BACKGROUND( Grabber::OnErase )
    EVT_PAINT(Grabber::OnPaint)
    EVT_KEY_DOWN(Grabber::OnKeyDown)
 END_EVENT_TABLE()
@@ -60,6 +61,7 @@ Grabber::Grabber(wxWindow * parent, wxWindowID id)
    mOver = false;
    mPressed = false;
    mAsSpacer = false;
+   SetBackgroundColour( theTheme.Colour( clrMedium ) );
 
    /* i18n-hint: A 'Grabber' is a region you can click and drag on
    It's used to drag a track around (when in multi-tool mode) rather
@@ -117,32 +119,12 @@ void Grabber::DrawGrabber( wxDC & dc )
    r.SetPosition( wxPoint(0,0) );
    int y, left, right, top, bottom;
 
-#ifndef EXPERIMENTAL_THEMING
-
    AColor::Medium(&dc, mOver );
    dc.DrawRectangle(r);
 
    // HACK: We used a wider rectangle to also cover one pixel of space just to the right.
    if( mAsSpacer )
       r.width -= 1;
-
-#else
-   // Paint the background
-   if( mOver )
-   {
-   AColor::Medium(&dc, mOver );
-   dc.DrawRectangle(r);
-   }
-   else
-   {
-      // Get colour from parent...
-      // when parent colour changes, child colour might not!
-      wxBrush brush( GetParent()->GetBackgroundColour() );
-      dc.SetBrush( brush );
-      dc.DrawRectangle(r);
-   }
-#endif
-
 
 #ifndef __WXMAC__
 
@@ -255,6 +237,11 @@ void Grabber::OnLeave(wxMouseEvent & WXUNUSED(event))
    }
 }
 
+void Grabber::OnErase( wxEraseEvent & WXUNUSED(event) )
+{
+   // Ignore it to prevent flashing
+}
+
 //
 // Handle the paint events
 //
@@ -277,3 +264,11 @@ void Grabber::OnKeyDown(wxKeyEvent &event)
       SendEvent(EVT_GRABBER_CLICKED, wxPoint{ -1, -1 }, true);
    }
 }
+
+// Piggy back in same source file as Grabber.
+// Audcaity Flicker-free StaticBitmap.
+BEGIN_EVENT_TABLE(AStaticBitmap,wxStaticBitmap)
+    EVT_ERASE_BACKGROUND(AStaticBitmap::OnErase)
+END_EVENT_TABLE()
+
+

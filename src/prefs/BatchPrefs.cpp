@@ -10,33 +10,47 @@
 *******************************************************************//**
 
 \class BatchPrefs
-\brief A PrefsPanel that builds up a chain of effects in BatchCommands
-
+\brief A probably unused PrefsPanel that in debug builds could offer a 
+setting used in debugging batch (aka macros) processing.
 *//*******************************************************************/
 
 #include "../Audacity.h"
+#include "BatchPrefs.h"
 
 #include <wx/defs.h>
 #include <wx/intl.h>
 #include <wx/textdlg.h>
 
-#include "BatchPrefs.h"
 #include "../Languages.h"
 #include "../Prefs.h"
 #include "../Project.h"
 #include "../BatchCommandDialog.h"
 #include "../ShuttleGui.h"
-#include "../Menus.h"
 #include "../toolbars/ToolManager.h"
 
 BEGIN_EVENT_TABLE(BatchPrefs, PrefsPanel)
 END_EVENT_TABLE()
 
 /// Constructor
-BatchPrefs::BatchPrefs(wxWindow * parent):
-   PrefsPanel(parent, _("Batch"))
+BatchPrefs::BatchPrefs(wxWindow * parent, wxWindowID winid):
+   PrefsPanel(parent, winid, _("Batch"))
 {
    Populate();
+}
+
+ComponentInterfaceSymbol BatchPrefs::GetSymbol()
+{
+   return BATCH_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString BatchPrefs::GetDescription()
+{
+   return _("Preferences for Batch");
+}
+
+wxString BatchPrefs::HelpPageName()
+{
+   return  "Batch_Preferences";
 }
 
 /// Creates the dialog and its contents.
@@ -54,8 +68,10 @@ void BatchPrefs::Populate( )
 /// Defines the dialog and does data exchange with it.
 void BatchPrefs::PopulateOrExchange( ShuttleGui & S )
 {
-   S.StartHorizontalLay( wxEXPAND, 0 );
    S.SetBorder( 2 );
+   S.StartScroller();
+   S.StartHorizontalLay( wxEXPAND, 0 );
+
    S.StartStatic( _("Behaviors"),1 );
    {
 #ifdef __WXDEBUG__
@@ -65,12 +81,12 @@ void BatchPrefs::PopulateOrExchange( ShuttleGui & S )
    }
    S.EndStatic();
    S.EndHorizontalLay();
-
+   S.EndScroller();
    return;
 }
 
 /// Send changed values back to Prefs, and update Audacity.
-bool BatchPrefs::Apply()
+bool BatchPrefs::Commit()
 {
    ShuttleGui S( this, eIsSavingToPrefs );
    PopulateOrExchange( S );
@@ -82,8 +98,8 @@ BatchPrefs::~BatchPrefs()
 {
 }
 
-PrefsPanel *BatchPrefsFactory::Create(wxWindow *parent)
+PrefsPanel *BatchPrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew BatchPrefs(parent);
+   return safenew BatchPrefs(parent, winid);
 }

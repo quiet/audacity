@@ -30,18 +30,23 @@
 #include <math.h>
 
 #include <wx/brush.h>
+#include <wx/checkbox.h>
 #include <wx/dcclient.h>
 #include <wx/dcmemory.h>
 #include <wx/intl.h>
-#include <wx/msgdlg.h>
+#include <wx/slider.h>
+#include <wx/stattext.h>
 
 #include "../AColor.h"
 #include "../Prefs.h"
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../float_cast.h"
 #include "../widgets/Ruler.h"
 
 #include "../WaveTrack.h"
+#include "../Theme.h"
+#include "../AllThemeResources.h"
 
 enum
 {
@@ -55,13 +60,13 @@ enum
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name          Type     Key                  Def      Min      Max      Scale
-Param( Threshold,    double,  XO("Threshold"),     -12.0,   -60.0,   -1.0,    1   );
-Param( NoiseFloor,   double,  XO("NoiseFloor"),    -40.0,   -80.0,   -20.0,   5   );
-Param( Ratio,        double,  XO("Ratio"),         2.0,     1.1,     10.0,    10  );
-Param( AttackTime,   double,  XO("AttackTime"),    0.2,     0.1,     5.0,     100 );
-Param( ReleaseTime,  double,  XO("ReleaseTime"),   1.0,     1.0,     30.0,    10  );
-Param( Normalize,    bool,    XO("Normalize"),     true,    false,   true,    1   );
-Param( UsePeak,      bool,    XO("UsePeak"),       false,   false,   true,    1   );
+Param( Threshold,    double,  wxT("Threshold"),     -12.0,   -60.0,   -1.0,    1   );
+Param( NoiseFloor,   double,  wxT("NoiseFloor"),    -40.0,   -80.0,   -20.0,   5   );
+Param( Ratio,        double,  wxT("Ratio"),         2.0,     1.1,     10.0,    10  );
+Param( AttackTime,   double,  wxT("AttackTime"),    0.2,     0.1,     5.0,     100 );
+Param( ReleaseTime,  double,  wxT("ReleaseTime"),   1.0,     1.0,     30.0,    10  );
+Param( Normalize,    bool,    wxT("Normalize"),     true,    false,   true,    1   );
+Param( UsePeak,      bool,    wxT("UsePeak"),       false,   false,   true,    1   );
 
 //----------------------------------------------------------------------------
 // EffectCompressor
@@ -84,9 +89,6 @@ EffectCompressor::EffectCompressor()
    mThreshold = 0.25;
    mNoiseFloor = 0.01;
    mCompression = 0.5;
-   mCircle = NULL;
-   mFollow1 = NULL;
-   mFollow2 = NULL;
    mFollowLen = 0;
 
    SetLinearEffectFlag(false);
@@ -94,33 +96,26 @@ EffectCompressor::EffectCompressor()
 
 EffectCompressor::~EffectCompressor()
 {
-   if (mCircle) {
-      delete[] mCircle;
-      mCircle = NULL;
-   }
-   if(mFollow1!=NULL) {
-      delete[] mFollow1;
-      mFollow1 = NULL;
-   }
-   if(mFollow2!=NULL) {
-      delete[] mFollow2;
-      mFollow2 = NULL;
-   }
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectCompressor::GetSymbol()
+ComponentInterfaceSymbol EffectCompressor::GetSymbol()
 {
    return COMPRESSOR_PLUGIN_SYMBOL;
 }
 
 wxString EffectCompressor::GetDescription()
 {
-   return XO("Compresses the dynamic range of audio");
+   return _("Compresses the dynamic range of audio");
 }
 
-// EffectIdentInterface implementation
+wxString EffectCompressor::ManualPage()
+{
+   return wxT("Compressor");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectCompressor::GetType()
 {
@@ -128,8 +123,18 @@ EffectType EffectCompressor::GetType()
 }
 
 // EffectClientInterface implementation
+bool EffectCompressor::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( mThresholdDB, Threshold );
+   S.SHUTTLE_PARAM( mNoiseFloorDB, NoiseFloor );
+   S.SHUTTLE_PARAM( mRatio, Ratio);
+   S.SHUTTLE_PARAM( mAttackTime, AttackTime);
+   S.SHUTTLE_PARAM( mDecayTime, ReleaseTime);
+   S.SHUTTLE_PARAM( mNormalize, Normalize);
+   S.SHUTTLE_PARAM( mUsePeak, UsePeak);
+   return true;
+}
 
-bool EffectCompressor::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectCompressor::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_Threshold, mThresholdDB);
    parms.Write(KEY_NoiseFloor, mNoiseFloorDB);
@@ -142,7 +147,7 @@ bool EffectCompressor::GetAutomationParameters(EffectAutomationParameters & parm
    return true;
 }
 
-bool EffectCompressor::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectCompressor::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyDouble(Threshold);
    ReadAndVerifyDouble(NoiseFloor);
@@ -205,7 +210,7 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
    S.StartHorizontalLay(wxEXPAND, true);
    {
       S.SetBorder(10);
-      mPanel = safenew EffectCompressorPanel(S.GetParent(),
+      mPanel = safenew EffectCompressorPanel(S.GetParent(), wxID_ANY,
                                          mThresholdDB,
                                          mNoiseFloorDB,
                                          mRatio);
@@ -215,7 +220,7 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
    }
    S.EndHorizontalLay();
 
-   S.StartStatic(wxT(""));
+   S.StartStatic( {} );
    {
       S.StartMultiColumn(3, wxEXPAND);
       {
@@ -223,7 +228,7 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
          mThresholdLabel = S.AddVariableText(_("Threshold:"), true,
                                              wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
          S.SetStyle(wxSL_HORIZONTAL);
-         mThresholdSlider = S.Id(ID_Threshold).AddSlider(wxT(""),
+         mThresholdSlider = S.Id(ID_Threshold).AddSlider( {},
                                                          DEF_Threshold * SCL_Threshold,
                                                          MAX_Threshold * SCL_Threshold,
                                                          MIN_Threshold * SCL_Threshold);
@@ -234,7 +239,7 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
          mNoiseFloorLabel = S.AddVariableText(_("Noise Floor:"), true,
                                              wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
          S.SetStyle(wxSL_HORIZONTAL);
-         mNoiseFloorSlider = S.Id(ID_NoiseFloor).AddSlider(wxT(""),
+         mNoiseFloorSlider = S.Id(ID_NoiseFloor).AddSlider( {},
                                                            DEF_NoiseFloor / SCL_NoiseFloor,
                                                            MAX_NoiseFloor / SCL_NoiseFloor,
                                                            MIN_NoiseFloor / SCL_NoiseFloor);
@@ -245,7 +250,7 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
          mRatioLabel = S.AddVariableText(_("Ratio:"), true,
                                          wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
          S.SetStyle(wxSL_HORIZONTAL);
-         mRatioSlider = S.Id(ID_Ratio).AddSlider(wxT(""),
+         mRatioSlider = S.Id(ID_Ratio).AddSlider( {},
                                                  DEF_Ratio * SCL_Ratio,
                                                  MAX_Ratio * SCL_Ratio,
                                                  MIN_Ratio * SCL_Ratio);
@@ -260,7 +265,7 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
          mAttackLabel = S.AddVariableText(_("Attack Time:"), true,
                                          wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
          S.SetStyle(wxSL_HORIZONTAL);
-         mAttackSlider = S.Id(ID_Attack).AddSlider(wxT(""),
+         mAttackSlider = S.Id(ID_Attack).AddSlider( {},
                                                    DEF_AttackTime * SCL_AttackTime,
                                                    MAX_AttackTime * SCL_AttackTime,
                                                    MIN_AttackTime * SCL_AttackTime);
@@ -271,7 +276,7 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
          mDecayLabel = S.AddVariableText(_("Release Time:"), true,
                                          wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
          S.SetStyle(wxSL_HORIZONTAL);
-         mDecaySlider = S.Id(ID_Decay).AddSlider(wxT(""),
+         mDecaySlider = S.Id(ID_Decay).AddSlider( {},
                                                  DEF_ReleaseTime * SCL_ReleaseTime,
                                                  MAX_ReleaseTime * SCL_ReleaseTime,
                                                  MIN_ReleaseTime * SCL_ReleaseTime);
@@ -287,9 +292,9 @@ void EffectCompressor::PopulateOrExchange(ShuttleGui & S)
    {
       /* i18n-hint: Make-up, i.e. correct for any reduction, rather than fabricate it.*/
       mGainCheckBox = S.AddCheckBox(_("Make-up gain for 0 dB after compressing"),
-                                    DEF_Normalize ? wxT("true") : wxT("false"));
+                                    DEF_Normalize);
       mPeakCheckBox = S.AddCheckBox(_("Compress based on Peaks"),
-                                    DEF_UsePeak ? wxT("true") : wxT("false"));
+                                    DEF_UsePeak);
    }
    S.EndHorizontalLay();
 }
@@ -346,13 +351,8 @@ bool EffectCompressor::NewTrackPass1()
 
    mLastLevel = mThreshold;
 
-   if (mCircle)
-      delete[] mCircle;
    mCircleSize = 100;
-   mCircle = new double[mCircleSize];
-   for(int j=0; j<mCircleSize; j++) {
-      mCircle[j] = 0.0;
-   }
+   mCircle.reinit( mCircleSize, true );
    mCirclePos = 0;
    mRMSSum = 0.0;
 
@@ -366,26 +366,15 @@ bool EffectCompressor::InitPass1()
       DisableSecondPass();
 
    // Find the maximum block length required for any track
-   size_t maxlen = 0;
-   SelectedTrackListOfKindIterator iter(Track::Wave, mTracks);
-   WaveTrack *track = (WaveTrack *) iter.First();
-   while (track) {
-      maxlen = std::max(maxlen, track->GetMaxBlockSize());
-      //Iterate to the next track
-      track = (WaveTrack *) iter.Next();
-   }
-   if(mFollow1!=NULL) {
-      delete[] mFollow1;
-      mFollow1 = NULL;
-   }
-   if(mFollow2!=NULL) {
-      delete[] mFollow2;
-      mFollow2 = NULL;
-   }
+   size_t maxlen = inputTracks()->Selected< const WaveTrack >().max(
+      &WaveTrack::GetMaxBlockSize
+   );
+   mFollow1.reset();
+   mFollow2.reset();
    // Allocate buffers for the envelope
    if(maxlen > 0) {
-      mFollow1 = new float[maxlen];
-      mFollow2 = new float[maxlen];
+      mFollow1.reinit(maxlen);
+      mFollow2.reinit(maxlen);
    }
    mFollowLen = maxlen;
 
@@ -405,8 +394,6 @@ bool EffectCompressor::InitPass2()
 bool EffectCompressor::TwoBufferProcessPass1
    (float *buffer1, size_t len1, float *buffer2, size_t len2)
 {
-   int i;
-
    // If buffers are bigger than allocated, then abort
    // (this should never happen, but if it does, we don't want to crash)
    if((len1 > mFollowLen) || (len2 > mFollowLen))
@@ -418,7 +405,7 @@ bool EffectCompressor::TwoBufferProcessPass1
       // Initialize the mLastLevel to the peak level in the first buffer
       // This avoids problems with large spike events near the beginning of the track
       mLastLevel = mThreshold;
-      for(i=0; i<len2; i++) {
+      for(size_t i=0; i<len2; i++) {
          if(mLastLevel < fabs(buffer2[i]))
             mLastLevel = fabs(buffer2[i]);
       }
@@ -426,11 +413,11 @@ bool EffectCompressor::TwoBufferProcessPass1
 
    // buffer2 is NULL on the last and only the last call
    if(buffer2 != NULL) {
-      Follow(buffer2, mFollow2, len2, mFollow1, len1);
+      Follow(buffer2, mFollow2.get(), len2, mFollow1.get(), len1);
    }
 
    if(buffer1 != NULL) {
-      for (i = 0; i < len1; i++) {
+      for (size_t i = 0; i < len1; i++) {
          buffer1[i] = DoCompression(buffer1[i], mFollow1[i]);
       }
    }
@@ -442,9 +429,7 @@ bool EffectCompressor::TwoBufferProcessPass1
 #endif
 
    // Rotate the buffer pointers
-   float *tmpfloat = mFollow1;
-   mFollow1 = mFollow2;
-   mFollow2 = tmpfloat;
+   mFollow1.swap(mFollow2);
 
    return true;
 }
@@ -453,7 +438,7 @@ bool EffectCompressor::ProcessPass2(float *buffer, size_t len)
 {
    if (mMax != 0)
    {
-      for (int i = 0; i < len; i++)
+      for (size_t i = 0; i < len; i++)
          buffer[i] /= mMax;
    }
 
@@ -465,7 +450,7 @@ void EffectCompressor::FreshenCircle()
    // Recompute the RMS sum periodically to prevent accumulation of rounding errors
    // during long waveforms
    mRMSSum = 0;
-   for(int i=0; i<mCircleSize; i++)
+   for(size_t i=0; i<mCircleSize; i++)
       mRMSSum += mCircle[i];
 }
 
@@ -520,7 +505,6 @@ void EffectCompressor::Follow(float *buffer, float *env, size_t len, float *prev
     The value has a lower limit of floor to make sure value has a
     reasonable positive value from which to begin an attack.
    */
-   int i;
    double level,last;
 
    if(!mUsePeak) {
@@ -530,7 +514,7 @@ void EffectCompressor::Follow(float *buffer, float *env, size_t len, float *prev
    }
    // First apply a peak detect with the requested decay rate
    last = mLastLevel;
-   for(i=0; i<len; i++) {
+   for(size_t i=0; i<len; i++) {
       if(mUsePeak)
          level = fabs(buffer[i]);
       else // use RMS
@@ -554,7 +538,7 @@ void EffectCompressor::Follow(float *buffer, float *env, size_t len, float *prev
 
    // Next do the same process in reverse direction to get the requested attack rate
    last = mLastLevel;
-   for(i = len; i--;) {
+   for(size_t i = len; i--;) {
       last *= mAttackInverseFactor;
       if(last < mThreshold)
          last = mThreshold;
@@ -566,7 +550,7 @@ void EffectCompressor::Follow(float *buffer, float *env, size_t len, float *prev
 
    if((previous != NULL) && (previous_len > 0)) {
       // If the previous envelope was passed, propagate the rise back until we intersect
-      for(i = previous_len; i--;) {
+      for(size_t i = previous_len; i--;) {
          last *= mAttackInverseFactor;
          if(last < mThreshold)
             last = mThreshold;
@@ -578,7 +562,7 @@ void EffectCompressor::Follow(float *buffer, float *env, size_t len, float *prev
       // If we can't back up far enough, project the starting level forward
       // until we intersect the desired envelope
       last = previous[0];
-      for(i=1; i<previous_len; i++) {
+      for(size_t i=1; i<previous_len; i++) {
          last *= mAttackFactor;
          if(previous[i] > last)
             previous[i] = last;
@@ -586,7 +570,7 @@ void EffectCompressor::Follow(float *buffer, float *env, size_t len, float *prev
             return;
       }
       // If we still didn't intersect, then continue ramp up into current buffer
-      for(i=0; i<len; i++) {
+      for(size_t i=0; i<len; i++) {
          last *= mAttackFactor;
          if(buffer[i] > last)
             buffer[i] = last;
@@ -669,11 +653,11 @@ BEGIN_EVENT_TABLE(EffectCompressorPanel, wxPanelWrapper)
    EVT_SIZE(EffectCompressorPanel::OnSize)
 END_EVENT_TABLE()
 
-EffectCompressorPanel::EffectCompressorPanel(wxWindow *parent,
+EffectCompressorPanel::EffectCompressorPanel(wxWindow *parent, wxWindowID winid,
                                              double & threshold,
                                              double & noiseFloor,
                                              double & ratio)
-:  wxPanelWrapper(parent),
+:  wxPanelWrapper(parent, winid),
    threshold(threshold),
    noiseFloor(noiseFloor),
    ratio(ratio)
@@ -712,6 +696,9 @@ void EffectCompressorPanel::OnPaint(wxPaintEvent & WXUNUSED(evt))
 
    vRuler.SetBounds(0, 0, w, height - h);
    hRuler.SetBounds(w, height - h, width, height);
+
+   vRuler.SetTickColour( theTheme.Colour( clrGraphLabels ));
+   hRuler.SetTickColour( theTheme.Colour( clrGraphLabels ));
 
 #if defined(__WXMSW__)
    dc.Clear();

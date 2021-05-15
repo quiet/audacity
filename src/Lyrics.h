@@ -14,38 +14,46 @@
 
 #include "Audacity.h"
 
-#include <wx/dynarray.h>
-#include <wx/textctrl.h>
-#include "widgets/wxPanelWrapper.h"
+#include <vector>
+#include <wx/textctrl.h> // to inherit
+#include "commands/CommandManagerWindowClasses.h"
+#include "widgets/wxPanelWrapper.h" // to inherit
 
+class AudacityProject;
 class LabelTrack;
 
 
 #define LYRICS_DEFAULT_WIDTH 608
 #define LYRICS_DEFAULT_HEIGHT 280
 
+/// \brief used in LyricsPanel, a Syllable gives positional information to
+/// be used with the bouncing ball effect.
 struct Syllable {
+   Syllable() = default;
+   Syllable( const Syllable& ) = default;
+   Syllable& operator= ( const Syllable& ) = default;
+   //Syllable( Syllable && ) = default;
+   //Syllable& operator= ( Syllable&& ) = default;
+
    double t;
    wxString text;
    wxString textWithSpace;
-   int char0; // index of first char of syllable in Lyrics::mText, used only for kHighlightLyrics
-   int char1; // index of last  char of syllable in Lyrics::mText, used only for kHighlightLyrics
+   int char0; // index of first char of syllable in LyricsPanel::mText, used only for kHighlightLyrics
+   int char1; // index of last  char of syllable in LyricsPanel::mText, used only for kHighlightLyrics
    int width;
    int leftX;
    int x; // centerX, used only for kBouncingBallLyrics
 };
 
-WX_DECLARE_OBJARRAY(Syllable, SyllableArray);
-
-class Lyrics;
+class LyricsPanel;
 
 // Override wxTextCtrl to handle selection events, which the parent ignores if the control is read-only.
 class HighlightTextCtrl final : public wxTextCtrl
 {
 public:
-   HighlightTextCtrl(Lyrics* parent,
+   HighlightTextCtrl(LyricsPanel* parent,
                      wxWindowID id,
-                     const wxString& value = wxT(""),
+                     const wxString& value = {},
                      const wxPoint& pos = wxDefaultPosition,
                      const wxSize& size = wxDefaultSize);
    virtual ~HighlightTextCtrl() {};
@@ -53,14 +61,22 @@ public:
    void OnMouseEvent(wxMouseEvent &evt);
 
 private:
-   Lyrics* mLyrics;
+   LyricsPanel* mLyricsPanel;
 
    DECLARE_EVENT_TABLE()
 };
 
-class Lyrics final : public wxPanelWrapper
+
+/**************************************************************//**
+
+\brief LyricsPanel is a panel that paints the bouncing
+ball and the lyrics text.
+*******************************************************************/
+class LyricsPanel final
+   : public wxPanelWrapper
+   , public NonKeystrokeInterceptingWindow
 {
-   DECLARE_DYNAMIC_CLASS(Lyrics)
+   DECLARE_DYNAMIC_CLASS(LyricsPanel)
 
    enum LyricsStyle {
       kBouncingBallLyrics, // Lyrics move from right to left with bouncing ball.
@@ -69,14 +85,11 @@ class Lyrics final : public wxPanelWrapper
    };
 
  public:
-   Lyrics(wxWindow* parent, wxWindowID id,
+   LyricsPanel(wxWindow* parent, wxWindowID id,
+          AudacityProject *project,
           const wxPoint& pos = wxDefaultPosition,
           const wxSize& size = wxDefaultSize);
-   virtual ~Lyrics();
-
-   void Clear();
-   void AddLabels(const LabelTrack *pLT);
-   void Finish(double finalT);
+   virtual ~LyricsPanel();
 
    int FindSyllable(long startChar); // Find the syllable whose char0 <= startChar <= char1.
    int GetCurrentSyllableIndex() { return mCurrentSyllable; };
@@ -87,6 +100,9 @@ class Lyrics final : public wxPanelWrapper
    void SetLyricsStyle(const LyricsStyle newLyricsStyle);
 
    void Update(double t);
+   void UpdateLyrics(wxEvent &e);
+   void OnShow(wxShowEvent& e);
+   void OnStartStop(wxCommandEvent &e);
 
    //
    // Event handlers
@@ -106,6 +122,10 @@ class Lyrics final : public wxPanelWrapper
    void HandleLayout();
 
 private:
+   void Clear();
+   void AddLabels(const LabelTrack *pLT);
+   void Finish(double finalT);
+
    void Add(double t, const wxString &syllable, wxString &highlightText);
 
    unsigned int GetDefaultFontSize() const; // Depends on mLyricsStyle. Call only after mLyricsStyle is set.
@@ -130,11 +150,14 @@ private:
    double         mT;
 
    int            mCurrentSyllable;
-   SyllableArray  mSyllables;
+   std::vector<Syllable>  mSyllables;
    wxString       mText;
 
    int            mTextHeight; // only for drawn text
    bool           mMeasurementsDone; // only for drawn text
+
+   wxWeakRef<AudacityProject> mProject;
+   bool           mDelayedUpdate{ false };
 
    DECLARE_EVENT_TABLE()
 };

@@ -2,7 +2,7 @@
 
   Audacity: A Digital Audio Editor
 
-  ToolBar.cpp
+  ToolDock.cpp
 
   Dominic Mazzoni
   Shane T. Mueller
@@ -22,12 +22,15 @@
 *//**********************************************************************/
 
 #include "../Audacity.h"
+#include "ToolDock.h"
+
 #include <wx/tokenzr.h>
 
 // For compilers that support precompilation, includes "wx/wx.h".
 #include <wx/wxprec.h>
 
 #ifndef WX_PRECOMP
+#include <wx/dcclient.h>
 #include <wx/defs.h>
 #include <wx/event.h>
 #include <wx/gdicmn.h>
@@ -38,7 +41,6 @@
 #endif  /*  */
 
 #include "ToolManager.h"
-#include "ToolDock.h"
 
 #include <algorithm>
 
@@ -64,7 +66,7 @@ auto ToolBarConfiguration::FindPlace(const ToolBar *bar) const
       });
 }
 
-auto ToolBarConfiguration::FindParent(const ToolBar *bar)
+auto ToolBarConfiguration::FindPeers(const ToolBar *bar)
    -> std::pair<Forest*, Forest::iterator>
 {
    auto findTree = [=](Forest &forest){
@@ -102,6 +104,7 @@ void ToolBarConfiguration::Insert(ToolBar *bar, Position position)
 {
    if (position == UnspecifiedPosition) {
       // Add at the "end" of the layout
+      // bottommost and rightmost
       Forest *pForest = &mForest;
       while (!pForest->empty())
          pForest = &pForest->back().children;
@@ -109,13 +112,19 @@ void ToolBarConfiguration::Insert(ToolBar *bar, Position position)
       pForest->back().pBar = bar;
    }
    else {
+      // Insert at what depth?
       auto pForest = &mForest;
       if (position.rightOf) {
          const auto parent = FindPlace(position.rightOf);
          if (parent != end())
+            // Insert among children of some node
             pForest = &parent->pTree->children;
       }
+      else {
+         // Insert a new root in the top forest
+      }
 
+      // Insert at what breadth?
       const auto begin = pForest->begin();
       auto iter = begin;
       const auto end = pForest->end();
@@ -135,24 +144,36 @@ void ToolBarConfiguration::Insert(ToolBar *bar, Position position)
             iter = begin;
       }
       else
+         // No previous sibling specified, so insert as first
          adopt = (iter != end);
 
-      // Adopt the child only if the insertion point specifies that
+      // Insert as a leaf, or as an internal node?
       if (adopt && position.adopt) {
-         // Make NEW node with one child
+         // Existing children of parent become grandchildren
+
+         // Make NEW node
          Tree tree;
          tree.pBar = bar;
-         tree.children.push_back(Tree{});
 
          // Do adoption
-         auto &child = tree.children.back();
-         child.pBar = iter->pBar;
-         child.children.swap(iter->children);
+         const auto barHeight = bar->GetSize().GetY() + toolbarGap;
+         auto totalHeight = 0;
+         while (iter != pForest->end() &&
+            barHeight >=
+               (totalHeight += (iter->pBar->GetSize().GetY() + toolbarGap))) {
+            tree.children.push_back(Tree{});
+            auto &child = tree.children.back();
+            child.pBar = iter->pBar;
+            child.children.swap(iter->children);
+            iter = pForest->erase(iter);
+         }
 
          // Put the node in the tree
+         iter = pForest->insert(iter, Tree{});
          (*iter).swap(tree);
       }
       else
+         // Insert as a leaf
          pForest->insert(iter, Tree {})->pBar = bar;
    }
 }
@@ -166,6 +187,9 @@ void ToolBarConfiguration::InsertAtPath
    // Guarantee the existence of nodes
    for (auto ii : path) {
       Forest::size_type uu = std::max(0, ii);
+      // This may make more than one default-constructed tree, which we
+      // will fill in with some other call to InsertAtPath, or else cleanup
+      // with RemoveNulls
       pForest->resize(std::max(uu + 1, pForest->size()));
       pTree = &(*pForest)[uu];
       pForest = &pTree->children;
@@ -177,6 +201,7 @@ void ToolBarConfiguration::InsertAtPath
 
 void ToolBarConfiguration::Remove(Forest &forest, Forest::iterator iter)
 {
+   // Reparent all of the children of the deleted node
    Tree tree;
    tree.swap(*iter);
    iter = forest.erase(iter);
@@ -191,7 +216,7 @@ void ToolBarConfiguration::Remove(Forest &forest, Forest::iterator iter)
 
 void ToolBarConfiguration::Remove(const ToolBar *bar)
 {
-   auto results = FindParent(bar);
+   auto results = FindPeers(bar);
    auto pForest = results.first;
    if (pForest) {
       // Reparent all of the children of the deleted node
@@ -225,7 +250,8 @@ bool ToolBarConfiguration::IsRightmost(const ToolBar *bar) const
       // Last of all
       return true;
    if (bar->GetRect().y != iter->pTree->pBar->GetRect().y)
-      // 	
+      // Next step in preorder traversal is not rightward to a child drawn at
+      // the same height
       return true;
    return false;
 }
@@ -237,7 +263,11 @@ bool ToolBarConfiguration::Read
 {
    bool result = true;
 
-   if (pConfiguration) {
+   // Future: might remember visibility in the configuration, not forgetting
+   // positions of hidden bars.
+   gPrefs->Read( wxT("Show"), &visible, defaultVisible);
+
+   if (pConfiguration && visible) {
       int ord;
       gPrefs->Read( wxT("Order"), &ord, -1 );
       // Index was written 1-based
@@ -267,10 +297,6 @@ bool ToolBarConfiguration::Read
       }
    }
 
-   // Future: might remember visibility in the configuration, not forgetting
-   // positions of hidden bars.
-   gPrefs->Read( wxT("Show"), &visible, defaultVisible);
-
    return result;
 }
 
@@ -292,6 +318,8 @@ void ToolBarConfiguration::PostRead(Legacy &legacy)
    // against the case of obsolete preferences, perhaps
    RemoveNulls(mForest);
 
+   // Interpret what was saved in old .cfg files under "order"
+   // which specified toolbar configuration simply as a sequence, not a tree
    ToolBar *prev {};
    for (auto pBar : legacy.bars) {
       if (!pBar)
@@ -307,7 +335,9 @@ void ToolBarConfiguration::PostRead(Legacy &legacy)
 void ToolBarConfiguration::Write
    (const ToolBarConfiguration *pConfiguration, const ToolBar *bar)
 {
+   // Assume a path has been set in gPrefs suitable for bar
    if (pConfiguration) {
+      // Write comma-separated list of numbers specifying position in the tree
       wxString strPath;
       const auto cIter = pConfiguration->FindPlace(bar);
       const auto path = cIter.GetPath();
@@ -320,6 +350,9 @@ void ToolBarConfiguration::Write
       gPrefs->Write(wxT("Path"), strPath);
 
       // Remove any legacy configuration info.
+      // Note:  this causes Audacity 2.1.2 and earlier to create toolbars
+      // always in default position when reading a .cfg saved by Audacity
+      // 2.1.3 or later
       gPrefs->DeleteEntry(wxT("Order"));
    }
    gPrefs->Write( wxT("Show"), bar->IsVisible() );
@@ -334,7 +367,7 @@ IMPLEMENT_CLASS( ToolDock, wxPanelWrapper );
 //
 // Custom event
 //
-DEFINE_EVENT_TYPE( EVT_TOOLBAR_FLOAT );
+//DEFINE_EVENT_TYPE( EVT_TOOLBAR_FLOAT );
 
 BEGIN_EVENT_TABLE( ToolDock, wxPanelWrapper )
    EVT_GRABBER( wxID_ANY, ToolDock::OnGrabber )
@@ -356,7 +389,8 @@ ToolDock::ToolDock( ToolManager *manager, wxWindow *parent, int dockid ):
    // Init
    mManager = manager;
    memset(mBars, 0, sizeof(mBars)); // otherwise uninitialized
-
+   SetBackgroundColour(theTheme.Colour( clrMedium ));
+   SetLayoutDirection(wxLayout_LeftToRight);
    // Use for testing gaps
    // SetOwnBackgroundColour( wxColour( 255, 0, 0 ) );
 }
@@ -376,8 +410,8 @@ void ToolDock::Undock( ToolBar *bar )
    if( mConfiguration.Contains( bar ) )
    {
       mConfiguration.Remove( bar );
-      mBars[ bar->GetId() ] = nullptr;
    }
+   mBars[ bar->GetId() ] = nullptr;
 }
 
 //
@@ -403,15 +437,11 @@ void ToolDock::Dock( ToolBar *bar, bool deflate, ToolBarConfiguration::Position 
    );
 
    // Park the NEW bar in the correct berth
-   if (!mConfiguration.Contains(bar))
+   if (!mConfiguration.Contains(bar) && bar->IsVisible())
       mConfiguration.Insert( bar, position );
 
    // Inform toolbar of change
    bar->SetDocked( this, false );
-
-   // Rearrange our world
-   LayoutToolBars();
-   Updated();
 }
 
 // Initial docking of bars
@@ -425,8 +455,10 @@ void ToolDock::LoadConfig()
       // configuration
       Expose( bar->GetId(), true );
    }
+   Updated();
 }
 
+// A policy object for the skeleton routine below
 class ToolDock::LayoutVisitor
 {
 public:
@@ -450,6 +482,8 @@ public:
    }
 };
 
+// Skeleton routine common to insertion of a toolbar, and figuring out
+// width-constrained layout of toolbars
 void ToolDock::VisitLayout(LayoutVisitor &visitor,
                            ToolBarConfiguration *pWrappedConfiguration)
 {
@@ -505,7 +539,7 @@ void ToolDock::VisitLayout(LayoutVisitor &visitor,
          prevSib = sib;
          sib = ct;
       }
-      ToolBarConfiguration::Position prevPosition = { parent, prevSib };
+      auto prevPosition = ToolBarConfiguration::Position{ parent, prevSib };
 
       // Determine the size of the toolbar to fit, with advice from
       // the visitor object
@@ -682,7 +716,7 @@ void ToolDock::LayoutToolBars()
 
 // Determine the position where a NEW bar would be placed
 //
-// 'rect' will be the rectangle for the dock marker.
+// 'rect' will be the rectangle for the dock marker (black triangle)
 ToolBarConfiguration::Position
    ToolDock::PositionBar( ToolBar *t, const wxPoint & pos, wxRect & rect )
 {
@@ -701,7 +735,7 @@ ToolBarConfiguration::Position
 
       void ModifySize
          (ToolBar *ct,
-          const wxRect &rect,
+          const wxRect &rectIn,
           ToolBarConfiguration::Position prevPosition,
           ToolBarConfiguration::Position position,
           wxSize &sz)
@@ -711,16 +745,16 @@ ToolBarConfiguration::Position
          // and is in the right place.
 
          // Does the location fall within this bar?
-         if (rect.Contains(point))
+         if (rectIn.Contains(point))
          {
             sz = tb->GetDockedSize();
             // Choose a position always, if there is a bar to displace.
             // Else, only if the fit is possible.
-            if (ct || (sz.x <= rect.width && sz.y <= rect.height)) {
+            if (ct || (sz.x <= rectIn.width && sz.y <= rectIn.height)) {
                // May choose current or previous.
                if (ct &&
-                   (sz.y < rect.height ||
-                    point.y < (rect.GetTop() + rect.GetBottom()) / 2))
+                   (sz.y < rectIn.height ||
+                    point.y < (rectIn.GetTop() + rectIn.GetBottom()) / 2))
                   // "Wedge" the bar into a crack alone, not adopting others,
                   // if either a short bar displaces a tall one, or else
                   // the displacing bar is at least at tall, but the pointer is
@@ -734,13 +768,13 @@ ToolBarConfiguration::Position
       }
 
       void Visit
-         (ToolBar *, wxPoint point)
+         (ToolBar *, wxPoint pointIn)
          override
       {
          if (result != ToolBarConfiguration::UnspecifiedPosition) {
             // If we've placed it, we're done.
-            rect.x = point.x;
-            rect.y = point.y;
+            rect.x = pointIn.x;
+            rect.y = pointIn.y;
             if (usedPrev)
                rect.y -= tb->GetDockedSize().GetHeight() / 2;
 
@@ -760,8 +794,8 @@ ToolBarConfiguration::Position
          if (result == ToolBarConfiguration::UnspecifiedPosition) {
             // Default of all other placements.
             result = finalPosition;
-            wxPoint point { finalRect.GetLeft(), finalRect.GetBottom() };
-            rect.SetPosition(point);
+            wxPoint point1 { finalRect.GetLeft(), finalRect.GetBottom() };
+            rect.SetPosition(point1);
          }
       }
 
@@ -811,10 +845,6 @@ void ToolDock::Expose( int type, bool show )
 
    // Make it (dis)appear
    t->Expose( show );
-
-   // Update the layout
-   LayoutToolBars();
-   Updated();
 }
 
 //
@@ -835,13 +865,8 @@ void ToolDock::OnGrabber( GrabberEvent & event )
 {
    // auto pos = event.GetPosition();
    if (!event.IsEscaping()) {
-      ToolBar *t = mBars[ event.GetId() ];
-
       // Pass it on to the manager since it isn't in the handling hierarchy
       mManager->ProcessEvent( event );
-
-      // We no longer have control
-      mConfiguration.Remove( t );
    }
 }
 
@@ -872,11 +897,10 @@ void ToolDock::OnPaint( wxPaintEvent & WXUNUSED(event) )
 
    // Start with a clean background
    //
-   // Under GTK, we specifically set the toolbar background to the background
-   // colour in the system theme.
-#if defined( __WXGTK__ )
-   dc.SetBackground( wxBrush( wxSystemSettings::GetColour( wxSYS_COLOUR_BACKGROUND ) ) );
-#endif
+   // Under GTK, we don't set the toolbar background to the background
+   // colour in the system theme.  Instead we use our own colour.
+
+   dc.SetBackground( wxBrush( theTheme.Colour( clrMedium )));
    dc.Clear();
 
    // Set the gap color
@@ -897,6 +921,8 @@ void ToolDock::OnPaint( wxPaintEvent & WXUNUSED(event) )
 
       wxRect r = toolbar->GetRect();
 
+      // Draw a horizontal line under the bar extending to the right edge of
+      // the dock
       AColor::Line( dc,
                    r.GetLeft(),
                    r.GetBottom() + 1,
@@ -904,8 +930,8 @@ void ToolDock::OnPaint( wxPaintEvent & WXUNUSED(event) )
                    r.GetBottom() + 1 );
 
       // For all bars but the last...
-      // ...and for bars that aren't the last in a row, draw an
-      // horizontal gap line
+      // ...and for bars that aren't the last in a row, draw a
+      // vertical gap line
       if (!mConfiguration.IsRightmost(toolbar)) {
          AColor::Line(dc,
             r.GetRight() + 1,

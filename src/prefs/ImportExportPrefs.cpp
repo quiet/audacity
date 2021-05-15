@@ -15,23 +15,40 @@
 
 *//*******************************************************************/
 
-#include "../Audacity.h"
+#include "../Audacity.h" // for USE_* macros
+#include "ImportExportPrefs.h"
 
 #include <wx/defs.h>
+#include "../Experimental.h"
 
 #include "../Prefs.h"
 #include "../ShuttleGui.h"
 
-#include "ImportExportPrefs.h"
+#include "../Internat.h"
 
-ImportExportPrefs::ImportExportPrefs(wxWindow * parent)
-:   PrefsPanel(parent, _("Import / Export"))
+ImportExportPrefs::ImportExportPrefs(wxWindow * parent, wxWindowID winid)
+:   PrefsPanel(parent, winid, _("Import / Export"))
 {
    Populate();
 }
 
 ImportExportPrefs::~ImportExportPrefs()
 {
+}
+
+ComponentInterfaceSymbol ImportExportPrefs::GetSymbol()
+{
+   return IMPORT_EXPORT_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString ImportExportPrefs::GetDescription()
+{
+   return _("Preferences for ImportExport");
+}
+
+wxString ImportExportPrefs::HelpPageName()
+{
+   return "Import_-_Export_Preferences";
 }
 
 /// Creates the dialog and its contents.
@@ -49,36 +66,40 @@ void ImportExportPrefs::Populate()
 void ImportExportPrefs::PopulateOrExchange(ShuttleGui & S)
 {
    S.SetBorder(2);
+   S.StartScroller();
 
+#ifndef EXPERIMENTAL_DA
+// DA always copies.  Using a reference is dangerous. 
    S.StartStatic(_("When importing audio files"));
    {
       S.StartRadioButtonGroup(wxT("/FileFormats/CopyOrEditUncompressedData"), wxT("copy"));
       {
-         S.TieRadioButton(_("&Make a copy of uncompressed audio files before editing (safer)"),
+         S.TieRadioButton(_("&Copy before editing"),
                           wxT("copy"));
-         S.TieRadioButton(_("&Read uncompressed audio files directly from the original (faster)"),
+         S.TieRadioButton(_("&Don't copy"),
                           wxT("edit"));
       }
       S.EndRadioButtonGroup();
 
-      S.TieCheckBox(_("&Normalize all tracks in project"),
+      S.TieCheckBox(_("&Normalize tracks"),
                     wxT("/AudioFiles/NormalizeOnLoad"),
                     false);
    }
    S.EndStatic();
+#endif
 
    S.StartStatic(_("When exporting tracks to an audio file"));
    {
       S.StartRadioButtonGroup(wxT("/FileFormats/ExportDownMix"), true);
       {
-         S.TieRadioButton(_("&Always mix all tracks down to Stereo or Mono channel(s)"),
+         S.TieRadioButton(_("&Mix down to Stereo or Mono"),
                           true);
-         S.TieRadioButton(_("&Use custom mix (for example to export a 5.1 multichannel file)"),
+         S.TieRadioButton(_("&Use custom mix"),
                           false);
       }
       S.EndRadioButtonGroup();
 
-      S.TieCheckBox(_("S&how Metadata Tags editor prior to export step"),
+      S.TieCheckBox(_("S&how Metadata Tags editor before export"),
                     wxT("/AudioFiles/ShowId3Dialog"),
                     true);
       // This documentation is unlikely to help somebody who cannot figure it out by discovering the Options button in the dialog.
@@ -87,22 +108,23 @@ void ImportExportPrefs::PopulateOrExchange(ShuttleGui & S)
    }
    S.EndStatic();
 #ifdef USE_MIDI
-   S.StartStatic(_("When exporting track to an Allegro (.gro) file"));
+   S.StartStatic(_("In Allegro (.gro) files show time in:"));
    {
       S.StartRadioButtonGroup(wxT("/FileFormats/AllegroStyle"), true);
       {
-         S.TieRadioButton(_("Represent times and durations in &seconds"),
+         S.TieRadioButton(_("&Seconds"),
                           true);
-         S.TieRadioButton(_("Represent times and durations in &beats"),
+         S.TieRadioButton(_("&Beats"),
                           false);
       }
       S.EndRadioButtonGroup();
    }
    S.EndStatic();
 #endif
+   S.EndScroller();
 }
 
-bool ImportExportPrefs::Apply()
+bool ImportExportPrefs::Commit()
 {
    ShuttleGui S(this, eIsSavingToPrefs);
    PopulateOrExchange(S);
@@ -110,8 +132,8 @@ bool ImportExportPrefs::Apply()
    return true;
 }
 
-PrefsPanel *ImportExportPrefsFactory::Create(wxWindow *parent)
+PrefsPanel *ImportExportPrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew ImportExportPrefs(parent);
+   return safenew ImportExportPrefs(parent, winid);
 }

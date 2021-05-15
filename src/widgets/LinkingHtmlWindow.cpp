@@ -13,18 +13,22 @@
 
 **********************************************************************/
 
+#include "../Audacity.h"
+#include "LinkingHtmlWindow.h"
+
 // For compilers that support precompilation, includes "wx/wx.h".
 #include <wx/wxprec.h>
 
-#include "../Audacity.h"
-
 #include <wx/mimetype.h>
 #include <wx/filename.h>
+#include <wx/frame.h>
 #include <wx/uri.h>
+#include <wx/settings.h>
+#include <wx/log.h>
 
-#include "LinkingHtmlWindow.h"
 #include "../HelpText.h"
 #include "../FileNames.h"
+#include "../Prefs.h"
 #include "ErrorDialog.h"
 #include "HelpSystem.h"
 
@@ -37,9 +41,22 @@ END_EVENT_TABLE()
 
 
 BrowserDialog::BrowserDialog(wxWindow *pParent, const wxString &title)
-   : wxDialogWrapper{ pParent, ID, title }
+   : wxDialogWrapper{ pParent, ID, title, wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER /*| wxMAXIMIZE_BOX */  }
 {
+   int width, height;
+   const int minWidth = 400;
+   const int minHeight = 250;
 
+   gPrefs->Read(wxT("/GUI/BrowserWidth"), &width, minWidth);
+   gPrefs->Read(wxT("/GUI/BrowserHeight"), &height, minHeight);
+
+   if (width < minWidth || width > wxSystemSettings::GetMetric(wxSYS_SCREEN_X))
+      width = minWidth;
+   if (height < minHeight || height > wxSystemSettings::GetMetric(wxSYS_SCREEN_Y))
+      height = minHeight;
+
+   SetMinSize(wxSize(minWidth, minHeight));
+   SetSize(wxDefaultPosition.x, wxDefaultPosition.y, width, height, wxSIZE_AUTO);
 }
 
 void BrowserDialog::OnForward(wxCommandEvent & WXUNUSED(event))
@@ -62,6 +79,10 @@ void BrowserDialog::OnClose(wxCommandEvent & WXUNUSED(event))
       EndModal(wxID_CANCEL);
    }
    auto parent = GetParent();
+
+   gPrefs->Write(wxT("/GUI/BrowserWidth"), GetSize().GetX());
+   gPrefs->Write(wxT("/GUI/BrowserHeight"), GetSize().GetY());
+   gPrefs->Flush();
 
 #ifdef __WXMAC__
    auto grandparent = GetParent()->GetParent();
@@ -124,7 +145,7 @@ void LinkingHtmlWindow::OnLinkClicked(const wxHtmlLinkInfo& link)
          wxFileName( FileNames::HtmlHelpDir(), href.Mid( 10 ) + wxT(".htm") ).GetFullPath();
       if( wxFileExists( FileName ) )
       {
-         HelpSystem::ShowHelpDialog(this, FileName, wxT(""));
+         HelpSystem::ShowHelp(this, FileName, wxEmptyString, false);
          return;
       }
       else

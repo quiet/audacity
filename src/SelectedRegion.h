@@ -26,10 +26,11 @@
 #define __AUDACITY_SELECTEDREGION__
 
 #include "Audacity.h"
+
 #include "Experimental.h"
 
 #include <wx/defs.h>
-#include <wx/wxchar.h>
+#include <wx/chartype.h> // for wxChar, a typedef
 #include <math.h>
 
 class XMLWriter;
@@ -222,7 +223,6 @@ public:
        const wxChar *legacyT0Name = sDefaultT0Name,
        const wxChar *legacyT1Name = sDefaultT1Name);
 
-private:
    bool ensureOrdering() 
    {
       if (mT1 < mT0) {
@@ -234,6 +234,8 @@ private:
       else
          return false;
    }
+
+private:
 
 #ifdef EXPERIMENTAL_SPECTRAL_EDITING
    bool ensureFrequencyOrdering()

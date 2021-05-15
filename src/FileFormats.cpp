@@ -15,15 +15,18 @@ information.
 *//*******************************************************************/
 
 
+#include "Audacity.h"
+#include "FileFormats.h"
+
+#include "MemoryX.h"
 #include <wx/arrstr.h>
 #include <wx/intl.h>
 #include "sndfile.h"
+#include "widgets/ErrorDialog.h"
 
 #ifndef SNDFILE_1
 #error Requires libsndfile 1.0 or higher
 #endif
-
-#include "FileFormats.h"
 
 #include "Internat.h"
 
@@ -119,7 +122,6 @@ wxString sf_header_name(int format)
 wxString sf_header_shortname(int format)
 {
    SF_FORMAT_INFO	format_info;
-   char *tmp;
    int i;
    wxString s;
 
@@ -127,8 +129,7 @@ wxString sf_header_shortname(int format)
    format_info.format = (format & SF_FORMAT_TYPEMASK);
    sf_command(NULL, SFC_GET_FORMAT_INFO, &format_info, sizeof(format_info));
 
-   tmp = (char *)malloc(strlen(format_info.name)+1);
-   strcpy(tmp, format_info.name);
+   MallocString<> tmp { strdup( format_info.name ) };
    i = 0;
    while(tmp[i]) {
       if (tmp[i]==' ')
@@ -137,9 +138,7 @@ wxString sf_header_shortname(int format)
          i++;
    }
 
-   s = LAT1CTOWX(tmp);
-
-   free(tmp);
+   s = LAT1CTOWX(tmp.get());
 
    return s;
 }
@@ -205,9 +204,9 @@ bool sf_subtype_is_integer(unsigned int format)
            subtype == SF_FORMAT_PCM_32);
 }
 
-wxArrayString sf_get_all_extensions()
+FileExtensions sf_get_all_extensions()
 {
-   wxArrayString exts;
+   FileExtensions exts;
    SF_FORMAT_INFO	format_info;
    int count, k;
 
@@ -221,18 +220,20 @@ wxArrayString sf_get_all_extensions()
       sf_command(NULL, SFC_GET_FORMAT_MAJOR,
                  &format_info, sizeof (format_info)) ;
 
-      exts.Add(LAT1CTOWX(format_info.extension));
+      exts.push_back(LAT1CTOWX(format_info.extension));
    }
 
    // Some other extensions that are often sound files
    // but aren't included by libsndfile
 
-   exts.Add(wxT("aif")); // AIFF file with a DOS-style extension
-   exts.Add(wxT("ircam"));
-   exts.Add(wxT("snd"));
-   exts.Add(wxT("svx"));
-   exts.Add(wxT("svx8"));
-   exts.Add(wxT("sv16"));
+   exts.insert( exts.end(), {
+      wxT("aif") , // AIFF file with a DOS-style extension
+      wxT("ircam") ,
+      wxT("snd") ,
+      wxT("svx") ,
+      wxT("svx8") ,
+      wxT("sv16") ,
+   } );
 
    return exts;
 }
@@ -259,6 +260,16 @@ wxString sf_normalize_name(const char *name)
 
 #define NUM_HEADERS 13
 
+//
+// Mac OS 4-char type
+//
+
+# ifdef __UNIX__
+#  include <CoreServices/CoreServices.h>
+# else
+#  include <Types.h>
+# endif
+
 OSType MacNames[NUM_HEADERS] = {
    'WAVE', // WAVE
    'AIFF', // AIFF
@@ -275,7 +286,7 @@ OSType MacNames[NUM_HEADERS] = {
    'MAT5', // ?? Matlab 5
 };
 
-OSType sf_header_mactype(int format)
+static OSType sf_header_mactype(int format)
 {
    if (format >= 0x10000)
       return MacNames[(format/0x10000)-1];
@@ -287,18 +298,18 @@ OSType sf_header_mactype(int format)
 
 #endif // __WXMAC__
 
-#include <wx/msgdlg.h>
 ODLock libSndFileMutex;
 
-void SFFileCloser::operator() (SNDFILE *sf) const
+int SFFileCloser::operator() (SNDFILE *sf) const
 {
    auto err = SFCall<int>(sf_close, sf);
    if (err) {
       char buffer[1000];
       sf_error_str(sf, buffer, 1000);
-      wxMessageBox(wxString::Format
+      AudacityMessageBox(wxString::Format
          /* i18n-hint: %s will be the error message from libsndfile */
          (_("Error (file may not have been written): %s"),
          buffer));
    }
+   return err;
 }

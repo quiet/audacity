@@ -14,11 +14,8 @@
 #include "../MemoryX.h"
 #include "ToolBar.h"
 
-class wxImage;
 class wxSize;
 class wxPoint;
-class wxChoice;
-class wxStaticBitmap;
 
 class ASlider;
 
@@ -29,15 +26,17 @@ class MixerToolBar final : public ToolBar {
    MixerToolBar();
    virtual ~MixerToolBar();
 
-   void Create(wxWindow * parent);
+   void Create(wxWindow * parent) override;
 
-   void UpdatePrefs();
+   void UpdatePrefs() override;
    void UpdateControls();
    void SetMixer(wxCommandEvent &event);
 
    void Populate() override;
    void Repaint(wxDC * WXUNUSED(dc)) override {};
    void EnableDisableButtons() override {};
+   int GetMinToolbarWidth() override { return 250; }
+   int GetInitialWidth()  override { return 327; }
 
    void OnFocus(wxFocusEvent &event);
    void OnCaptureKey(wxCommandEvent &event);
@@ -60,8 +59,6 @@ class MixerToolBar final : public ToolBar {
 
    void InitializeMixerToolBar();
    void SetToolTips();
-
-   std::unique_ptr<wxBitmap> mPlayBitmap, mRecordBitmap;
 
    ASlider *mInputSlider;
    ASlider *mOutputSlider;

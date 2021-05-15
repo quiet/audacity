@@ -13,15 +13,13 @@
 #ifndef __AUDACITY_EFFECT_NOISE__
 #define __AUDACITY_EFFECT_NOISE__
 
-#include <wx/string.h>
-
 #include "../widgets/NumericTextCtrl.h"
 
 #include "Effect.h"
 
 class ShuttleGui;
 
-#define NOISE_PLUGIN_SYMBOL XO("Noise")
+#define NOISE_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Noise") }
 
 class EffectNoise final : public Effect
 {
@@ -29,12 +27,13 @@ public:
    EffectNoise();
    virtual ~EffectNoise();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
@@ -42,8 +41,9 @@ public:
 
    unsigned GetAudioOutCount() override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 

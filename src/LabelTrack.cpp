@@ -28,11 +28,17 @@ for drawing different aspects of the label and its text box.
 
 *//*******************************************************************/
 
-#include "Audacity.h"
+#include "Audacity.h" // for HAVE_GTK
 #include "LabelTrack.h"
+
+#include "Experimental.h"
+
+#include "TrackPanel.h"
 
 #include <stdio.h>
 #include <algorithm>
+#include <limits.h>
+#include <float.h>
 
 #include <wx/bitmap.h>
 #include <wx/brush.h>
@@ -43,7 +49,7 @@ for drawing different aspects of the label and its text box.
 #include <wx/event.h>
 #include <wx/intl.h>
 #include <wx/log.h>
-#include <wx/msgdlg.h>
+#include <wx/menu.h>
 #include <wx/pen.h>
 #include <wx/string.h>
 #include <wx/textfile.h>
@@ -53,7 +59,9 @@ for drawing different aspects of the label and its text box.
 #include "AudioIO.h"
 #include "DirManager.h"
 #include "Internat.h"
+#include "Menus.h"
 #include "Prefs.h"
+#include "RefreshCode.h"
 #include "Theme.h"
 #include "AllThemeResources.h"
 #include "AColor.h"
@@ -64,6 +72,7 @@ for drawing different aspects of the label and its text box.
 #include "commands/CommandManager.h"
 
 #include "effects/TimeWarper.h"
+#include "widgets/ErrorDialog.h"
 
 enum
 {
@@ -93,19 +102,14 @@ int LabelTrack::mFontHeight=-1;
 
 LabelTrack::Holder TrackFactory::NewLabelTrack()
 {
-   return std::make_unique<LabelTrack>(mDirManager);
+   return std::make_shared<LabelTrack>(mDirManager);
 }
 
 LabelTrack::LabelTrack(const std::shared_ptr<DirManager> &projDirManager):
    Track(projDirManager),
-   mbHitCenter(false),
-   mOldEdge(-1),
    mSelIndex(-1),
-   mMouseOverLabelLeft(-1),
-   mMouseOverLabelRight(-1),
    mRestoreFocus(-1),
    mClipLen(0.0),
-   mIsAdjustingLabel(false),
    miLastLabel(-1)
 {
    SetDefaultName(_("Label Track"));
@@ -125,13 +129,8 @@ LabelTrack::LabelTrack(const std::shared_ptr<DirManager> &projDirManager):
 
 LabelTrack::LabelTrack(const LabelTrack &orig) :
    Track(orig),
-   mbHitCenter(false),
-   mOldEdge(-1),
    mSelIndex(-1),
-   mMouseOverLabelLeft(-1),
-   mMouseOverLabelRight(-1),
-   mClipLen(0.0),
-   mIsAdjustingLabel(false)
+   mClipLen(0.0)
 {
    for (auto &original: orig.mLabels) {
       LabelStruct l { original.selectedRegion, original.title };
@@ -153,7 +152,7 @@ void LabelTrack::SetOffset(double dOffset)
       labelStruct.selectedRegion.move(dOffset);
 }
 
-bool LabelTrack::Clear(double b, double e)
+void LabelTrack::Clear(double b, double e)
 {
    // May DELETE labels, so use subscripts to iterate
    for (size_t i = 0; i < mLabels.size(); ++i) {
@@ -175,8 +174,6 @@ bool LabelTrack::Clear(double b, double e)
       else if (relation == LabelStruct::WITHIN_LABEL)
          labelStruct.selectedRegion.moveT1( - (e-b));
    }
-
-   return true;
 }
 
 #if 0
@@ -266,6 +263,10 @@ void LabelTrack::WarpLabels(const TimeWarper &warper) {
          warper.Warp(labelStruct.getT0()),
          warper.Warp(labelStruct.getT1()));
    }
+
+   // This should not be needed, assuming the warper is nondecreasing, but
+   // let's not assume too much.
+   SortLabels();
 }
 
 void LabelTrack::ResetFlags()
@@ -276,10 +277,19 @@ void LabelTrack::ResetFlags()
    mDrawCursor = false;
 }
 
+void LabelTrack::RestoreFlags( const Flags& flags )
+{
+   mInitialCursorPos = flags.mInitialCursorPos;
+   mCurrentCursorPos = flags.mCurrentCursorPos;
+   mSelIndex = flags.mSelIndex;
+   mRightDragging = flags.mRightDragging;
+   mDrawCursor = flags.mDrawCursor;
+}
+
 wxFont LabelTrack::GetFont(const wxString &faceName, int size)
 {
    wxFontEncoding encoding;
-   if (faceName == wxT(""))
+   if (faceName.empty())
       encoding = wxFONTENCODING_DEFAULT;
    else
       encoding = wxFONTENCODING_SYSTEM;
@@ -467,11 +477,16 @@ void LabelTrack::ComputeLayout(const wxRect & r, const ZoomInfo &zoomInfo) const
    // allowed to be obscured by the text].
    const int xExtra= (3 * mIconWidth)/2;
 
+   bool bAvoidName = false;
    const int nRows = wxMin((r.height / yRowHeight) + 1, MAX_NUM_ROWS);
+   if( nRows > 2 )
+      bAvoidName = gPrefs->ReadBool(wxT("/GUI/ShowTrackNameInWaveform"), false);
    // Initially none of the rows have been used.
    // So set a value that is less than any valid value.
    {
-      const int xStart = zoomInfo.TimeToPosition(0.0, r.x) - 100;
+      // Bug 502: With dragging left of zeros, labels can be in 
+      // negative space.  So set least possible value as starting point.
+      const int xStart = INT_MIN;
       for (auto &x : xUsed)
          x = xStart;
    }
@@ -490,6 +505,7 @@ void LabelTrack::ComputeLayout(const wxRect & r, const ZoomInfo &zoomInfo) const
       // (This is to encourage merging of adjacent label boundaries).
       while( (iRow<nRowsUsed) && (xUsed[iRow] != x ))
          iRow++;
+
       // IF we didn't find one THEN
       // find any row that can take a span starting at x.
       if( iRow >= nRowsUsed )
@@ -501,6 +517,21 @@ void LabelTrack::ComputeLayout(const wxRect & r, const ZoomInfo &zoomInfo) const
       // IF we found such a row THEN record a valid position.
       if( iRow<nRows )
       {
+         // Logic to ameliorate case where first label is under the 
+         // (on track) track name.  For later labels it does not matter
+         // as we can scroll left or right and/or zoom.
+         // A possible alternative idea would be to (instead) increase the 
+         // translucency of the track name, when the mouse is inside it.
+         if( (i==0 ) && (iRow==0) && bAvoidName ){
+            // reserve some space in first row.
+            // reserve max of 200px or t1, or text box right edge.
+            const int x2 = zoomInfo.TimeToPosition(0.0, r.x) + 200;
+            xUsed[iRow]=x+labelStruct.width+xExtra;
+            if( xUsed[iRow] < x1 ) xUsed[iRow]=x1;
+            if( xUsed[iRow] < x2 ) xUsed[iRow]=x2;
+            iRow=1;
+         }
+
          // Possibly update the number of rows actually used.
          if( iRow >= nRowsUsed )
             nRowsUsed=iRow+1;
@@ -749,22 +780,47 @@ void LabelTrack::CalcHighlightXs(int *x1, int *x2) const
    labelStruct.getXPos(dc, x2, pos2);
 }
 
+#include "tracks/labeltrack/ui/LabelGlyphHandle.h"
+// TODO:  don't rely on the global ::GetActiveProject() to find this.
+// Rather, give TrackPanelCell a drawing function and pass context into it.
+namespace {
+   LabelTrackHit *findHit()
+   {
+      // Fetch the highlighting state
+      auto target = GetActiveProject()->GetTrackPanel()->Target();
+      if (target) {
+         auto handle = dynamic_cast<LabelGlyphHandle*>( target.get() );
+         if (handle)
+            return &handle->mHit;
+      }
+      return nullptr;
+   }
+}
+
+#include "TrackPanelDrawingContext.h"
+#include "tracks/labeltrack/ui/LabelTextHandle.h"
+
 /// Draw calls other functions to draw the LabelTrack.
 ///   @param  dc the device context
 ///   @param  r  the LabelTrack rectangle.
-void LabelTrack::Draw(wxDC & dc, const wxRect & r,
-   const SelectedRegion &selectedRegion,
-   const ZoomInfo &zoomInfo) const
+void LabelTrack::Draw
+( TrackPanelDrawingContext &context, const wxRect & r ) const
 {
+   auto &dc = context.dc;
+   const auto artist = TrackArtist::Get( context );
+   const auto &zoomInfo = *artist->pZoomInfo;
+
+   auto pHit = findHit();
+
    if(msFont.Ok())
       dc.SetFont(msFont);
 
    if (mFontHeight == -1)
       calculateFontHeight(dc);
 
-   TrackArtist::DrawBackgroundWithSelection(&dc, r, this,
-         AColor::labelSelectedBrush, AColor::labelUnselectedBrush,
-         selectedRegion, zoomInfo);
+   TrackArt::DrawBackgroundWithSelection( context, r, this,
+      AColor::labelSelectedBrush, AColor::labelUnselectedBrush,
+      ( GetSelected() || IsSyncLockSelected() ) );
 
    wxCoord textWidth, textHeight;
 
@@ -802,21 +858,37 @@ void LabelTrack::Draw(wxDC & dc, const wxRect & r,
    { int i = -1; for (auto &labelStruct : mLabels) { ++i;
       GlyphLeft=0;
       GlyphRight=1;
-      if( i==mMouseOverLabelLeft )
-         GlyphLeft = mbHitCenter ? 6:9;
-      if( i==mMouseOverLabelRight )
-         GlyphRight = mbHitCenter ? 7:4;
+      if( pHit && i == pHit->mMouseOverLabelLeft )
+         GlyphLeft = (pHit->mEdge & 4) ? 6:9;
+      if( pHit && i == pHit->mMouseOverLabelRight )
+         GlyphRight = (pHit->mEdge & 4) ? 7:4;
       labelStruct.DrawGlyphs( dc, r, GlyphLeft, GlyphRight );
    }}
 
    // Draw the label boxes.
-   { int i = -1; for (auto &labelStruct : mLabels) { ++i;
-      if( mSelIndex==i)
-         dc.SetBrush(AColor::labelTextEditBrush);
-      labelStruct.DrawTextBox( dc, r );
-      if( mSelIndex==i)
-         dc.SetBrush(AColor::labelTextNormalBrush);
-   }}
+   {
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+      bool highlightTrack = false;
+      auto target = dynamic_cast<LabelTextHandle*>(context.target.get());
+      highlightTrack = target && target->GetTrack().get() == this;
+#endif
+      int i = -1; for (auto &labelStruct : mLabels) { ++i;
+         bool highlight = false;
+#ifdef EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+         highlight = highlightTrack && target->GetLabelNum() == i;
+#endif
+         bool selected = mSelIndex == i;
+
+         if( selected )
+            dc.SetBrush( AColor::labelTextEditBrush );
+         else if ( highlight )
+            dc.SetBrush( AColor::uglyBrush );
+         labelStruct.DrawTextBox( dc, r );
+
+         if (highlight || selected)
+            dc.SetBrush(AColor::labelTextNormalBrush);
+      }
+   }
 
    // Draw highlights
    if ((mInitialCursorPos != mCurrentCursorPos) && (mSelIndex >= 0 ))
@@ -964,7 +1036,7 @@ bool LabelTrack::CutSelectedText()
       left = text.Left(init);
 
    // get right-remaining text
-   if (cur < (int)text.Length())
+   if (cur < (int)text.length())
       right = text.Mid(cur);
 
    // set title to the combination of the two remainders
@@ -978,7 +1050,7 @@ bool LabelTrack::CutSelectedText()
    }
 
    // set cursor positions
-   mInitialCursorPos = mCurrentCursorPos = left.Length();
+   mInitialCursorPos = mCurrentCursorPos = left.length();
    return true;
 }
 
@@ -1032,7 +1104,7 @@ bool LabelTrack::PasteSelectedText(double sel0, double sel1)
       }
 
       // Convert control characters to blanks
-      for (int i = 0; i < (int)text.Length(); i++) {
+      for (int i = 0; i < (int)text.length(); i++) {
          if (wxIscntrl(text[i])) {
             text[i] = wxT(' ');
          }
@@ -1045,11 +1117,11 @@ bool LabelTrack::PasteSelectedText(double sel0, double sel1)
    if (init > cur)
       std::swap(init, cur);
    left = title.Left(init);
-   if (cur < (int)title.Length())
+   if (cur < (int)title.length())
       right = title.Mid(cur);
 
    title = left + text + right;
-   mInitialCursorPos =  mCurrentCursorPos = left.Length() + text.Length();
+   mInitialCursorPos =  mCurrentCursorPos = left.length() + text.length();
    return true;
 }
 
@@ -1092,7 +1164,7 @@ double LabelTrack::GetEndTime() const
 
 Track::Holder LabelTrack::Duplicate() const
 {
-   return std::make_unique<LabelTrack>( *this );
+   return std::make_shared<LabelTrack>( *this );
 }
 
 void LabelTrack::SetSelected(bool s)
@@ -1102,20 +1174,10 @@ void LabelTrack::SetSelected(bool s)
       Unselect();
 }
 
-/// OverGlyph returns 0 if not over a glyph,
-/// 1 if over the left-hand glyph, and
-/// 2 if over the right-hand glyph on a label.
-/// 3 if over both right and left.
-///
-/// It also sets up member variables:
-///   mMouseLabelLeft - index of any left label hit
-///   mMouseLabelRight - index of any right label hit
-///   mbHitCenter     - if (x,y) 'hits the spot'.
-///
 /// TODO: Investigate what happens with large
 /// numbers of labels, might need a binary search
 /// rather than a linear one.
-int LabelTrack::OverGlyph(int x, int y)
+void LabelTrack::OverGlyph(LabelTrackHit &hit, int x, int y) const
 {
    //Determine the NEW selection.
    int result=0;
@@ -1123,9 +1185,9 @@ int LabelTrack::OverGlyph(int x, int y)
    const int d2=5;  //distance in pixels, used for have we hit drag handle center.
 
    //If not over a label, reset it
-   mMouseOverLabelLeft  = -1;
-   mMouseOverLabelRight = -1;
-   mbHitCenter = false;
+   hit.mMouseOverLabelLeft  = -1;
+   hit.mMouseOverLabelRight = -1;
+   hit.mEdge = 0;
    { int i = -1; for (auto &labelStruct : mLabels) { ++i;
       //over left or right selection bound
       //Check right bound first, since it is drawn after left bound,
@@ -1133,16 +1195,16 @@ int LabelTrack::OverGlyph(int x, int y)
       if( abs(labelStruct.y - (y - (LabelTrack::mTextHeight+3)/2)) < d1 &&
                abs(labelStruct.x1 - d2 -x) < d1)
       {
-         mMouseOverLabelRight = i;
+         hit.mMouseOverLabelRight = i;
          if(abs(labelStruct.x1 - x) < d2 )
          {
-            mbHitCenter = true;
+            result |= 4;
             // If left and right co-incident at this resolution, then we drag both.
             // We could be a little less stringent about co-incidence here if we liked.
             if( abs(labelStruct.x1-labelStruct.x) < 1.0 )
             {
                result |=1;
-               mMouseOverLabelLeft = i;
+               hit.mMouseOverLabelLeft = i;
             }
          }
          result |= 2;
@@ -1152,9 +1214,9 @@ int LabelTrack::OverGlyph(int x, int y)
       else if(   abs(labelStruct.y - (y - (LabelTrack::mTextHeight+3)/2)) < d1 &&
             abs(labelStruct.x + d2 - x) < d1 )
       {
-         mMouseOverLabelLeft = i;
+         hit.mMouseOverLabelLeft = i;
          if(abs(labelStruct.x - x) < d2 )
-            mbHitCenter = true;
+            result |= 4;
          result |= 1;
       }
 
@@ -1165,7 +1227,7 @@ int LabelTrack::OverGlyph(int x, int y)
       }
 
    }}
-   return result;
+   hit.mEdge = result;
 }
 
 int LabelTrack::OverATextBox(int xx, int yy) const
@@ -1264,7 +1326,7 @@ LabelStruct LabelStruct::Import(wxTextFile &file, int &index)
    // Advance index over all continuation lines first, before we might throw
    // any exceptions.
    int index2 = index;
-   while (index < file.GetLineCount() &&
+   while (index < (int)file.GetLineCount() &&
           file.GetLine(index).StartsWith(continuation))
       ++index;
 
@@ -1292,10 +1354,10 @@ LabelStruct LabelStruct::Import(wxTextFile &file, int &index)
 
 void LabelStruct::Export(wxTextFile &file) const
 {
-   file.AddLine(wxString::Format(wxT("%f\t%f\t%s"),
-      getT0(),
-      getT1(), 
-      title.c_str()
+   file.AddLine(wxString::Format(wxT("%s\t%s\t%s"),
+      Internat::ToString(getT0(), FLT_DIG),
+      Internat::ToString(getT1(), FLT_DIG),
+      title
    ));
 
    // Do we need more lines?
@@ -1307,9 +1369,9 @@ void LabelStruct::Export(wxTextFile &file) const
 
    // Write a \ character at the start of a second line,
    // so that earlier versions of Audacity ignore it.
-   file.AddLine(wxString::Format(wxT("\\\t%f\t%f"),
-      f0,
-      f1
+   file.AddLine(wxString::Format(wxT("\\\t%s\t%s"),
+      Internat::ToString(f0, FLT_DIG),
+      Internat::ToString(f1, FLT_DIG)
    ));
 
    // Additional lines in future formats should also start with '\'.
@@ -1386,7 +1448,8 @@ auto LabelStruct::RegionRelation(
 /// @iEdge - which edge is requested to move, -1 for left +1 for right.
 /// @bAllowSwapping - if we can switch which edge is being dragged.
 /// fNewTime - the NEW time for this edge of the label.
-void LabelTrack::MayAdjustLabel( int iLabel, int iEdge, bool bAllowSwapping, double fNewTime)
+void LabelTrack::MayAdjustLabel
+( LabelTrackHit &hit, int iLabel, int iEdge, bool bAllowSwapping, double fNewTime)
 {
    if( iLabel < 0 )
       return;
@@ -1407,9 +1470,7 @@ void LabelTrack::MayAdjustLabel( int iLabel, int iEdge, bool bAllowSwapping, dou
    }
 
    // Swap our record of what we are dragging.
-   int Temp = mMouseOverLabelLeft;
-   mMouseOverLabelLeft = mMouseOverLabelRight;
-   mMouseOverLabelRight = Temp;
+   std::swap( hit.mMouseOverLabelLeft, hit.mMouseOverLabelRight );
 }
 
 // If the index is for a real label, adjust its left and right boundary.
@@ -1433,27 +1494,28 @@ static int Constrain( int value, int min, int max )
    return result;
 }
 
-bool LabelTrack::HandleGlyphDragRelease(const wxMouseEvent & evt,
-   wxRect & r, const ZoomInfo &zoomInfo,
-   SelectedRegion *newSel)
+bool LabelTrack::HandleGlyphDragRelease
+(LabelTrackHit &hit, const wxMouseEvent & evt,
+ wxRect & r, const ZoomInfo &zoomInfo,
+ SelectedRegion *newSel)
 {
    if(evt.LeftUp())
    {
       bool lupd = false, rupd = false;
-      if(mMouseOverLabelLeft>=0) {
-         auto &labelStruct = mLabels[mMouseOverLabelLeft];
+      if( hit.mMouseOverLabelLeft >= 0 ) {
+         auto &labelStruct = mLabels[ hit.mMouseOverLabelLeft ];
          lupd = labelStruct.updated;
          labelStruct.updated = false;
       }
-      if(mMouseOverLabelRight>=0) {
-         auto &labelStruct = mLabels[mMouseOverLabelRight];
+      if( hit.mMouseOverLabelRight >= 0 ) {
+         auto &labelStruct = mLabels[ hit.mMouseOverLabelRight ];
          rupd = labelStruct.updated;
          labelStruct.updated = false;
       }
 
-      mIsAdjustingLabel = false;
-      mMouseOverLabelLeft  = -1;
-      mMouseOverLabelRight = -1;
+      hit.mIsAdjustingLabel = false;
+      hit.mMouseOverLabelLeft  = -1;
+      hit.mMouseOverLabelRight = -1;
       return lupd || rupd;
    }
 
@@ -1466,23 +1528,25 @@ bool LabelTrack::HandleGlyphDragRelease(const wxMouseEvent & evt,
       int x = Constrain( evt.m_x + mxMouseDisplacement - r.x, 0, r.width);
 
       // If exactly one edge is selected we allow swapping
-      bool bAllowSwapping = (mMouseOverLabelLeft >=0 ) ^ ( mMouseOverLabelRight >= 0);
+      bool bAllowSwapping =
+         ( hit.mMouseOverLabelLeft >=0 ) !=
+         ( hit.mMouseOverLabelRight >= 0);
       // If we're on the 'dot' and nowe're moving,
       // Though shift-down inverts that.
       // and if both edges the same, then we're always moving the label.
-      bool bLabelMoving = mbIsMoving;
+      bool bLabelMoving = hit.mbIsMoving;
       bLabelMoving ^= evt.ShiftDown();
-      bLabelMoving |= mMouseOverLabelLeft==mMouseOverLabelRight;
+      bLabelMoving |= ( hit.mMouseOverLabelLeft == hit.mMouseOverLabelRight );
       double fNewX = zoomInfo.PositionToTime(x, 0);
       if( bLabelMoving )
       {
-         MayMoveLabel( mMouseOverLabelLeft,  -1, fNewX );
-         MayMoveLabel( mMouseOverLabelRight, +1, fNewX );
+         MayMoveLabel( hit.mMouseOverLabelLeft,  -1, fNewX );
+         MayMoveLabel( hit.mMouseOverLabelRight, +1, fNewX );
       }
       else
       {
-         MayAdjustLabel( mMouseOverLabelLeft,  -1, bAllowSwapping, fNewX );
-         MayAdjustLabel( mMouseOverLabelRight, +1, bAllowSwapping, fNewX );
+         MayAdjustLabel( hit, hit.mMouseOverLabelLeft,  -1, bAllowSwapping, fNewX );
+         MayAdjustLabel( hit, hit.mMouseOverLabelRight, +1, bAllowSwapping, fNewX );
       }
 
       if( mSelIndex >=0 )
@@ -1491,7 +1555,7 @@ bool LabelTrack::HandleGlyphDragRelease(const wxMouseEvent & evt,
          //the NEW size of the label.
          *newSel = mLabels[mSelIndex].selectedRegion;
       }
-      SortLabels();
+      SortLabels( &hit );
    }
 
    return false;
@@ -1539,23 +1603,24 @@ void LabelTrack::HandleTextDragRelease(const wxMouseEvent & evt)
    return;
 }
 
-void LabelTrack::HandleClick(const wxMouseEvent & evt,
-   const wxRect & r, const ZoomInfo &zoomInfo,
-   SelectedRegion *newSel)
+void LabelTrack::HandleGlyphClick
+(LabelTrackHit &hit, const wxMouseEvent & evt,
+ const wxRect & r, const ZoomInfo &zoomInfo,
+ SelectedRegion *WXUNUSED(newSel))
 {
    if (evt.ButtonDown())
    {
       //OverGlyph sets mMouseOverLabel to be the chosen label.
-      int iGlyph = OverGlyph(evt.m_x, evt.m_y);
-      mIsAdjustingLabel = evt.Button(wxMOUSE_BTN_LEFT) &&
-         iGlyph != 0;
+      OverGlyph(hit, evt.m_x, evt.m_y);
+      hit.mIsAdjustingLabel = evt.Button(wxMOUSE_BTN_LEFT) &&
+         ( hit.mEdge & 3 ) != 0;
 
-      if (mIsAdjustingLabel)
+      if (hit.mIsAdjustingLabel)
       {
          float t = 0.0;
          // We move if we hit the centre, we adjust one edge if we hit a chevron.
          // This is if we are moving just one edge.
-         mbIsMoving = mbHitCenter;
+         hit.mbIsMoving = (hit.mEdge & 4)!=0;
          // When we start dragging the label(s) we don't want them to jump.
          // so we calculate the displacement of the mouse from the drag center
          // and use that in subsequent dragging calculations.  The mouse stays
@@ -1568,28 +1633,39 @@ void LabelTrack::HandleClick(const wxMouseEvent & evt,
          // position when we start dragging.
 
          // Dragging of three label edges at the same time is not supported (yet).
-         if( (mMouseOverLabelRight >=0) &&
-             (mMouseOverLabelLeft >=0)
+         if( ( hit.mMouseOverLabelRight >= 0 ) &&
+             ( hit.mMouseOverLabelLeft >= 0 )
            )
          {
-            t = (mLabels[mMouseOverLabelRight].getT1() +
-                 mLabels[mMouseOverLabelLeft].getT0()) / 2.0f;
+            t = (mLabels[ hit.mMouseOverLabelRight ].getT1() +
+                 mLabels[ hit.mMouseOverLabelLeft ].getT0()) / 2.0f;
             // If we're moving two edges, then it's a move (label size preserved)
             // if both edges are the same label, and it's an adjust (label sizes change)
             // if we're on a boundary between two different labels.
-            mbIsMoving = (mMouseOverLabelLeft == mMouseOverLabelRight);
+            hit.mbIsMoving =
+               ( hit.mMouseOverLabelLeft == hit.mMouseOverLabelRight );
          }
-         else if(mMouseOverLabelRight >=0)
+         else if( hit.mMouseOverLabelRight >=0)
          {
-            t = mLabels[mMouseOverLabelRight].getT1();
+            t = mLabels[ hit.mMouseOverLabelRight ].getT1();
          }
-         else if(mMouseOverLabelLeft >=0)
+         else if( hit.mMouseOverLabelLeft >=0)
          {
-            t = mLabels[mMouseOverLabelLeft].getT0();
+            t = mLabels[ hit.mMouseOverLabelLeft ].getT0();
          }
          mxMouseDisplacement = zoomInfo.TimeToPosition(t, r.x) - evt.m_x;
-         return;
       }
+   }
+}
+
+void LabelTrack::HandleTextClick(const wxMouseEvent & evt,
+   const wxRect & r, const ZoomInfo &zoomInfo,
+   SelectedRegion *newSel)
+{
+   static_cast<void>(r);//compiler food.
+   static_cast<void>(zoomInfo);//compiler food.
+   if (evt.ButtonDown())
+   {
 
       mSelIndex = OverATextBox(evt.m_x, evt.m_y);
       if (mSelIndex != -1) {
@@ -1627,20 +1703,6 @@ void LabelTrack::HandleClick(const wxMouseEvent & evt,
             // Actually this might be right or middle down
             mRightDragging = true;
 
-         // reset the highlight indicator
-         wxRect highlightedRect;
-         {
-            int xpos1, xpos2;
-            CalcHighlightXs(&xpos1, &xpos2);
-
-            wxASSERT(mFontHeight >= 0); // should have been set up while drawing
-            // the rectangle of highlighted area
-            highlightedRect = {
-               xpos1, labelStruct.y - mFontHeight / 2,
-               (int)(xpos2 - xpos1 + 0.5), mFontHeight
-            };
-         }
-
          // Middle click on GTK: paste from primary selection
 #if defined(__WXGTK__) && (HAVE_GTK)
          if (evt.MiddleDown()) {
@@ -1654,7 +1716,6 @@ void LabelTrack::HandleClick(const wxMouseEvent & evt,
          }
 #endif
       }
-
 #if defined(__WXGTK__) && (HAVE_GTK)
       if (evt.MiddleDown()) {
          // Paste text, making a NEW label if none is selected.
@@ -1667,7 +1728,7 @@ void LabelTrack::HandleClick(const wxMouseEvent & evt,
 }
 
 // Check for keys that we will process
-bool LabelTrack::CaptureKey(wxKeyEvent & event)
+bool LabelTrack::DoCaptureKey(wxKeyEvent & event)
 {
    // Check for modifiers and only allow shift
    int mods = event.GetModifiers();
@@ -1688,10 +1749,15 @@ bool LabelTrack::CaptureKey(wxKeyEvent & event)
    }
    else {
       bool typeToCreateLabel;
-      gPrefs->Read(wxT("/GUI/TypeToCreateLabel"), &typeToCreateLabel, true);
+      gPrefs->Read(wxT("/GUI/TypeToCreateLabel"), &typeToCreateLabel, false);
       if (IsGoodLabelFirstKey(event) && typeToCreateLabel) {
          AudacityProject * pProj = GetActiveProject();
 
+
+// The commented out code can prevent label creation, causing bug 1551
+// We should only be in DoCaptureKey IF this label track has focus,
+// and in that case creating a Label is the expected/intended thing.
+#if 0
          // If we're playing, don't capture if the selection is the same as the
          // playback region (this helps prevent label track creation from
          // stealing unmodified kbd. shortcuts)
@@ -1705,6 +1771,7 @@ bool LabelTrack::CaptureKey(wxKeyEvent & event)
                return false;
             }
          }
+#endif
 
          // If there's a label there already don't capture
          if( GetLabelIndex(pProj->mViewInfo.selectedRegion.t0(),
@@ -1717,6 +1784,69 @@ bool LabelTrack::CaptureKey(wxKeyEvent & event)
    }
 
    return false;
+}
+
+unsigned LabelTrack::CaptureKey(wxKeyEvent & event, ViewInfo &, wxWindow *)
+{
+   event.Skip(!DoCaptureKey(event));
+   return RefreshCode::RefreshNone;
+}
+
+unsigned LabelTrack::KeyDown(wxKeyEvent & event, ViewInfo &viewInfo, wxWindow *WXUNUSED(pParent))
+{
+   double bkpSel0 = viewInfo.selectedRegion.t0(),
+      bkpSel1 = viewInfo.selectedRegion.t1();
+
+   AudacityProject *const pProj = GetActiveProject();
+
+   // Pass keystroke to labeltrack's handler and add to history if any
+   // updates were done
+   if (OnKeyDown(viewInfo.selectedRegion, event)) {
+      pProj->PushState(_("Modified Label"),
+         _("Label Edit"),
+         UndoPush::CONSOLIDATE);
+   }
+
+   // Make sure caret is in view
+   int x;
+   if (CalcCursorX(&x)) {
+      pProj->GetTrackPanel()->ScrollIntoView(x);
+   }
+
+   // If selection modified, refresh
+   // Otherwise, refresh track display if the keystroke was handled
+   if (bkpSel0 != viewInfo.selectedRegion.t0() ||
+      bkpSel1 != viewInfo.selectedRegion.t1())
+      return RefreshCode::RefreshAll;
+   else if (!event.GetSkipped())
+      return  RefreshCode::RefreshCell;
+
+   return RefreshCode::RefreshNone;
+}
+
+unsigned LabelTrack::Char(wxKeyEvent & event, ViewInfo &viewInfo, wxWindow *)
+{
+   double bkpSel0 = viewInfo.selectedRegion.t0(),
+      bkpSel1 = viewInfo.selectedRegion.t1();
+   // Pass keystroke to labeltrack's handler and add to history if any
+   // updates were done
+
+   AudacityProject *const pProj = GetActiveProject();
+
+   if (OnChar(viewInfo.selectedRegion, event))
+      pProj->PushState(_("Modified Label"),
+      _("Label Edit"),
+      UndoPush::CONSOLIDATE);
+
+   // If selection modified, refresh
+   // Otherwise, refresh track display if the keystroke was handled
+   if (bkpSel0 != viewInfo.selectedRegion.t0() ||
+      bkpSel1 != viewInfo.selectedRegion.t1())
+      return RefreshCode::RefreshAll;
+   else if (!event.GetSkipped())
+      return RefreshCode::RefreshCell;
+
+   return RefreshCode::RefreshNone;
 }
 
 /// KeyEvent is called for every keypress when over the label track.
@@ -1743,7 +1873,7 @@ bool LabelTrack::OnKeyDown(SelectedRegion &newSel, wxKeyEvent & event)
 
       case WXK_BACK:
          {
-            int len = title.Length();
+            int len = title.length();
 
             //IF the label is not blank THEN get rid of a letter or letters according to cursor position
             if (len > 0)
@@ -1755,7 +1885,7 @@ bool LabelTrack::OnKeyDown(SelectedRegion &newSel, wxKeyEvent & event)
                {
                   // DELETE one letter
                   if (mCurrentCursorPos > 0) {
-                     title.Remove(mCurrentCursorPos-1, 1);
+                     title.erase(mCurrentCursorPos-1, 1);
                      mCurrentCursorPos--;
                   }
                }
@@ -1773,7 +1903,7 @@ bool LabelTrack::OnKeyDown(SelectedRegion &newSel, wxKeyEvent & event)
       case WXK_DELETE:
       case WXK_NUMPAD_DELETE:
          {
-            int len = title.Length();
+            int len = title.length();
 
             //If the label is not blank get rid of a letter according to cursor position
             if (len > 0)
@@ -1785,7 +1915,7 @@ bool LabelTrack::OnKeyDown(SelectedRegion &newSel, wxKeyEvent & event)
                {
                   // DELETE one letter
                   if (mCurrentCursorPos < len) {
-                     title.Remove(mCurrentCursorPos, 1);
+                     title.erase(mCurrentCursorPos, 1);
                   }
                }
             }
@@ -1850,10 +1980,8 @@ bool LabelTrack::OnKeyDown(SelectedRegion &newSel, wxKeyEvent & event)
 
       case WXK_ESCAPE:
          if (mRestoreFocus >= 0) {
-            TrackListIterator iter(GetActiveProject()->GetTracks());
-            Track *track = iter.First();
-            while (track && mRestoreFocus--)
-               track = iter.Next();
+            auto track = *GetActiveProject()->GetTracks()->Any()
+               .begin().advance(mRestoreFocus);
             if (track)
                GetActiveProject()->GetTrackPanel()->SetFocusedTrack(track);
             mRestoreFocus = -1;
@@ -1872,7 +2000,7 @@ bool LabelTrack::OnKeyDown(SelectedRegion &newSel, wxKeyEvent & event)
          mSelIndex = (mSelIndex + (int)mLabels.size()) % (int)mLabels.size();    // wrap round if necessary
          {
             LabelStruct &newLabel = mLabels[mSelIndex];
-            mCurrentCursorPos = newLabel.title.Length();
+            mCurrentCursorPos = newLabel.title.length();
             mInitialCursorPos = mCurrentCursorPos;
             //Set the selection region to be equal to the selection bounds of the tabbed-to label.
             newSel = newLabel.selectedRegion;
@@ -1920,7 +2048,7 @@ bool LabelTrack::OnKeyDown(SelectedRegion &newSel, wxKeyEvent & event)
 
             if (mSelIndex >= 0 && mSelIndex < len) {
                const auto &labelStruct = mLabels[mSelIndex];
-               mCurrentCursorPos = labelStruct.title.Length();
+               mCurrentCursorPos = labelStruct.title.length();
                mInitialCursorPos = mCurrentCursorPos;
                //Set the selection region to be equal to the selection bounds of the tabbed-to label.
                newSel = labelStruct.selectedRegion;
@@ -1978,10 +2106,26 @@ bool LabelTrack::OnChar(SelectedRegion &WXUNUSED(newSel), wxKeyEvent & event)
          event.Skip();
          return false;
       }
-      SetSelected(true);
+      bool useDialog;
       AudacityProject *p = GetActiveProject();
-      AddLabel(p->mViewInfo.selectedRegion);
-      p->PushState(_("Added label"), _("Label"));
+      gPrefs->Read(wxT("/GUI/DialogForNameNewLabel"), &useDialog, false);
+      if (useDialog) {
+         wxString title;
+         if (DialogForLabelName(
+            *p, p->mViewInfo.selectedRegion, charCode, title) ==
+             wxID_CANCEL) {
+            return false;
+         }
+         SetSelected(true);
+         AddLabel(p->mViewInfo.selectedRegion, title, -2);
+         p->PushState(_("Added label"), _("Label"));
+         return false;
+      }
+      else {
+         SetSelected(true);
+         AddLabel(p->mViewInfo.selectedRegion);
+         p->PushState(_("Added label"), _("Label"));
+      }
    }
 
    //
@@ -2023,6 +2167,11 @@ void LabelTrack::ShowContextMenu()
 {
    wxWindow *parent = wxWindow::FindFocus();
 
+   // Bug 2044.  parent can be nullptr after a context switch.
+   if( !parent )
+      parent = GetActiveProject();
+
+   if( parent )
    {
       wxMenu menu;
       menu.Bind(wxEVT_MENU, &LabelTrack::OnContextMenu, this);
@@ -2052,6 +2201,7 @@ void LabelTrack::ShowContextMenu()
       int x = 0;
       bool success = CalcCursorX(&x);
       wxASSERT(success);
+      static_cast<void>(success); // Suppress unused variable warning if debug mode is disabled
 
       parent->PopupMenu(&menu, x, ls->y + (mIconHeight / 2) - 1);
    }
@@ -2060,6 +2210,7 @@ void LabelTrack::ShowContextMenu()
 void LabelTrack::OnContextMenu(wxCommandEvent & evt)
 {
    AudacityProject *p = GetActiveProject();
+   auto &selectedRegion = p->GetViewInfo().selectedRegion;
 
    switch (evt.GetId())
    {
@@ -2080,7 +2231,7 @@ void LabelTrack::OnContextMenu(wxCommandEvent & evt)
 
    /// paste selected text if paste menu item is selected
    case OnPasteSelectedTextID:
-      if (PasteSelectedText(p->GetSel0(), p->GetSel1()))
+      if (PasteSelectedText(selectedRegion.t0(), selectedRegion.t1()))
       {
          p->PushState(_("Modified Label"),
                       _("Label Edit"),
@@ -2090,7 +2241,7 @@ void LabelTrack::OnContextMenu(wxCommandEvent & evt)
 
    /// DELETE selected label
    case OnDeleteSelectedLabelID: {
-      int ndx = GetLabelIndex(p->GetSel0(), p->GetSel1());
+      int ndx = GetLabelIndex(selectedRegion.t0(), selectedRegion.t1());
       if (ndx != -1)
       {
          DeleteLabel(ndx);
@@ -2102,9 +2253,9 @@ void LabelTrack::OnContextMenu(wxCommandEvent & evt)
       break;
 
    case OnEditSelectedLabelID: {
-      int ndx = GetLabelIndex(p->GetSel0(), p->GetSel1());
+      int ndx = GetLabelIndex(selectedRegion.t0(), selectedRegion.t1());
       if (ndx != -1)
-         p->DoEditLabels(this, ndx);
+         DoEditLabels(*p, this, ndx);
    }
       break;
    }
@@ -2125,11 +2276,11 @@ void LabelTrack::RemoveSelectedText()
    if (init > 0)
       left = title.Left(init);
 
-   if (cur < (int)title.Length())
+   if (cur < (int)title.length())
       right = title.Mid(cur);
 
    title = left + right;
-   mInitialCursorPos = mCurrentCursorPos = left.Length();
+   mInitialCursorPos = mCurrentCursorPos = left.length();
 }
 
 void LabelTrack::Unselect()
@@ -2137,7 +2288,7 @@ void LabelTrack::Unselect()
    mSelIndex = -1;
 }
 
-bool LabelTrack::IsSelected() const
+bool LabelTrack::HasSelection() const
 {
    return (mSelIndex >= 0 && mSelIndex < (int)mLabels.size());
 }
@@ -2161,14 +2312,17 @@ void LabelTrack::Import(wxTextFile & in)
    //Currently, we expect a tag file to have two values and a label
    //on each line. If the second token is not a number, we treat
    //it as a single-value label.
+   bool error = false;
    for (int index = 0; index < lines;) {
       try {
          // Let LabelStruct::Import advance index
          LabelStruct l { LabelStruct::Import(in, index) };
          mLabels.push_back(l);
       }
-      catch(const LabelStruct::BadFormatException&) {}
+      catch(const LabelStruct::BadFormatException&) { error = true; }
    }
+   if (error)
+      ::AudacityMessageBox( _("One or more saved labels could not be read.") );
    SortLabels();
 }
 
@@ -2189,7 +2343,8 @@ bool LabelTrack::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
             break;
 
          const wxString strValue = value;
-         if (!XMLValueChecker::IsGoodString(strValue))
+         // Bug 1905 was about long label strings.
+         if (!XMLValueChecker::IsGoodLongString(strValue))
          {
             return false;
          }
@@ -2261,7 +2416,8 @@ XMLTagHandler *LabelTrack::HandleXMLChild(const wxChar *tag)
       return NULL;
 }
 
-void LabelTrack::WriteXML(XMLWriter &xmlFile)
+void LabelTrack::WriteXML(XMLWriter &xmlFile) const
+// may throw
 {
    int len = mLabels.size();
 
@@ -2334,10 +2490,8 @@ bool LabelTrack::Save(wxTextFile * out, bool overwrite)
 Track::Holder LabelTrack::Cut(double t0, double t1)
 {
    auto tmp = Copy(t0, t1);
-   if (!tmp)
-      return{};
-   if (!Clear(t0, t1))
-      return{};
+
+   Clear(t0, t1);
 
    return tmp;
 }
@@ -2348,8 +2502,7 @@ Track::Holder LabelTrack::SplitCut(double t0, double t1)
    // SplitCut() == Copy() + SplitDelete()
 
    Track::Holder tmp = Copy(t0, t1);
-   if (!tmp)
-      return {};
+
    if (!SplitDelete(t0, t1))
       return {};
 
@@ -2357,9 +2510,9 @@ Track::Holder LabelTrack::SplitCut(double t0, double t1)
 }
 #endif
 
-Track::Holder LabelTrack::Copy(double t0, double t1) const
+Track::Holder LabelTrack::Copy(double t0, double t1, bool) const
 {
-   auto tmp = std::make_unique<LabelTrack>(GetDirManager());
+   auto tmp = std::make_shared<LabelTrack>(GetDirManager());
    const auto lt = static_cast<LabelTrack*>(tmp.get());
 
    for (auto &labelStruct: mLabels) {
@@ -2404,48 +2557,53 @@ Track::Holder LabelTrack::Copy(double t0, double t1) const
    }
    lt->mClipLen = (t1 - t0);
 
-   // This std::move is needed to "upcast" the pointer type
-   return std::move(tmp);
+   return tmp;
 }
 
 
 bool LabelTrack::PasteOver(double t, const Track * src)
 {
-   if (src->GetKind() != Track::Label)
-      return false;
+   auto result = src->TypeSwitch< bool >( [&](const LabelTrack *sl) {
+      int len = mLabels.size();
+      int pos = 0;
 
-   int len = mLabels.size();
-   int pos = 0;
+      while (pos < len && mLabels[pos].getT0() < t)
+         pos++;
 
-   while (pos < len && mLabels[pos].getT0() < t)
-      pos++;
+      for (auto &labelStruct: sl->mLabels) {
+         LabelStruct l {
+            labelStruct.selectedRegion,
+            labelStruct.getT0() + t,
+            labelStruct.getT1() + t,
+            labelStruct.title
+         };
+         mLabels.insert(mLabels.begin() + pos++, l);
+      }
 
-   auto sl = static_cast<const LabelTrack *>(src);
-   for (auto &labelStruct: sl->mLabels) {
-      LabelStruct l {
-         labelStruct.selectedRegion,
-         labelStruct.getT0() + t,
-         labelStruct.getT1() + t,
-         labelStruct.title
-      };
-      mLabels.insert(mLabels.begin() + pos++, l);
-      len++;
-   }
+      return true;
+   } );
 
-   return true;
+   if (! result )
+      // THROW_INCONSISTENCY_EXCEPTION; // ?
+      (void)0;// intentionally do nothing
+
+   return result;
 }
 
-bool LabelTrack::Paste(double t, const Track *src)
+void LabelTrack::Paste(double t, const Track *src)
 {
-   if (src->GetKind() != Track::Label)
-      return false;
+   bool bOk = src->TypeSwitch< bool >( [&](const LabelTrack *lt) {
+      double shiftAmt = lt->mClipLen > 0.0 ? lt->mClipLen : lt->GetEndTime();
 
-   LabelTrack *lt = (LabelTrack *)src;
+      ShiftLabelsOnInsert(shiftAmt, t);
+      PasteOver(t, src);
 
-   double shiftAmt = lt->mClipLen > 0.0 ? lt->mClipLen : lt->GetEndTime();
+      return true;
+   } );
 
-   ShiftLabelsOnInsert(shiftAmt, t);
-   return PasteOver(t, src);
+   if ( !bOk )
+      // THROW_INCONSISTENCY_EXCEPTION; // ?
+      (void)0;// intentionally do nothing
 }
 
 // This repeats the labels in a time interval a specified number of times.
@@ -2501,7 +2659,7 @@ bool LabelTrack::Repeat(double t0, double t1, int n)
    return true;
 }
 
-bool LabelTrack::Silence(double t0, double t1)
+void LabelTrack::Silence(double t0, double t1)
 {
    int len = mLabels.size();
 
@@ -2545,11 +2703,9 @@ bool LabelTrack::Silence(double t0, double t1)
    }
 
    SortLabels();
-
-   return true;
 }
 
-bool LabelTrack::InsertSilence(double t, double len)
+void LabelTrack::InsertSilence(double t, double len)
 {
    for (auto &labelStruct: mLabels) {
       double t0 = labelStruct.getT0();
@@ -2561,8 +2717,6 @@ bool LabelTrack::InsertSilence(double t, double len)
          t1 += len;
       labelStruct.selectedRegion.setTimes(t0, t1);
    }
-
-   return true;
 }
 
 int LabelTrack::GetNumLabels() const
@@ -2594,6 +2748,10 @@ int LabelTrack::GetLabelIndex(double t, double t1)
    return wxNOT_FOUND;
 }
 
+
+// restoreFocus of -1 is the default, and sets the focus to this label.
+// restoreFocus of -2 or other value leaves the focus unchanged.
+// restoreFocus >= 0 will later cause focus to move to that track.
 int LabelTrack::AddLabel(const SelectedRegion &selectedRegion,
                          const wxString &title, int restoreFocus)
 {
@@ -2608,7 +2766,12 @@ int LabelTrack::AddLabel(const SelectedRegion &selectedRegion,
 
    mLabels.insert(mLabels.begin() + pos, l);
 
-   mSelIndex = pos;
+   // restoreFocus is -2 e.g. from Nyquist label creation, when we should not
+   // even lose the focus and open the label to edit in the first place.
+   // -1 means we don't need to restore it to anywhere.
+   // 0 or above is the track to restore to afetr editing the label is complete.
+   if( restoreFocus >= -1 )
+      mSelIndex = pos;
 
    // Make sure the caret is visible
    //
@@ -2792,7 +2955,7 @@ bool LabelTrack::IsGoodLabelEditKey(const wxKeyEvent & evt)
 /// This function is called often (whilst dragging a label)
 /// We expect them to be very nearly in order, so insertion
 /// sort (with a linear search) is a reasonable choice.
-void LabelTrack::SortLabels()
+void LabelTrack::SortLabels( LabelTrackHit *pHit )
 {
    const auto begin = mLabels.begin();
    const auto nn = (int)mLabels.size();
@@ -2827,8 +2990,10 @@ void LabelTrack::SortLabels()
                ++index;
          }
       };
-      update(mMouseOverLabelLeft);
-      update(mMouseOverLabelRight);
+      if ( pHit ) {
+         update( pHit->mMouseOverLabelLeft );
+         update( pHit->mMouseOverLabelRight );
+      }
       update(mSelIndex);
    }
 }
@@ -2902,4 +3067,76 @@ int LabelTrack::FindNextLabel(const SelectedRegion& currentRegion)
 
    miLastLabel = i;
    return i;
+}
+
+#include "LabelDialog.h"
+
+void LabelTrack::DoEditLabels
+(AudacityProject &project, LabelTrack *lt, int index)
+{
+   auto format = project.GetSelectionFormat(),
+      freqFormat = project.GetFrequencySelectionFormatName();
+   auto tracks = project.GetTracks();
+   auto trackFactory = project.GetTrackFactory();
+   auto rate = project.GetRate();
+   auto &viewInfo = project.GetViewInfo();
+
+   LabelDialog dlg(&project, *trackFactory, tracks,
+                   lt, index,
+                   viewInfo, rate,
+                   format, freqFormat);
+#ifdef __WXGTK__
+   dlg.Raise();
+#endif
+
+   if (dlg.ShowModal() == wxID_OK) {
+      project.PushState(_("Edited labels"), _("Label"));
+      project.RedrawProject();
+   }
+}
+
+int LabelTrack::DialogForLabelName(
+   AudacityProject &project,
+   const SelectedRegion& region, const wxString& initialValue, wxString& value)
+{
+   auto trackPanel = project.GetTrackPanel();
+   auto &viewInfo = project.GetViewInfo();
+
+   wxPoint position =
+      trackPanel->FindTrackRect(trackPanel->GetFocusedTrack()).GetBottomLeft();
+   // The start of the text in the text box will be roughly in line with the label's position
+   // if it's a point label, or the start of its region if it's a region label.
+   position.x += trackPanel->GetLabelWidth()
+      + std::max(0, static_cast<int>(viewInfo.TimeToPosition(region.t0())))
+      -40;
+   position.y += 2;  // just below the bottom of the track
+   position = trackPanel->ClientToScreen(position);
+   AudacityTextEntryDialog dialog{ &project,
+      _("Name:"),
+      _("New label"),
+      initialValue,
+      wxOK | wxCANCEL,
+      position };
+
+   // keep the dialog within Audacity's window, so that the dialog is always fully visible
+   wxRect dialogScreenRect = dialog.GetScreenRect();
+   wxRect projScreenRect = project.GetScreenRect();
+   wxPoint max = projScreenRect.GetBottomRight() + wxPoint{ -dialogScreenRect.width, -dialogScreenRect.height };
+   if (dialogScreenRect.x > max.x) {
+      position.x = max.x;
+      dialog.Move(position);
+   }
+   if (dialogScreenRect.y > max.y) {
+      position.y = max.y;
+      dialog.Move(position);
+   }
+
+   dialog.SetInsertionPointEnd();      // because, by default, initial text is selected
+   int status = dialog.ShowModal();
+   if (status != wxID_CANCEL) {
+      value = dialog.GetValue();
+      value.Trim(true).Trim(false);
+   }
+
+   return status;
 }

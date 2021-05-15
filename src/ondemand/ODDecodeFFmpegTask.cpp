@@ -9,7 +9,10 @@
 
 ******************************************************************/
 
-#include "../Audacity.h"   // needed before FFmpeg.h
+#include "../Audacity.h"   // needed before FFmpeg.h // for USE_* macros
+#include "ODDecodeFFmpegTask.h"
+
+#include "../Experimental.h"
 
 #include <wx/wxprec.h>
 // For compilers that support precompilation, includes "wx/wx.h".
@@ -17,8 +20,6 @@
 // Include your minimal set of headers here, or wx.h
 #include <wx/window.h>
 #endif
-
-#include "../Experimental.h"
 
 #ifdef USE_FFMPEG
 #ifdef EXPERIMENTAL_OD_FFMPEG
@@ -31,7 +32,6 @@
 
 
 extern FFmpegLibs *FFmpegLibsInst();
-#include "ODDecodeFFmpegTask.h"
 
 
 #define ODFFMPEG_SEEKING_TEST_UNKNOWN 0
@@ -43,10 +43,7 @@ extern FFmpegLibs *FFmpegLibsInst();
 //struct for caching the decoded samples to be used over multiple blockfiles
 struct FFMpegDecodeCache
 {
-   FFMpegDecodeCache() {}
-   ~FFMpegDecodeCache() { free(samplePtr); }
-
-   uint8_t* samplePtr{};//interleaved samples
+   ArrayOf<uint8_t> samplePtr;//interleaved samples
    sampleCount start;
    size_t         len;
    unsigned    numChannels;
@@ -82,10 +79,10 @@ public:
    ///However it doesn't do anything because ImportFFMpeg does all that for us.
    bool ReadHeader() override {return true;}
 
-   bool SeekingAllowed() ;
+   bool SeekingAllowed() override;
 
 private:
-   void InsertCache(movable_ptr<FFMpegDecodeCache> &&cache);
+   void InsertCache(std::unique_ptr<FFMpegDecodeCache> &&cache);
 
    //puts the actual audio samples into the blockfile's data array
    int FillDataFromCache(samplePtr & data, sampleFormat outFormat, sampleCount & start, size_t& len, unsigned int channel);
@@ -103,7 +100,7 @@ private:
    ScsPtr mScs;           //!< Pointer to array of pointers to stream contexts.
    ODDecodeFFmpegTask::Streams mChannels;
    std::shared_ptr<FFmpegContext> mContext; //!< Format description, also contains metadata and some useful info
-   std::vector<movable_ptr<FFMpegDecodeCache>> mDecodeCache;
+   std::vector<std::unique_ptr<FFMpegDecodeCache>> mDecodeCache;
    int                  mNumSamplesInCache;
    sampleCount                  mCurrentPos;     //the index of the next sample to be decoded
    size_t                       mCurrentLen;     //length of the last packet decoded
@@ -112,22 +109,15 @@ private:
    int                  mStreamIndex;
 };
 
-auto ODDecodeFFmpegTask::FromList(const std::list<TrackHolders> &channels) -> Streams
+auto ODDecodeFFmpegTask::FromList( const TrackHolders &channels ) -> Streams
 {
-   Streams streams;
-   streams.reserve(channels.size());
-   using namespace std;
-   transform(channels.begin(), channels.end(), back_inserter(streams),
-      [](const TrackHolders &holders) {
-         Channels channels;
-         channels.reserve(holders.size());
-         transform(holders.begin(), holders.end(), back_inserter(channels),
-            mem_fun_ref(&TrackHolders::value_type::get)
-         );
-         return channels;
+   // Convert array of array of unique_ptr to array of array of bare pointers
+   return transform_container<Streams>( channels,
+      [](const NewChannelGroup &holders) {
+         return transform_container<Channels>( holders,
+            std::mem_fn(&NewChannelGroup::value_type::get) );
       }
    );
-   return streams;
 }
 
 //------ ODDecodeFFmpegTask definitions
@@ -143,9 +133,9 @@ ODDecodeFFmpegTask::~ODDecodeFFmpegTask()
 }
 
 
-movable_ptr<ODTask> ODDecodeFFmpegTask::Clone() const
+std::unique_ptr<ODTask> ODDecodeFFmpegTask::Clone() const
 {
-   auto clone = make_movable<ODDecodeFFmpegTask>(mScs, Streams{ mChannels }, mContext, mStreamIndex);
+   auto clone = std::make_unique<ODDecodeFFmpegTask>(mScs, Streams{ mChannels }, mContext, mStreamIndex);
    clone->mDemandSample=GetDemandSample();
 
    //the decoders and blockfiles should not be copied.  They are created as the task runs.
@@ -160,7 +150,7 @@ ODFileDecoder* ODDecodeFFmpegTask::CreateFileDecoder(const wxString & fileName)
 {
    // Open the file for import
    auto decoder =
-      make_movable<ODFFmpegDecoder>(fileName, mScs, ODDecodeFFmpegTask::Streams{ mChannels },
+      std::make_unique<ODFFmpegDecoder>(fileName, mScs, ODDecodeFFmpegTask::Streams{ mChannels },
       mContext, mStreamIndex);
 
    mDecoders.push_back(std::move(decoder));
@@ -265,7 +255,7 @@ mStreamIndex(streamIndex)
        sc->m_stream->start_time > 0) {
       stream_delay = sc->m_stream->start_time;
    }
-   mCurrentPos = double(stream_delay) / AV_TIME_BASE;
+   mCurrentPos = sampleCount{ double(stream_delay) / AV_TIME_BASE };
 
    //TODO: add a ref counter to scs?  This will be necessary if we want to allow copy and paste of not-yet decoded
    //ODDecodeBlockFiles that point to FFmpeg files.
@@ -301,7 +291,7 @@ int ODFFmpegDecoder::Decode(SampleBuffer & data, sampleFormat & format, sampleCo
    samplePtr bufStart = data.ptr();
    streamContext* sc = NULL;
 
-   // printf("start %llu len %lu\n", start, len);
+   // wxPrintf("start %llu len %lu\n", start, len);
    //TODO update this to work with seek - this only works linearly now.
    if(mCurrentPos > start && mCurrentPos  <= start+len + kDecodeSampleAllowance)
    {
@@ -317,7 +307,7 @@ int ODFFmpegDecoder::Decode(SampleBuffer & data, sampleFormat & format, sampleCo
       int stindex = -1;
       uint64_t targetts;
 
-      //printf("attempting seek to %llu\n", start);
+      //wxPrintf("attempting seek to %llu\n", start);
       //we have to find the index for this stream.
       for (unsigned int i = 0; i < mFormatContext->nb_streams; i++) {
          if (mFormatContext->streams[i] == sc->m_stream )
@@ -330,32 +320,31 @@ int ODFFmpegDecoder::Decode(SampleBuffer & data, sampleFormat & format, sampleCo
          mCurrentPos = start+len +1;
          while(numAttempts++ < kMaxSeekRewindAttempts && mCurrentPos > start) {
             //we want to move slightly before the start of the block file, but not too far ahead
-            targetts =
+            targetts = std::max( 0.0,
                (start - kDecodeSampleAllowance * numAttempts / kMaxSeekRewindAttempts)
                   .as_long_long() *
-               ((double)st->time_base.den/(st->time_base.num * st->codec->sample_rate ));
-            if(targetts<0)
-               targetts=0;
+               ((double)st->time_base.den/(st->time_base.num * st->codec->sample_rate ))
+            );
 
-            //printf("attempting seek to %llu, attempts %d\n", targetts, numAttempts);
+            //wxPrintf("attempting seek to %llu, attempts %d\n", targetts, numAttempts);
             if(av_seek_frame(mFormatContext,stindex,targetts,0) >= 0){
                //find out the dts we've seekd to.
-               sampleCount actualDecodeStart = 0.5 + st->codec->sample_rate * st->cur_dts  * ((double)st->time_base.num/st->time_base.den);      //this is mostly safe because den is usually 1 or low number but check for high values.
+               sampleCount actualDecodeStart { 0.5 + st->codec->sample_rate * st->cur_dts  * ((double)st->time_base.num/st->time_base.den) };      //this is mostly safe because den is usually 1 or low number but check for high values.
 
                mCurrentPos = actualDecodeStart;
                seeking = true;
 
                //if the seek was past our desired position, rewind a bit.
-               //printf("seek ok to %llu samps, float: %f\n",actualDecodeStart,actualDecodeStartDouble);
+               //wxPrintf("seek ok to %llu samps, float: %f\n",actualDecodeStart,actualDecodeStartDouble);
             } else {
-               printf("seek failed");
+               wxPrintf("seek failed");
                break;
             }
          }
          if(mCurrentPos>start){
             mSeekingAllowedStatus = (bool)ODFFMPEG_SEEKING_TEST_FAILED;
             //               url_fseek(mFormatContext->pb,sc->m_pkt.pos,SEEK_SET);
-            printf("seek fail, reverting to previous pos\n");
+            wxPrintf("seek fail, reverting to previous pos\n");
             return -1;
          }
       }
@@ -375,8 +364,8 @@ int ODFFmpegDecoder::Decode(SampleBuffer & data, sampleFormat & format, sampleCo
          // for some formats
          // The only other case for inserting silence is for initial offset and ImportFFmpeg.cpp does this for us
          if (seeking) {
-            actualDecodeStart = 0.52 + (sc->m_stream->codec->sample_rate * sc->m_pkt->dts
-                                        * ((double)sc->m_stream->time_base.num / sc->m_stream->time_base.den));
+            actualDecodeStart = sampleCount{ 0.52 + (sc->m_stream->codec->sample_rate * sc->m_pkt->dts
+                                        * ((double)sc->m_stream->time_base.num / sc->m_stream->time_base.den)) };
             //this is mostly safe because den is usually 1 or low number but check for high values.
 
             //hack to get rounding to work to neareset frame size since dts isn't exact
@@ -387,22 +376,23 @@ int ODFFmpegDecoder::Decode(SampleBuffer & data, sampleFormat & format, sampleCo
             seeking = false;
          }
          if(actualDecodeStart != mCurrentPos)
-            printf("ts not matching - now:%llu , last:%llu, lastlen:%lu, start %llu, len %lu\n",actualDecodeStart.as_long_long(), mCurrentPos.as_long_long(), mCurrentLen, start.as_long_long(), len);
+            wxPrintf("ts not matching - now:%llu , last:%llu, lastlen:%lu, start %llu, len %lu\n",actualDecodeStart.as_long_long(), mCurrentPos.as_long_long(), mCurrentLen, start.as_long_long(), len);
             //if we've skipped over some samples, fill the gap with silence.  This could happen often in the beginning of the file.
          if(actualDecodeStart>start && firstpass) {
             // find the number of samples for the leading silence
+
             // UNSAFE_SAMPLE_COUNT_TRUNCATION
             // -- but used only experimentally as of this writing
             // Is there a proof size_t will not overflow size_t?
             // Result is surely nonnegative.
             auto amt = (actualDecodeStart - start).as_size_t();
-            auto cache = make_movable<FFMpegDecodeCache>();
+            auto cache = std::make_unique<FFMpegDecodeCache>();
 
-            //printf("skipping/zeroing %i samples. - now:%llu (%f), last:%llu, lastlen:%lu, start %llu, len %lu\n",amt,actualDecodeStart, actualDecodeStartdouble, mCurrentPos, mCurrentLen, start, len);
+            //wxPrintf("skipping/zeroing %i samples. - now:%llu (%f), last:%llu, lastlen:%lu, start %llu, len %lu\n",amt,actualDecodeStart, actualDecodeStartdouble, mCurrentPos, mCurrentLen, start, len);
 
             //put it in the cache so the other channels can use it.
             // wxASSERT(sc->m_stream->codec->channels > 0);
-            cache->numChannels = sc->m_stream->codec->channels;
+            cache->numChannels = std::max<unsigned>(0, sc->m_stream->codec->channels);
             cache->len = amt;
             cache->start=start;
             // 8 bit and 16 bit audio output from ffmpeg means
@@ -413,9 +403,7 @@ int ODFFmpegDecoder::Decode(SampleBuffer & data, sampleFormat & format, sampleCo
             else
                cache->samplefmt = AV_SAMPLE_FMT_FLT;
 
-            cache->samplePtr = (uint8_t*) malloc(amt * cache->numChannels * SAMPLE_SIZE(format));
-
-            memset(cache->samplePtr, 0, amt * cache->numChannels * SAMPLE_SIZE(format));
+            cache->samplePtr.reinit(amt * cache->numChannels * SAMPLE_SIZE(format), true);
 
             InsertCache(std::move(cache));
          }
@@ -537,32 +525,32 @@ int ODFFmpegDecoder::FillDataFromCache(samplePtr & data, sampleFormat outFormat,
             switch (mDecodeCache[i]->samplefmt)
             {
                case AV_SAMPLE_FMT_U8:
-                  //printf("u8 in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
-                  ((int16_t *)outBuf)[outIndex] = (int16_t) (((uint8_t*)mDecodeCache[i]->samplePtr)[inIndex] - 0x80) << 8;
+                  //wxPrintf("u8 in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
+                  ((int16_t *)outBuf)[outIndex] = (int16_t) (((uint8_t*)mDecodeCache[i]->samplePtr.get())[inIndex] - 0x80) << 8;
                break;
 
                case AV_SAMPLE_FMT_S16:
-                  //printf("u16 in %lu out %lu cachelen %lu outLen % lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
-                  ((int16_t *)outBuf)[outIndex] = ((int16_t*)mDecodeCache[i]->samplePtr)[inIndex];
+                  //wxPrintf("u16 in %lu out %lu cachelen %lu outLen % lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
+                  ((int16_t *)outBuf)[outIndex] = ((int16_t*)mDecodeCache[i]->samplePtr.get())[inIndex];
                break;
 
                case AV_SAMPLE_FMT_S32:
-                  //printf("s32 in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
+                  //wxPrintf("s32 in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
                   ((float *)outBuf)[outIndex] = (float) ((int32_t*)mDecodeCache[i]->samplePtr.get())[inIndex] * (1.0 / (1u << 31));
                break;
 
                case AV_SAMPLE_FMT_FLT:
-                  //printf("f in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
-                  ((float *)outBuf)[outIndex] = (float) ((float*)mDecodeCache[i]->samplePtr)[inIndex];
+                  //wxPrintf("f in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
+                  ((float *)outBuf)[outIndex] = (float) ((float*)mDecodeCache[i]->samplePtr.get())[inIndex];
                break;
 
                case AV_SAMPLE_FMT_DBL:
-                  //printf("dbl in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
-                  ((float *)outBuf)[outIndex] = (float) ((double*)mDecodeCache[i]->samplePtr)[inIndex];
+                  //wxPrintf("dbl in %lu out %lu cachelen %lu outLen %lu\n", inIndex, outIndex, mDecodeCache[i]->len, len);
+                  ((float *)outBuf)[outIndex] = (float) ((double*)mDecodeCache[i]->samplePtr.get())[inIndex];
                break;
 
                default:
-                  printf("ODDecodeFFMPEG TASK unrecognized sample format\n");
+                  wxPrintf("ODDecodeFFMPEG TASK unrecognized sample format\n");
                   return 1;
                break;
             }
@@ -611,37 +599,37 @@ int ODFFmpegDecoder::DecodeFrame(streamContext *sc, bool flushing)
       //TODO- consider growing/unioning a few cache buffers like WaveCache does.
       //however we can't use wavecache as it isn't going to handle our stereo interleaved part, and isn't for samples
       //However if other ODDecode tasks need this, we should do a NEW class for caching.
-      auto cache = make_movable<FFMpegDecodeCache>();
+      auto cache = std::make_unique<FFMpegDecodeCache>();
       //len is number of samples per channel
       // wxASSERT(sc->m_stream->codec->channels > 0);
-      cache->numChannels = sc->m_stream->codec->channels;
+      cache->numChannels = std::max<unsigned>(0, sc->m_stream->codec->channels);
 
       cache->len = (sc->m_decodedAudioSamplesValidSiz / sc->m_samplesize) / cache->numChannels;
       cache->start = mCurrentPos;
-      cache->samplePtr = (uint8_t*) malloc(sc->m_decodedAudioSamplesValidSiz);
+      cache->samplePtr.reinit(sc->m_decodedAudioSamplesValidSiz);
       cache->samplefmt = sc->m_samplefmt;
-      memcpy(cache->samplePtr, sc->m_decodedAudioSamples.get(), sc->m_decodedAudioSamplesValidSiz);
+      memcpy(cache->samplePtr.get(), sc->m_decodedAudioSamples.get(), sc->m_decodedAudioSamplesValidSiz);
 
       InsertCache(std::move(cache));
    }
    return ret;
 }
 
-void ODFFmpegDecoder::InsertCache(movable_ptr<FFMpegDecodeCache> &&cache) {
+void ODFFmpegDecoder::InsertCache(std::unique_ptr<FFMpegDecodeCache> &&cache) {
    int searchStart = 0;
    int searchEnd = mDecodeCache.size(); //size() is also a valid insert index.
    int guess = 0;
    //first just guess that the cache is contiguous and we can just use math to figure it out like a dictionary
    //by guessing where our hit will be.
 
-//   printf("inserting cache start %llu, mCurrentPos %llu\n", cache->start, mCurrentPos);
+//   wxPrintf("inserting cache start %llu, mCurrentPos %llu\n", cache->start, mCurrentPos);
    while(searchStart<searchEnd)
    {
       guess = (searchStart+searchEnd)/2;//searchStart+ (searchEnd-searchStart)*  ((float)cache->start - mDecodeCache[searchStart]->start )/mDecodeCache[searchEnd]->start;
       //check greater than OR equals because we want to insert infront of old dupes.
       if(mDecodeCache[guess]->start>= cache->start) {
 //         if(mDecodeCache[guess]->start == cache->start) {
-//            printf("dupe! start cache %llu start NEW cache %llu, mCurrentPos %llu\n",mDecodeCache[guess]->start, cache->start, mCurrentPos);
+//            wxPrintf("dupe! start cache %llu start NEW cache %llu, mCurrentPos %llu\n",mDecodeCache[guess]->start, cache->start, mCurrentPos);
 //         }
          searchEnd = guess;
       }

@@ -10,7 +10,12 @@
   loaded in a platform-specific way and passed into the constructor,
   but from here this class handles the interfacing.
 
-**********************************************************************/
+********************************************************************//**
+
+\class AEffect
+\brief VST Effects class, conforming to VST layout.
+
+*//********************************************************************/
 
 //#define VST_DEBUG
 //#define DEBUG_VST
@@ -19,17 +24,15 @@
 // WARNING:  This is NOT 64-bit safe
 // *******************************************************************
 
-#include "../../Audacity.h"
+#include "../../Audacity.h" // for USE_* macros
+#include "VSTEffect.h"
 
 #if 0
 #if defined(BUILDING_AUDACITY)
-#include "../../Audacity.h"
 #include "../../PlatformCompatibility.h"
 
 // Make the main function private
-#define MODULEMAIN_SCOPE static
 #else
-#define MODULEMAIN_SCOPE
 #define USE_VST 1
 #endif
 #endif
@@ -39,6 +42,7 @@
 #include <limits.h>
 #include <stdio.h>
 
+#include <wx/setup.h> // for wxUSE_* macros
 #include <wx/dynlib.h>
 #include <wx/app.h>
 #include <wx/defs.h>
@@ -49,12 +53,10 @@
 #include <wx/dcclient.h>
 #include <wx/file.h>
 #include <wx/filename.h>
-#include <wx/frame.h>
 #include <wx/imaglist.h>
 #include <wx/listctrl.h>
 #include <wx/log.h>
 #include <wx/module.h>
-#include <wx/msgdlg.h>
 #include <wx/process.h>
 #include <wx/progdlg.h>
 #include <wx/recguard.h>
@@ -78,7 +80,6 @@
 // TODO:  Unfortunately we have some dependencies on Audacity provided 
 //        dialogs, widgets and other stuff.  This will need to be cleaned up.
 
-#include "FileDialog.h"
 #include "../../FileNames.h"
 #include "../../Internat.h"
 #include "../../PlatformCompatibility.h"
@@ -87,13 +88,45 @@
 #include "../../widgets/NumericTextCtrl.h"
 #include "../../widgets/wxPanelWrapper.h"
 #include "../../widgets/valnum.h"
+#include "../../widgets/ErrorDialog.h"
 #include "../../xml/XMLFileReader.h"
 #include "../../xml/XMLWriter.h"
 
+#if wxUSE_ACCESSIBILITY
+#include "../../widgets/WindowAccessible.h"
+#endif
+
 #include "audacity/ConfigInterface.h"
 
-#include "VSTEffect.h"
 #include "../../MemoryX.h"
+#include <cstring>
+
+// Put this inclusion last.  On Linux it makes some unfortunate pollution of
+// preprocessor macro name space that interferes with other headers.
+#if defined(__WXOSX__)
+#include "VSTControlOSX.h"
+#elif defined(__WXMSW__)
+#include "VSTControlMSW.h"
+#elif defined(__WXGTK__)
+#include "VSTControlGTK.h"
+#endif
+
+static float reinterpretAsFloat(uint32_t x)
+{
+    static_assert(sizeof(float) == sizeof(uint32_t), "Cannot reinterpret uint32_t to float since sizes are different.");
+    float f;
+    std::memcpy(&f, &x, sizeof(float));
+    return f;
+}
+
+static uint32_t reinterpretAsUint32(float f)
+{
+    static_assert(sizeof(float) == sizeof(uint32_t), "Cannot reinterpret float to uint32_t since sizes are different.");
+
+    uint32_t x;
+    std::memcpy(&x, &f, sizeof(uint32_t));
+    return x;
+}
 
 // NOTE:  To debug the subprocess, use wxLogDebug and, on Windows, Debugview
 //        from TechNet (Sysinternals).
@@ -127,6 +160,12 @@ DECLARE_MODULE_ENTRY(AudacityModule)
 // ============================================================================
 DECLARE_BUILTIN_MODULE(VSTBuiltin);
 
+
+///////////////////////////////////////////////////////////////////////////////
+///
+/// Auto created at program start up, this initialises VST.
+///
+///////////////////////////////////////////////////////////////////////////////
 class VSTSubEntry final : public wxModule
 {
 public:
@@ -177,8 +216,14 @@ enum InfoKeys
    kKeyEnd
 };
 
+
+///////////////////////////////////////////////////////////////////////////////
+///
+/// Information about one VST effect.
+///
+///////////////////////////////////////////////////////////////////////////////
 class VSTSubProcess final : public wxProcess,
-                      public EffectIdentInterface
+                      public EffectDefinitionInterface
 {
 public:
    VSTSubProcess()
@@ -188,67 +233,62 @@ public:
 
    // EffectClientInterface implementation
 
-   wxString GetPath()
+   PluginPath GetPath() override
    {
       return mPath;
    }
 
-   wxString GetSymbol()
+   ComponentInterfaceSymbol GetSymbol() override
    {
       return mName;
    }
 
-   wxString GetName()
+   VendorSymbol GetVendor() override
    {
-      return GetSymbol();
+      return { mVendor };
    }
 
-   wxString GetVendor()
-   {
-      return mVendor;
-   }
-
-   wxString GetVersion()
+   wxString GetVersion() override
    {
       return mVersion;
    }
 
-   wxString GetDescription()
+   wxString GetDescription() override
    {
       return mDescription;
    }
 
-   wxString GetFamily()
+   EffectFamilySymbol GetFamily() override
    {
       return VSTPLUGINTYPE;
    }
 
-   EffectType GetType()
+   EffectType GetType() override
    {
       return mType;
    }
 
-   bool IsInteractive()
+   bool IsInteractive() override
    {
       return mInteractive;
    }
 
-   bool IsDefault()
+   bool IsDefault() override
    {
       return false;
    }
 
-   bool IsLegacy()
+   bool IsLegacy() override
    {
       return false;
    }
 
-   bool SupportsRealtime()
+   bool SupportsRealtime() override
    {
       return mType == EffectTypeProcess;
    }
 
-   bool SupportsAutomation()
+   bool SupportsAutomation() override
    {
       return mAutomatable;
    }
@@ -285,25 +325,20 @@ VSTEffectsModule::~VSTEffectsModule()
 }
 
 // ============================================================================
-// IdentInterface implementation
+// ComponentInterface implementation
 // ============================================================================
 
-wxString VSTEffectsModule::GetPath()
+PluginPath VSTEffectsModule::GetPath()
 {
    return mPath;
 }
 
-wxString VSTEffectsModule::GetSymbol()
+ComponentInterfaceSymbol VSTEffectsModule::GetSymbol()
 {
    return XO("VST Effects");
 }
 
-wxString VSTEffectsModule::GetName()
-{
-   return GetSymbol();
-}
-
-wxString VSTEffectsModule::GetVendor()
+VendorSymbol VSTEffectsModule::GetVendor()
 {
    return XO("The Audacity Team");
 }
@@ -316,7 +351,7 @@ wxString VSTEffectsModule::GetVersion()
 
 wxString VSTEffectsModule::GetDescription()
 {
-   return XO("Adds the ability to use VST effects in Audacity.");
+   return _("Adds the ability to use VST effects in Audacity.");
 }
 
 // ============================================================================
@@ -335,16 +370,29 @@ void VSTEffectsModule::Terminate()
    return;
 }
 
+FileExtensions VSTEffectsModule::GetFileExtensions()
+{
+   return {{ _T("vst") }};
+}
+
+FilePath VSTEffectsModule::InstallPath()
+{
+   // Not yet ready for VST drag-and-drop...
+   // return FileNames::PlugInDir();
+
+   return {};
+}
+
 bool VSTEffectsModule::AutoRegisterPlugins(PluginManagerInterface & WXUNUSED(pm))
 {
    // We don't auto-register
    return true;
 }
 
-wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
+PluginPaths VSTEffectsModule::FindPluginPaths(PluginManagerInterface & pm)
 {
-   wxArrayString pathList;
-   wxArrayString files;
+   FilePaths pathList;
+   FilePaths files;
 
    // Check for the VST_PATH environment variable
    wxString vstpath = wxString::FromUTF8(getenv("VST_PATH"));
@@ -353,7 +401,7 @@ wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
       wxStringTokenizer tok(vstpath);
       while (tok.HasMoreTokens())
       {
-         pathList.Add(tok.GetNextToken());
+         pathList.push_back(tok.GetNextToken());
       }
    }
 
@@ -361,20 +409,20 @@ wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
 #define VSTPATH wxT("/Library/Audio/Plug-Ins/VST")
 
    // Look in ~/Library/Audio/Plug-Ins/VST and /Library/Audio/Plug-Ins/VST
-   pathList.Add(wxGetHomeDir() + wxFILE_SEP_PATH + VSTPATH);
-   pathList.Add(VSTPATH);
+   pathList.push_back(wxGetHomeDir() + wxFILE_SEP_PATH + VSTPATH);
+   pathList.push_back(VSTPATH);
 
    // Recursively search all paths for Info.plist files.  This will identify all
    // bundles.
    pm.FindFilesInPathList(wxT("Info.plist"), pathList, files, true);
 
    // Remove the 'Contents/Info.plist' portion of the names
-   for (size_t i = 0; i < files.GetCount(); i++)
+   for (size_t i = 0; i < files.size(); i++)
    {
       files[i] = wxPathOnly(wxPathOnly(files[i]));
       if (!files[i].EndsWith(wxT(".vst")))
       {
-         files.RemoveAt(i--);
+         files.erase( files.begin() + i-- );
       }
    }
 
@@ -398,7 +446,7 @@ wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
       tpath[len] = 0;
       dpath[0] = 0;
       ExpandEnvironmentStrings(tpath, dpath, WXSIZEOF(dpath));
-      pathList.Add(dpath);
+      pathList.push_back(dpath);
    }
 
    // Then try HKEY_LOCAL_MACHINE registry key
@@ -415,7 +463,7 @@ wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
       tpath[len] = 0;
       dpath[0] = 0;
       ExpandEnvironmentStrings(tpath, dpath, WXSIZEOF(dpath));
-      pathList.Add(dpath);
+      pathList.push_back(dpath);
    }
 
    // Add the default path last
@@ -423,7 +471,7 @@ wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
    ExpandEnvironmentStrings(wxT("%ProgramFiles%\\Steinberg\\VSTPlugins"),
                             dpath,
                             WXSIZEOF(dpath));
-   pathList.Add(dpath);
+   pathList.push_back(dpath);
 
    // Recursively scan for all DLLs
    pm.FindFilesInPathList(wxT("*.dll"), pathList, files, true);
@@ -431,15 +479,15 @@ wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
 #else
 
    // Nothing specified in the VST_PATH environment variable...provide defaults
-   if (vstpath.IsEmpty())
+   if (vstpath.empty())
    {
       // We add this "non-default" one
-      pathList.Add(wxT(LIBDIR) wxT("/vst"));
+      pathList.push_back(wxT(LIBDIR) wxT("/vst"));
 
       // These are the defaults used by other hosts
-      pathList.Add(wxT("/usr/lib/vst"));
-      pathList.Add(wxT("/usr/local/lib/vst"));
-      pathList.Add(wxGetHomeDir() + wxFILE_SEP_PATH + wxT(".vst"));
+      pathList.push_back(wxT("/usr/lib/vst"));
+      pathList.push_back(wxT("/usr/local/lib/vst"));
+      pathList.push_back(wxGetHomeDir() + wxFILE_SEP_PATH + wxT(".vst"));
    }
 
    // Recursively scan for all shared objects
@@ -447,13 +495,18 @@ wxArrayString VSTEffectsModule::FindPlugins(PluginManagerInterface & pm)
 
 #endif
 
-   return files;
+   return { files.begin(), files.end() };
 }
 
-bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxString & path)
+unsigned VSTEffectsModule::DiscoverPluginsAtPath(
+   const PluginPath & path, wxString &errMsg,
+   const RegistrationCallback &callback)
 {
+   bool error = false;
+   unsigned nFound = 0;
+   errMsg.clear();
    // TODO:  Fix this for external usage
-   const wxString &cmdpath = PlatformCompatibility::GetExecutablePath();
+   const auto &cmdpath = PlatformCompatibility::GetExecutablePath();
 
    wxString effectIDs = wxT("0;");
    wxStringTokenizer effectTzr(effectIDs, wxT(";"));
@@ -462,7 +515,6 @@ bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxStrin
    size_t idCnt = 0;
    size_t idNdx = 0;
 
-   bool valid = false;
    bool cont = true;
 
    while (effectTzr.HasMoreTokens() && cont)
@@ -470,7 +522,7 @@ bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxStrin
       wxString effectID = effectTzr.GetNextToken();
 
       wxString cmd;
-      cmd.Printf(wxT("\"%s\" %s \"%s;%s\""), cmdpath.c_str(), VSTCMDKEY, path.c_str(), effectID.c_str());
+      cmd.Printf(wxT("\"%s\" %s \"%s;%s\""), cmdpath, VSTCMDKEY, path, effectID);
 
       VSTSubProcess proc;
       try
@@ -483,8 +535,8 @@ bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxStrin
       }
       catch (...)
       {
-         wxLogMessage(_("VST plugin registration failed for %s\n"), path.c_str());
-         return false;
+         wxLogMessage(_("VST plugin registration failed for %s\n"), path);
+         error = true;
       }
 
       wxString output;
@@ -520,7 +572,8 @@ bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxStrin
                if (idCnt > 3)
                {
                   progress.create( _("Scanning Shell VST"),
-                        wxString::Format(_("Registering %d of %d: %-64.64s"), 0, idCnt, proc.GetName().c_str()),
+                        wxString::Format(_("Registering %d of %d: %-64.64s"), 0, idCnt,
+                                         proc.GetSymbol().Translation()),
                         static_cast<int>(idCnt),
                         nullptr,
                         wxPD_APP_MODAL |
@@ -571,12 +624,12 @@ bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxStrin
             break;
 
             case kKeyInteractive:
-               proc.mInteractive = val.IsSameAs(wxT("1"));
+               proc.mInteractive = val == wxT("1");
                keycount++;
             break;
 
             case kKeyAutomatable:
-               proc.mAutomatable = val.IsSameAs(wxT("1"));
+               proc.mAutomatable = val == wxT("1");
                keycount++;
             break;
 
@@ -594,13 +647,15 @@ bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxStrin
                {
                   idNdx++;
                   cont = progress->Update(idNdx,
-                                          wxString::Format(_("Registering %d of %d: %-64.64s"), idNdx, idCnt, proc.GetName().c_str()));
+                     wxString::Format(_("Registering %d of %d: %-64.64s"), idNdx, idCnt,
+                        proc.GetSymbol().Translation() ));
                }
 
                if (!skip && cont)
                {
-                  valid = true;
-                  pm.RegisterPlugin(this, &proc);
+                  if (callback)
+                     callback( this, &proc );
+                  ++nFound;
                }
             }
             break;
@@ -613,10 +668,13 @@ bool VSTEffectsModule::RegisterPlugin(PluginManagerInterface & pm, const wxStrin
       }
    }
 
-   return valid;
+   if (error)
+      errMsg = _("Could not load the library");
+
+   return nFound;
 }
 
-bool VSTEffectsModule::IsPluginValid(const wxString & path, bool bFast)
+bool VSTEffectsModule::IsPluginValid(const PluginPath & path, bool bFast)
 {
    if( bFast )
       return true;
@@ -624,7 +682,7 @@ bool VSTEffectsModule::IsPluginValid(const wxString & path, bool bFast)
    return wxFileName::FileExists(realPath) || wxFileName::DirExists(realPath);
 }
 
-IdentInterface *VSTEffectsModule::CreateInstance(const wxString & path)
+ComponentInterface *VSTEffectsModule::CreateInstance(const PluginPath & path)
 {
    // Acquires a resource for the application.
    // For us, the ID is simply the path to the effect
@@ -632,7 +690,7 @@ IdentInterface *VSTEffectsModule::CreateInstance(const wxString & path)
    return safenew VSTEffect(path);
 }
 
-void VSTEffectsModule::DeleteInstance(IdentInterface *instance)
+void VSTEffectsModule::DeleteInstance(ComponentInterface *instance)
 {
    std::unique_ptr < VSTEffect > {
       dynamic_cast<VSTEffect *>(instance)
@@ -655,28 +713,29 @@ void VSTEffectsModule::Check(const wxChar *path)
    VSTEffect effect(path);
    if (effect.SetHost(NULL))
    {
-      wxArrayInt effectIDs = effect.GetEffectIDs();
+      auto effectIDs = effect.GetEffectIDs();
       wxString out;
 
-      if (effectIDs.GetCount() > 0)
+      if (effectIDs.size() > 0)
       {
          wxString subids;
 
-         for (size_t i = 0, cnt = effectIDs.GetCount(); i < cnt; i++)
+         for (size_t i = 0, cnt = effectIDs.size(); i < cnt; i++)
          {
             subids += wxString::Format(wxT("%d;"), effectIDs[i]);
          }
 
-         out = wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeySubIDs, subids.RemoveLast().c_str());
+         out = wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeySubIDs, subids.RemoveLast());
       }
       else
       {
          out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyBegin, wxEmptyString);
-         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyPath, effect.GetPath().c_str());
-         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyName, effect.GetName().c_str());
-         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyVendor, effect.GetVendor().c_str());
-         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyVersion, effect.GetVersion().c_str());
-         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyDescription, effect.GetDescription().c_str());
+         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyPath, effect.GetPath());
+         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyName, effect.GetSymbol().Internal());
+         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyVendor,
+                                 effect.GetVendor().Internal());
+         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyVersion, effect.GetVersion());
+         out += wxString::Format(wxT("%s%d=%s\n"), OUTPUTKEY, kKeyDescription, effect.GetDescription());
          out += wxString::Format(wxT("%s%d=%d\n"), OUTPUTKEY, kKeyEffectType, effect.GetType());
          out += wxString::Format(wxT("%s%d=%d\n"), OUTPUTKEY, kKeyInteractive, effect.IsInteractive());
          out += wxString::Format(wxT("%s%d=%d\n"), OUTPUTKEY, kKeyAutomatable, effect.SupportsAutomation());
@@ -693,10 +752,10 @@ void VSTEffectsModule::Check(const wxChar *path)
 
 ///////////////////////////////////////////////////////////////////////////////
 //
-// VSTEffectOptionsDialog
+// Dialog for configuring latency, buffer size and graphics mode for a
+// VST effect.
 //
 ///////////////////////////////////////////////////////////////////////////////
-
 class VSTEffectOptionsDialog final : public wxDialogWrapper
 {
 public:
@@ -827,11 +886,12 @@ void VSTEffectOptionsDialog::OnOk(wxCommandEvent & WXUNUSED(evt))
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-//
-// VSTEffectTimer
-//
+///
+/// Wrapper for wxTimer that calls a VST effect at regular intervals.
+///
+/// \todo should there be tests for no timer available?
+///
 ///////////////////////////////////////////////////////////////////////////////
-
 class VSTEffectTimer final : public wxTimer
 {
 public:
@@ -859,7 +919,6 @@ private:
 // VSTEffect
 //
 ///////////////////////////////////////////////////////////////////////////////
-
 enum
 {
    ID_Duration = 20000,
@@ -1001,9 +1060,9 @@ intptr_t VSTEffect::AudioMaster(AEffect * effect,
 
 #if defined(VST_DEBUG)
 #if defined(__WXMSW__)
-         wxLogDebug(wxT("VST canDo: %s"), wxString::FromAscii((char *)ptr).c_str());
+         wxLogDebug(wxT("VST canDo: %s"), wxString::FromAscii((char *)ptr));
 #else
-         wxPrintf(wxT("VST canDo: %s\n"), wxString::FromAscii((char *)ptr).c_str());
+         wxPrintf(wxT("VST canDo: %s\n"), wxString::FromAscii((char *)ptr));
 #endif
 #endif
 
@@ -1060,16 +1119,16 @@ void VSTEffect::BundleDeleter::operator() (void* p) const
       CFRelease(static_cast<CFBundleRef>(p));
 }
 
-void VSTEffect::ResourceDeleter::operator() (void *p) const
+void VSTEffect::ResourceHandle::reset()
 {
-   if (mpHandle) {
-      int resource = (int)p;
-      CFBundleCloseBundleResourceMap(mpHandle->get(), resource);
-   }
+   if (mpHandle)
+      CFBundleCloseBundleResourceMap(mpHandle, mNum);
+   mpHandle = nullptr;
+   mNum = 0;
 }
 #endif
 
-VSTEffect::VSTEffect(const wxString & path, VSTEffect *master)
+VSTEffect::VSTEffect(const PluginPath & path, VSTEffect *master)
 :  mPath(path),
    mMaster(master)
 {
@@ -1099,7 +1158,7 @@ VSTEffect::VSTEffect(const wxString & path, VSTEffect *master)
    memset(&mTimeInfo, 0, sizeof(mTimeInfo));
    mTimeInfo.samplePos = 0.0;
    mTimeInfo.sampleRate = 44100.0;  // this is a bogus value, but it's only for the display
-   mTimeInfo.nanoSeconds = wxGetLocalTimeMillis().ToDouble();
+   mTimeInfo.nanoSeconds = wxGetUTCTimeMillis().ToDouble();
    mTimeInfo.tempo = 120.0;
    mTimeInfo.timeSigNumerator = 4;
    mTimeInfo.timeSigDenominator = 4;
@@ -1108,10 +1167,6 @@ VSTEffect::VSTEffect(const wxString & path, VSTEffect *master)
    // UI
    
    mGui = false;
-   mNames = NULL;
-   mSliders = NULL;
-   mDisplays = NULL;
-   mLabels = NULL;
    mContainer = NULL;
 
    // If we're a slave then go ahead a load immediately
@@ -1128,51 +1183,26 @@ VSTEffect::~VSTEffect()
       mDialog->Close();
    }
 
-   if (mNames)
-   {
-      delete [] mNames;
-   }
-
-   if (mSliders)
-   {
-      delete [] mSliders;
-   }
-
-   if (mDisplays)
-   {
-      delete [] mDisplays;
-   }
-
-   if (mLabels)
-   {
-      delete [] mLabels;
-   }
-
    Unload();
 }
 
 // ============================================================================
-// IdentInterface Implementation
+// ComponentInterface Implementation
 // ============================================================================
 
-wxString VSTEffect::GetPath()
+PluginPath VSTEffect::GetPath()
 {
    return mPath;
 }
 
-wxString VSTEffect::GetSymbol()
+ComponentInterfaceSymbol VSTEffect::GetSymbol()
 {
    return mName;
 }
 
-wxString VSTEffect::GetName()
+VendorSymbol VSTEffect::GetVendor()
 {
-   return GetSymbol();
-}
-
-wxString VSTEffect::GetVendor()
-{
-   return mVendor;
+   return { mVendor };
 }
 
 wxString VSTEffect::GetVersion()
@@ -1196,26 +1226,22 @@ wxString VSTEffect::GetVersion()
 
 wxString VSTEffect::GetDescription()
 {
-   // VST does have a product string opcode and sum effects return a short
+   // VST does have a product string opcode and some effects return a short
    // description, but most do not or they just return the name again.  So,
    // try to provide some sort of useful information.
-   mDescription = XO("Audio In: ") +
-                  wxString::Format(wxT("%d"), mAudioIns) +
-                  XO(", Audio Out: ") +
-                  wxString::Format(wxT("%d"), mAudioOuts);
-
-   return mDescription;
+   return wxString::Format( _("Audio In: %d, Audio Out: %d"),
+                            mAudioIns, mAudioOuts);
 }
 
 // ============================================================================
-// EffectIdentInterface Implementation
+// EffectDefinitionInterface Implementation
 // ============================================================================
 
 EffectType VSTEffect::GetType()
 {
    if (mAudioIns == 0 && mAudioOuts == 0 && mMidiIns == 0 && mMidiOuts == 0)
    {
-      return EffectTypeNone;
+      return EffectTypeTool;
    }
 
    if (mAudioIns == 0 && mMidiIns == 0)
@@ -1232,7 +1258,7 @@ EffectType VSTEffect::GetType()
 }
 
 
-wxString VSTEffect::GetFamily()
+EffectFamilySymbol VSTEffect::GetFamily()
 {
    return VSTPLUGINTYPE;
 }
@@ -1289,7 +1315,9 @@ bool VSTEffect::SetHost(EffectHostInterface *host)
 
    if (mHost)
    {
-      mHost->GetSharedConfig(wxT("Options"), wxT("BufferSize"), mUserBlockSize, 8192);
+      int userBlockSize;
+      mHost->GetSharedConfig(wxT("Options"), wxT("BufferSize"), userBlockSize, 8192);
+      mUserBlockSize = std::max( 1, userBlockSize );
       mHost->GetSharedConfig(wxT("Options"), wxT("UseLatency"), mUseLatency, true);
 
       mBlockSize = mUserBlockSize;
@@ -1330,7 +1358,7 @@ int VSTEffect::GetMidiOutCount()
 
 size_t VSTEffect::SetBlockSize(size_t maxBlockSize)
 {
-   mBlockSize = std::min((int)maxBlockSize, mUserBlockSize);
+   mBlockSize = std::min( maxBlockSize, mUserBlockSize );
    return mBlockSize;
 }
 
@@ -1367,7 +1395,7 @@ bool VSTEffect::ProcessInitialize(sampleCount WXUNUSED(totalLen), ChannelNames W
    // Initialize time info
    memset(&mTimeInfo, 0, sizeof(mTimeInfo));
    mTimeInfo.sampleRate = mSampleRate;
-   mTimeInfo.nanoSeconds = wxGetLocalTimeMillis().ToDouble();
+   mTimeInfo.nanoSeconds = wxGetUTCTimeMillis().ToDouble();
    mTimeInfo.tempo = 120.0;
    mTimeInfo.timeSigNumerator = 4;
    mTimeInfo.timeSigDenominator = 4;
@@ -1424,26 +1452,16 @@ void VSTEffect::SetChannelCount(unsigned numChannels)
 
 bool VSTEffect::RealtimeInitialize()
 {
-   mMasterIn = new float *[mAudioIns];
-   for (int i = 0; i < mAudioIns; i++)
-   {
-      mMasterIn[i] = new float[mBlockSize];
-      memset(mMasterIn[i], 0, mBlockSize * sizeof(float));
-   }
-
-   mMasterOut = new float *[mAudioOuts];
-   for (int i = 0; i < mAudioOuts; i++)
-   {
-      mMasterOut[i] = new float[mBlockSize];
-   }
+   mMasterIn.reinit( mAudioIns, mBlockSize, true );
+   mMasterOut.reinit( mAudioOuts, mBlockSize );
 
    return ProcessInitialize(0, NULL);
 }
 
 bool VSTEffect::RealtimeAddProcessor(unsigned numChannels, float sampleRate)
 {
-   VSTEffect *slave = new VSTEffect(mPath, this);
-   mSlaves.Add(slave);
+   mSlaves.push_back(std::make_unique<VSTEffect>(mPath, this));
+   VSTEffect *const slave = mSlaves.back().get();
 
    slave->SetBlockSize(mBlockSize);
    slave->SetChannelCount(numChannels);
@@ -1478,24 +1496,13 @@ bool VSTEffect::RealtimeAddProcessor(unsigned numChannels, float sampleRate)
 
 bool VSTEffect::RealtimeFinalize()
 {
-   for (size_t i = 0, cnt = mSlaves.GetCount(); i < cnt; i++)
-   {
-      mSlaves[i]->ProcessFinalize();
-      delete mSlaves[i];
-   }
-   mSlaves.Clear();
+   for (const auto &slave : mSlaves)
+      slave->ProcessFinalize();
+   mSlaves.clear();
 
-   for (int i = 0; i < mAudioIns; i++)
-   {
-      delete [] mMasterIn[i];
-   }
-   delete [] mMasterIn;
+   mMasterIn.reset();
 
-   for (int i = 0; i < mAudioOuts; i++)
-   {
-      delete [] mMasterOut[i];
-   }
-   delete [] mMasterOut;
+   mMasterOut.reset();
 
    return ProcessFinalize();
 }
@@ -1504,10 +1511,8 @@ bool VSTEffect::RealtimeSuspend()
 {
    PowerOff();
 
-   for (size_t i = 0, cnt = mSlaves.GetCount(); i < cnt; i++)
-   {
-      mSlaves[i]->PowerOff();
-   }
+   for (const auto &slave : mSlaves)
+      slave->PowerOff();
 
    return true;
 }
@@ -1516,20 +1521,16 @@ bool VSTEffect::RealtimeResume()
 {
    PowerOn();
 
-   for (size_t i = 0, cnt = mSlaves.GetCount(); i < cnt; i++)
-   {
-      mSlaves[i]->PowerOn();
-   }
+   for (const auto &slave : mSlaves)
+      slave->PowerOn();
 
    return true;
 }
 
 bool VSTEffect::RealtimeProcessStart()
 {
-   for (int i = 0; i < mAudioIns; i++)
-   {
-      memset(mMasterIn[i], 0, mBlockSize * sizeof(float));
-   }
+   for (unsigned int i = 0; i < mAudioIns; i++)
+      memset(mMasterIn[i].get(), 0, mBlockSize * sizeof(float));
 
    mNumSamples = 0;
 
@@ -1540,7 +1541,7 @@ size_t VSTEffect::RealtimeProcess(int group, float **inbuf, float **outbuf, size
 {
    wxASSERT(numSamples <= mBlockSize);
 
-   for (int c = 0; c < mAudioIns; c++)
+   for (unsigned int c = 0; c < mAudioIns; c++)
    {
       for (decltype(numSamples) s = 0; s < numSamples; s++)
       {
@@ -1554,44 +1555,52 @@ size_t VSTEffect::RealtimeProcess(int group, float **inbuf, float **outbuf, size
 
 bool VSTEffect::RealtimeProcessEnd()
 {
-   ProcessBlock(mMasterIn, mMasterOut, mNumSamples);
+   // These casts to float** should be safe...
+   ProcessBlock(
+      reinterpret_cast <float**> (mMasterIn.get()),
+      reinterpret_cast <float**> (mMasterOut.get()),
+      mNumSamples);
 
    return true;
 }
 
-//
-// Some history...
-//
-// Before we ran into the Antress plugin problem with buffer size limitations,
-// (see below) we just had a plain old effect loop...get the input samples, pass
-// them to the effect, save the output samples.
-//
-// But, the hack I put in to limit the buffer size to only 8k (normally 512k or so)
-// severely impacted performance.  So, Michael C. added some intermediate buffering
-// that sped things up quite a bit and this is how things have worked for quite a
-// while.  It still didn't get the performance back to the pre-hack stage, but it
-// was a definite benefit.
-//
-// History over...
-//
-// I've recently (May 2014) tried newer versions of the Antress effects and they
-// no longer seem to have a problem with buffer size.  So, I've made a bit of a
-// compromise...I've made the buffer size user configurable.  Should have done this
-// from the beginning.  I've left the default 8k, just in case, but now the user
-// can set the buffering based on their specific setup and needs.
-//
-// And at the same time I added buffer delay compensation, which allows Audacity
-// to account for latency introduced by some effects.  This is based on information
-// provided by the effect, so it will not work with all effects since they don't
-// all provide the information (kn0ck0ut is one).
-//
+///
+/// Some history...
+///
+/// Before we ran into the Antress plugin problem with buffer size limitations,
+/// (see below) we just had a plain old effect loop...get the input samples, pass
+/// them to the effect, save the output samples.
+///
+/// But, the hack I put in to limit the buffer size to only 8k (normally 512k or so)
+/// severely impacted performance.  So, Michael C. added some intermediate buffering
+/// that sped things up quite a bit and this is how things have worked for quite a
+/// while.  It still didn't get the performance back to the pre-hack stage, but it
+/// was a definite benefit.
+///
+/// History over...
+///
+/// I've recently (May 2014) tried newer versions of the Antress effects and they
+/// no longer seem to have a problem with buffer size.  So, I've made a bit of a
+/// compromise...I've made the buffer size user configurable.  Should have done this
+/// from the beginning.  I've left the default 8k, just in case, but now the user
+/// can set the buffering based on their specific setup and needs.
+///
+/// And at the same time I added buffer delay compensation, which allows Audacity
+/// to account for latency introduced by some effects.  This is based on information
+/// provided by the effect, so it will not work with all effects since they don't
+/// all provide the information (kn0ck0ut is one).
+///
 bool VSTEffect::ShowInterface(wxWindow *parent, bool forceModal)
 {
    if (mDialog)
    {
-      mDialog->Close(true);
+      if ( mDialog->Close(true) )
+         mDialog = nullptr;
       return false;
    }
+
+   // mDialog is null
+   auto cleanup = valueRestorer( mDialog );
 
    //   mProcessLevel = 1;      // in GUI thread
 
@@ -1614,22 +1623,22 @@ bool VSTEffect::ShowInterface(wxWindow *parent, bool forceModal)
    if (SupportsRealtime() && !forceModal)
    {
       mDialog->Show();
+      cleanup.release();
 
       return false;
    }
 
    bool res = mDialog->ShowModal() != 0;
-   mDialog = NULL;
 
    return res;
 }
 
-bool VSTEffect::GetAutomationParameters(EffectAutomationParameters & parms)
+bool VSTEffect::GetAutomationParameters(CommandParameters & parms)
 {
    for (int i = 0; i < mAEffect->numParams; i++)
    {
       wxString name = GetString(effGetParamName, i);
-      if (name.IsEmpty())
+      if (name.empty())
       {
          name.Printf(wxT("parm_%d"), i);
       }
@@ -1644,15 +1653,13 @@ bool VSTEffect::GetAutomationParameters(EffectAutomationParameters & parms)
    return true;
 }
 
-bool VSTEffect::SetAutomationParameters(EffectAutomationParameters & parms)
+bool VSTEffect::SetAutomationParameters(CommandParameters & parms)
 {
-   size_t slaveCnt = mSlaves.GetCount();
-
    callDispatcher(effBeginSetProgram, 0, 0, NULL, 0.0);
    for (int i = 0; i < mAEffect->numParams; i++)
    {
       wxString name = GetString(effGetParamName, i);
-      if (name.IsEmpty())
+      if (name.empty())
       {
          name.Printf(wxT("parm_%d"), i);
       }
@@ -1666,10 +1673,8 @@ bool VSTEffect::SetAutomationParameters(EffectAutomationParameters & parms)
       if (d >= -1.0 && d <= 1.0)
       {
          callSetParameter(i, d);
-         for (size_t i = 0; i < slaveCnt; i++)
-         {
-            mSlaves[i]->callSetParameter(i, d);
-         }
+         for (const auto &slave : mSlaves)
+            slave->callSetParameter(i, d);
       }
    }
    callDispatcher(effEndSetProgram, 0, 0, NULL, 0.0);
@@ -1678,7 +1683,7 @@ bool VSTEffect::SetAutomationParameters(EffectAutomationParameters & parms)
 }
 
 
-bool VSTEffect::LoadUserPreset(const wxString & name)
+bool VSTEffect::LoadUserPreset(const RegistryPath & name)
 {
    if (!LoadParameters(name))
    {
@@ -1690,14 +1695,14 @@ bool VSTEffect::LoadUserPreset(const wxString & name)
    return true;
 }
 
-bool VSTEffect::SaveUserPreset(const wxString & name)
+bool VSTEffect::SaveUserPreset(const RegistryPath & name)
 {
    return SaveParameters(name);
 }
 
-wxArrayString VSTEffect::GetFactoryPresets()
+RegistryPaths VSTEffect::GetFactoryPresets()
 {
-   wxArrayString progs; 
+   RegistryPaths progs;
 
    // Some plugins, like Guitar Rig 5, only report 128 programs while they have hundreds.  While
    // I was able to come up with a hack in the Guitar Rig case to gather all of the program names
@@ -1706,7 +1711,7 @@ wxArrayString VSTEffect::GetFactoryPresets()
    {
       for (int i = 0; i < mAEffect->numPrograms; i++)
       {
-         progs.Add(GetString(effGetProgramNameIndexed, i));
+         progs.push_back(GetString(effGetProgramNameIndexed, i));
       }
    }
 
@@ -1807,6 +1812,7 @@ bool VSTEffect::CloseUI()
 #ifdef __WX_EVTLOOP_BUSY_WAITING__
    wxEventLoop::SetBusyWaiting(false);
 #endif
+   mControl->Close();
 #endif
 
    mParent->RemoveEventHandler(this);
@@ -1817,29 +1823,10 @@ bool VSTEffect::CloseUI()
 
    RemoveHandler();
 
-   if (mNames)
-   {
-      delete [] mNames;
-      mNames = NULL;
-   }
-
-   if (mSliders)
-   {
-      delete [] mSliders;
-      mSliders = NULL;
-   }
-
-   if (mDisplays)
-   {
-      delete [] mDisplays;
-      mDisplays = NULL;
-   }
-
-   if (mLabels)
-   {
-      delete [] mLabels;
-      mLabels = NULL;
-   }
+   mNames.reset();
+   mSliders.reset();
+   mDisplays.reset();
+   mLabels.reset();
 
    mUIHost = NULL;
    mParent = NULL;
@@ -1861,8 +1848,9 @@ void VSTEffect::ExportPresets()
    // Ask the user for the real name
    //
    // Passing a valid parent will cause some effects dialogs to malfunction
-   // upon returning from the FileSelector().
-   path = FileSelector(_("Save VST Preset As:"),
+   // upon returning from the FileNames::SelectFile().
+   path = FileNames::SelectFile(FileNames::Operation::_None,
+                       _("Save VST Preset As:"),
                        FileNames::DataDir(),
                        wxEmptyString,
                        wxT("xml"),
@@ -1871,7 +1859,7 @@ void VSTEffect::ExportPresets()
                        NULL);
 
    // User canceled...
-   if (path.IsEmpty())
+   if (path.empty())
    {
       return;
    }
@@ -1888,12 +1876,13 @@ void VSTEffect::ExportPresets()
    }
    else if (ext.CmpNoCase(wxT("xml")) == 0)
    {
+      // may throw
       SaveXML(fn);
    }
    else
    {
       // This shouldn't happen, but complain anyway
-      wxMessageBox(_("Unrecognized file extension."),
+      AudacityMessageBox(_("Unrecognized file extension."),
                    _("Error Saving VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -1912,7 +1901,8 @@ void VSTEffect::ImportPresets()
    wxString path;
 
    // Ask the user for the real name
-   path = FileSelector(_("Load VST Preset:"),
+   path = FileNames::SelectFile(FileNames::Operation::_None,
+                       _("Load VST Preset:"),
                        FileNames::DataDir(),
                        wxEmptyString,
                        wxT("xml"),
@@ -1921,7 +1911,7 @@ void VSTEffect::ImportPresets()
                        mParent);
 
    // User canceled...
-   if (path.IsEmpty())
+   if (path.empty())
    {
       return;
    }
@@ -1944,7 +1934,7 @@ void VSTEffect::ImportPresets()
    else
    {
       // This shouldn't happen, but complain anyway
-      wxMessageBox(_("Unrecognized file extension."),
+      AudacityMessageBox(_("Unrecognized file extension."),
                    _("Error Loading VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -1954,7 +1944,7 @@ void VSTEffect::ImportPresets()
 
    if (!success)
    {
-      wxMessageBox(_("Unable to load presets file."),
+      AudacityMessageBox(_("Unable to load presets file."),
                    _("Error Loading VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -1978,7 +1968,9 @@ void VSTEffect::ShowOptions()
    if (dlg.ShowModal())
    {
       // Reinitialize configuration settings
-      mHost->GetSharedConfig(wxT("Options"), wxT("BufferSize"), mUserBlockSize, 8192);
+      int userBlockSize;
+      mHost->GetSharedConfig(wxT("Options"), wxT("BufferSize"), userBlockSize, 8192);
+      mUserBlockSize = std::max( 1, userBlockSize );
       mHost->GetSharedConfig(wxT("Options"), wxT("UseLatency"), mUseLatency, true);
    }
 }
@@ -2074,10 +2066,8 @@ bool VSTEffect::Load()
    mBundleRef = std::move(bundleRef);
 
    // Open the resource map ... some plugins (like GRM Tools) need this.
-   mResource = ResourceHandle {
-      reinterpret_cast<char*>(
-         CFBundleOpenBundleResourceMap(mBundleRef.get())),
-      ResourceDeleter{&mBundleRef}
+   mResource = ResourceHandle{
+      mBundleRef.get(), CFBundleOpenBundleResourceMap(mBundleRef.get())
    };
 
 #elif defined(__WXMSW__)
@@ -2280,7 +2270,7 @@ void VSTEffect::Unload()
    if (mModule)
    {
 #if defined(__WXMAC__)
-      mResource = ResourceHandle{};
+      mResource.reset();
       mBundleRef.reset();
 #endif
 
@@ -2289,9 +2279,9 @@ void VSTEffect::Unload()
    }
 }
 
-wxArrayInt VSTEffect::GetEffectIDs()
+std::vector<int> VSTEffect::GetEffectIDs()
 {
-   wxArrayInt effectIDs;
+   std::vector<int> effectIDs;
 
    // Are we a shell?
    if (mVstVersion >= 2 && (VstPlugCategory) callDispatcher(effGetPlugCategory, 0, 0, NULL, 0) == kPlugCategShell)
@@ -2302,7 +2292,7 @@ wxArrayInt VSTEffect::GetEffectIDs()
       effectID = (int) callDispatcher(effShellGetNextPlugin, 0, 0, &name, 0);
       while (effectID)
       {
-         effectIDs.Add(effectID);
+         effectIDs.push_back(effectID);
          effectID = (int) callDispatcher(effShellGetNextPlugin, 0, 0, &name, 0);
       }
    }
@@ -2310,7 +2300,7 @@ wxArrayInt VSTEffect::GetEffectIDs()
    return effectIDs;
 }
 
-bool VSTEffect::LoadParameters(const wxString & group)
+bool VSTEffect::LoadParameters(const RegistryPath & group)
 {
    wxString value;
 
@@ -2328,14 +2318,13 @@ bool VSTEffect::LoadParameters(const wxString & group)
 
    if (mHost->GetPrivateConfig(group, wxT("Chunk"), value, wxEmptyString))
    {
-      char *buf = new char[value.length() / 4 * 3];
+      ArrayOf<char> buf{ value.length() / 4 * 3 };
 
-      int len = VSTEffect::b64decode(value, buf);
+      int len = VSTEffect::b64decode(value, buf.get());
       if (len)
       {
-         callSetChunk(true, len, buf, &info);
+         callSetChunk(true, len, buf.get(), &info);
       }
-      delete [] buf;
 
       return true;
    }
@@ -2346,7 +2335,7 @@ bool VSTEffect::LoadParameters(const wxString & group)
       return false;
    }
 
-   EffectAutomationParameters eap;
+   CommandParameters eap;
    if (!eap.SetParameters(parms))
    {
       return false;
@@ -2355,7 +2344,7 @@ bool VSTEffect::LoadParameters(const wxString & group)
    return SetAutomationParameters(eap);
 }
 
-bool VSTEffect::SaveParameters(const wxString & group)
+bool VSTEffect::SaveParameters(const RegistryPath & group)
 {
    mHost->SetPrivateConfig(group, wxT("UniqueID"), mAEffect->uniqueID);
    mHost->SetPrivateConfig(group, wxT("Version"), mAEffect->version);
@@ -2374,7 +2363,7 @@ bool VSTEffect::SaveParameters(const wxString & group)
       return true;
    }
 
-   EffectAutomationParameters eap;
+   CommandParameters eap;
    if (!GetAutomationParameters(eap))
    {
       return false;
@@ -2428,7 +2417,7 @@ void VSTEffect::NeedEditIdle(bool state)
 
 VstTimeInfo *VSTEffect::GetTimeInfo()
 {
-   mTimeInfo.nanoSeconds = wxGetLocalTimeMillis().ToDouble();
+   mTimeInfo.nanoSeconds = wxGetUTCTimeMillis().ToDouble();
    return &mTimeInfo;
 }
 
@@ -2513,10 +2502,8 @@ void VSTEffect::Automate(int index, float value)
       return;
    }
 
-   for (size_t i = 0, cnt = mSlaves.GetCount(); i < cnt; i++)
-   {
-      mSlaves[i]->callSetParameter(index, value);
-   }
+   for (const auto &slave : mSlaves)
+      slave->callSetParameter(index, value);
 
    return;
 }
@@ -2587,10 +2574,8 @@ void VSTEffect::callSetParameter(int index, float value)
    {
       mAEffect->setParameter(mAEffect, index, value);
 
-      for (size_t i = 0, cnt = mSlaves.GetCount(); i < cnt; i++)
-      {
-         mSlaves[i]->callSetParameter(index, value);
-      }
+      for (const auto &slave : mSlaves)
+         slave->callSetParameter(index, value);
    }
 }
 
@@ -2599,10 +2584,8 @@ void VSTEffect::callSetProgram(int index)
    callDispatcher(effBeginSetProgram, 0, 0, NULL, 0.0);
 
    callDispatcher(effSetProgram, 0, index, NULL, 0.0);
-   for (size_t i = 0, cnt = mSlaves.GetCount(); i < cnt; i++)
-   {
-      mSlaves[i]->callSetProgram(index);
-   }
+   for (const auto &slave : mSlaves)
+      slave->callSetProgram(index);
 
    callDispatcher(effEndSetProgram, 0, 0, NULL, 0.0);
 }
@@ -2643,10 +2626,8 @@ void VSTEffect::callSetChunk(bool isPgm, int len, void *buf, VstPatchChunkInfo *
    callDispatcher(effSetChunk, isPgm ? 1 : 0, len, buf, 0.0);
    callDispatcher(effEndSetProgram, 0, 0, NULL, 0.0);
 
-   for (size_t i = 0, cnt = mSlaves.GetCount(); i < cnt; i++)
-   {
-      mSlaves[i]->callSetChunk(isPgm, len, buf, info);
-   }
+   for (const auto &slave : mSlaves)
+      slave->callSetChunk(isPgm, len, buf, info);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2784,12 +2765,30 @@ void VSTEffect::RemoveHandler()
 {
 }
 
+static void OnSize(wxSizeEvent & evt)
+{
+   evt.Skip();
+
+   // Once the parent dialog reaches its final size as indicated by
+   // a non-default minimum size, we set the maximum size to match.
+   // This is a bit of a hack to prevent VSTs GUI windows from resizing
+   // there's no real reason to allow it.  But, there should be a better
+   // way of handling it.
+   wxWindow *w = (wxWindow *) evt.GetEventObject();
+   wxSize sz = w->GetMinSize();
+
+   if (sz != wxDefaultSize)
+   {
+      w->SetMaxSize(sz);
+   }
+}
+
 void VSTEffect::BuildFancy()
 {
    // Turn the power on...some effects need this when the editor is open
    PowerOn();
 
-   auto control = std::make_unique<VSTControl>();
+   auto control = Destroy_ptr<VSTControl>{ safenew VSTControl };
    if (!control)
    {
       return;
@@ -2811,7 +2810,7 @@ void VSTEffect::BuildFancy()
 
    NeedEditIdle(true);
 
-   mDialog->Connect(wxEVT_SIZE, wxSizeEventHandler(VSTEffect::OnSize));
+   mDialog->Bind(wxEVT_SIZE, OnSize);
 
 #ifdef __WXMAC__
 #ifdef __WX_EVTLOOP_BUSY_WAITING__
@@ -2847,10 +2846,10 @@ void VSTEffect::BuildPlain()
       mParent->SetSizer(mainSizer.release());
    }
 
-   mNames = new wxStaticText *[mAEffect->numParams];
-   mSliders = new wxSlider *[mAEffect->numParams];
-   mDisplays = new wxStaticText *[mAEffect->numParams];
-   mLabels = new wxStaticText *[mAEffect->numParams];
+   mNames.reinit(static_cast<size_t>(mAEffect->numParams));
+   mSliders.reinit(static_cast<size_t>(mAEffect->numParams));
+   mDisplays.reinit(static_cast<size_t>(mAEffect->numParams));
+   mLabels.reinit(static_cast<size_t>(mAEffect->numParams));
 
    {
       auto paramSizer = std::make_unique<wxStaticBoxSizer>(wxVERTICAL, scroller, _("Effect Settings"));
@@ -2865,17 +2864,14 @@ void VSTEffect::BuildPlain()
             wxControl *item = safenew wxStaticText(scroller, 0, _("Duration:"));
             gridSizer->Add(item, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxALL, 5);
             mDuration = safenew
-               NumericTextCtrl(NumericConverter::TIME,
-               scroller,
-               ID_Duration,
-               mHost->GetDurationFormat(),
-               mHost->GetDuration(),
-               mSampleRate,
-               wxDefaultPosition,
-               wxDefaultSize,
-               true);
+               NumericTextCtrl(scroller, ID_Duration,
+                  NumericConverter::TIME,
+                  mHost->GetDurationFormat(),
+                  mHost->GetDuration(),
+                  mSampleRate,
+                  NumericTextCtrl::Options{}
+                     .AutoPos(true));
             mDuration->SetName(_("Duration"));
-            mDuration->EnableMenu();
             gridSizer->Add(mDuration, 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
             gridSizer->Add(1, 1, 0);
             gridSizer->Add(1, 1, 0);
@@ -2913,7 +2909,7 @@ void VSTEffect::BuildPlain()
                wxALIGN_RIGHT | wxST_NO_AUTORESIZE);
             gridSizer->Add(mNames[i], 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxALL, 5);
 
-            mSliders[i] = safenew wxSlider(scroller,
+            mSliders[i] = safenew wxSliderWrapper(scroller,
                ID_Sliders + i,
                0,
                0,
@@ -2921,6 +2917,10 @@ void VSTEffect::BuildPlain()
                wxDefaultPosition,
                wxSize(200, -1));
             gridSizer->Add(mSliders[i], 0, wxALIGN_CENTER_VERTICAL | wxEXPAND | wxALL, 5);
+#if wxUSE_ACCESSIBILITY
+            // so that name can be set on a standard control
+            mSliders[i]->SetAccessible(safenew WindowAccessible(mSliders[i]));
+#endif
 
             mDisplays[i] = safenew wxStaticText(scroller,
                wxID_ANY,
@@ -2981,40 +2981,22 @@ void VSTEffect::RefreshParameters(int skip)
       name = text;
 
       text = GetString(effGetParamDisplay, i);
-      if (text.IsEmpty())
+      if (text.empty())
       {
          text.Printf(wxT("%.5g"),callGetParameter(i));
       }
-      mDisplays[i]->SetLabel(wxString::Format(wxT("%8s"), text.c_str()));
+      mDisplays[i]->SetLabel(wxString::Format(wxT("%8s"), text));
       name += wxT(' ') + text;
 
       text = GetString(effGetParamDisplay, i);
-      if (!text.IsEmpty())
+      if (!text.empty())
       {
-         text.Printf(wxT("%-8s"), GetString(effGetParamLabel, i).c_str());
-         mLabels[i]->SetLabel(wxString::Format(wxT("%8s"), text.c_str()));
+         text.Printf(wxT("%-8s"), GetString(effGetParamLabel, i));
+         mLabels[i]->SetLabel(wxString::Format(wxT("%8s"), text));
          name += wxT(' ') + text;
       }
 
       mSliders[i]->SetName(name);
-   }
-}
-
-void VSTEffect::OnSize(wxSizeEvent & evt)
-{
-   evt.Skip();
-
-   // Once the parent dialog reaches it's final size as indicated by
-   // a non-default minimum size, we set the maximum size to match.
-   // This is a bit of a hack to prevent VSTs GUI windows from resizing
-   // there's no real reason to allow it.  But, there should be a better
-   // way of handling it.
-   wxWindow *w = (wxWindow *) evt.GetEventObject();
-   wxSize sz = w->GetMinSize();
-
-   if (sz != wxDefaultSize)
-   {
-      w->SetMaxSize(sz);
    }
 }
 
@@ -3062,16 +3044,16 @@ bool VSTEffect::LoadFXB(const wxFileName & fn)
    }
 
    // Allocate memory for the contents
-   unsigned char *data = new unsigned char[f.Length()];
+   ArrayOf<unsigned char> data{ size_t(f.Length()) };
    if (!data)
    {
-      wxMessageBox(_("Unable to allocate memory when loading presets file."),
+      AudacityMessageBox(_("Unable to allocate memory when loading presets file."),
                    _("Error Loading VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
       return false;
    }
-   unsigned char *bptr = data;
+   unsigned char *bptr = data.get();
 
    do
    {
@@ -3079,7 +3061,7 @@ bool VSTEffect::LoadFXB(const wxFileName & fn)
       ssize_t len = f.Read((void *) bptr, f.Length());
       if (f.Error())
       {
-         wxMessageBox(_("Unable to read presets file."),
+         AudacityMessageBox(_("Unable to read presets file."),
                       _("Error Loading VST Presets"),
                       wxOK | wxCENTRE,
                       mParent);
@@ -3218,9 +3200,6 @@ bool VSTEffect::LoadFXB(const wxFileName & fn)
       }
    } while (false);
 
-   // Get rid of the data
-   delete [] data;
-
    return ret;
 }
 
@@ -3236,16 +3215,16 @@ bool VSTEffect::LoadFXP(const wxFileName & fn)
    }
 
    // Allocate memory for the contents
-   unsigned char *data = new unsigned char[f.Length()];
+   ArrayOf<unsigned char> data{ size_t(f.Length()) };
    if (!data)
    {
-      wxMessageBox(_("Unable to allocate memory when loading presets file."),
+      AudacityMessageBox(_("Unable to allocate memory when loading presets file."),
                    _("Error Loading VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
       return false;
    }
-   unsigned char *bptr = data;
+   unsigned char *bptr = data.get();
 
    do
    {
@@ -3253,7 +3232,7 @@ bool VSTEffect::LoadFXP(const wxFileName & fn)
       ssize_t len = f.Read((void *) bptr, f.Length());
       if (f.Error())
       {
-         wxMessageBox(_("Unable to read presets file."),
+         AudacityMessageBox(_("Unable to read presets file."),
                       _("Error Loading VST Presets"),
                       wxOK | wxCENTRE,
                       mParent);
@@ -3270,9 +3249,6 @@ bool VSTEffect::LoadFXP(const wxFileName & fn)
       // Go verify and set the program
       ret = LoadFXProgram(&bptr, len, i, false);
    } while (false);
-
-   // Get rid of the data
-   delete [] data;
 
    return ret;
 }
@@ -3350,7 +3326,7 @@ bool VSTEffect::LoadFXProgram(unsigned char **bptr, ssize_t & len, int index, bo
       for (int i = 0; i < numParams; i++)
       {
          uint32_t ival = wxUINT32_SWAP_ON_LE(iptr[14 + i]);
-         float val = *((float *) &ival);
+         float val = reinterpretAsFloat(ival);
          if (val < 0.0 || val > 1.0)
          {
             return false;
@@ -3371,7 +3347,7 @@ bool VSTEffect::LoadFXProgram(unsigned char **bptr, ssize_t & len, int index, bo
          for (int i = 0; i < numParams; i++)
          {
             wxUint32 val = wxUINT32_SWAP_ON_LE(iptr[14 + i]);
-            callSetParameter(i, *((float *) &val));
+            callSetParameter(i, reinterpretAsFloat(val));
          }
          callDispatcher(effEndSetProgram, 0, 0, NULL, 0.0);
       }
@@ -3452,7 +3428,7 @@ bool VSTEffect::LoadXML(const wxFileName & fn)
    if (!ok)
    {
       // Inform user of load failure
-      wxMessageBox(reader.GetErrorStr(),
+      AudacityMessageBox(reader.GetErrorStr(),
                    _("Error Loading VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -3469,7 +3445,7 @@ void VSTEffect::SaveFXB(const wxFileName & fn)
    wxFFile f(fullPath, wxT("wb"));
    if (!f.IsOpened())
    {
-      wxMessageBox(wxString::Format(_("Could not open file: \"%s\""), fullPath.c_str()),
+      AudacityMessageBox(wxString::Format(_("Could not open file: \"%s\""), fullPath),
                    _("Error Saving VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -3478,8 +3454,8 @@ void VSTEffect::SaveFXB(const wxFileName & fn)
 
    wxMemoryBuffer buf;
    wxInt32 subType;
-   void *chunkPtr;
-   int chunkSize;
+   void *chunkPtr = nullptr;
+   int chunkSize = 0;
    int dataSize = 148;
    wxInt32 tab[8];
    int curProg = 0 ; //mProgram->GetCurrentSelection();
@@ -3536,7 +3512,7 @@ void VSTEffect::SaveFXB(const wxFileName & fn)
 
    if (f.Error())
    {
-      wxMessageBox(wxString::Format(_("Error writing to file: \"%s\""), fullPath.c_str()),
+      AudacityMessageBox(wxString::Format(_("Error writing to file: \"%s\""), fullPath),
                    _("Error Saving VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -3554,7 +3530,7 @@ void VSTEffect::SaveFXP(const wxFileName & fn)
    wxFFile f(fullPath, wxT("wb"));
    if (!f.IsOpened())
    {
-      wxMessageBox(wxString::Format(_("Could not open file: \"%s\""), fullPath.c_str()),
+      AudacityMessageBox(wxString::Format(_("Could not open file: \"%s\""), fullPath),
                    _("Error Saving VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -3569,7 +3545,7 @@ void VSTEffect::SaveFXP(const wxFileName & fn)
    f.Write(buf.GetData(), buf.GetDataLen());
    if (f.Error())
    {
-      wxMessageBox(wxString::Format(_("Error writing to file: \"%s\""), fullPath.c_str()),
+      AudacityMessageBox(wxString::Format(_("Error writing to file: \"%s\""), fullPath),
                    _("Error Saving VST Presets"),
                    wxOK | wxCENTRE,
                    mParent);
@@ -3630,7 +3606,7 @@ void VSTEffect::SaveFXProgram(wxMemoryBuffer & buf, int index)
       for (int i = 0; i < mAEffect->numParams; i++)
       {
          float val = callGetParameter(i);
-         wxUint32 ival = wxUINT32_SWAP_ON_LE(*((wxUint32 *) &val));
+         wxUint32 ival = wxUINT32_SWAP_ON_LE(reinterpretAsUint32(val));
          buf.AppendData(&ival, sizeof(ival));
       }
    }
@@ -3640,17 +3616,16 @@ void VSTEffect::SaveFXProgram(wxMemoryBuffer & buf, int index)
 
 // Throws exceptions rather than giving error return.
 void VSTEffect::SaveXML(const wxFileName & fn)
+// may throw
 {
-   XMLFileWriter xmlFile;
-
-   // Create/Open the file
-   xmlFile.Open(fn.GetFullPath(), wxT("wb"));
+   XMLFileWriter xmlFile{ fn.GetFullPath(), _("Error Saving Effect Presets") };
 
    xmlFile.StartTag(wxT("vstprogrampersistence"));
    xmlFile.WriteAttr(wxT("version"), wxT("2"));
 
    xmlFile.StartTag(wxT("effect"));
-   xmlFile.WriteAttr(wxT("name"), GetName());
+   // Use internal name only in persistent information
+   xmlFile.WriteAttr(wxT("name"), GetSymbol().Internal());
    xmlFile.WriteAttr(wxT("uniqueID"), mAEffect->uniqueID);
    xmlFile.WriteAttr(wxT("version"), mAEffect->version);
    xmlFile.WriteAttr(wxT("numParams"), mAEffect->numParams);
@@ -3695,10 +3670,7 @@ void VSTEffect::SaveXML(const wxFileName & fn)
 
    xmlFile.EndTag(wxT("vstprogrampersistence"));
 
-   // Close the file
-   xmlFile.Close();
-
-   return;
+   xmlFile.Commit();
 }
 
 bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
@@ -3765,11 +3737,11 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
                return false;
             }
 
-            if (value != GetName())
+            if (value != GetSymbol().Internal())
             {
                wxString msg;
-               msg.Printf(_("This parameter file was saved from %s.  Continue?"), value);
-               int result = wxMessageBox(msg, wxT("Confirm"), wxYES_NO, mParent);
+               msg.Printf(_("This parameter file was saved from %s. Continue?"), value);
+               int result = AudacityMessageBox(msg, wxT("Confirm"), wxYES_NO, mParent);
                if (result == wxNO)
                {
                   return false;
@@ -3947,15 +3919,14 @@ void VSTEffect::HandleXMLEndTag(const wxChar *tag)
    {
       if (mChunk.length())
       {
-         char *buf = new char[mChunk.length() / 4 * 3];
+         ArrayOf<char> buf{ mChunk.length() / 4 * 3 };
 
-         int len = VSTEffect::b64decode(mChunk, buf);
+         int len = VSTEffect::b64decode(mChunk, buf.get());
          if (len)
          {
-            callSetChunk(true, len, buf, &mXMLInfo);
+            callSetChunk(true, len, buf.get(), &mXMLInfo);
          }
 
-         delete [] buf;
          mChunk.clear();
       }
       mInChunk = false;

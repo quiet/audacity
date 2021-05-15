@@ -26,9 +26,10 @@
 
 #include <wx/intl.h>
 
-#include "../AudacityApp.h"
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../widgets/valnum.h"
+#include "../widgets/ErrorDialog.h"
 
 #include "../LabelTrack.h"
 #include "../WaveTrack.h"
@@ -36,9 +37,9 @@
 
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
-//     Name    Type  Key               Def   Min   Max      Scale
-Param( Start,  int,  XO("Duty Cycle"), 3,    1,    INT_MAX, 1   );
-Param( Stop,   int,  XO("Duty Cycle"), 3,    1,    INT_MAX, 1   );
+//     Name    Type  Key                     Def   Min   Max      Scale
+Param( Start,  int,  wxT("Duty Cycle Start"), 3,    1,    INT_MAX, 1   );
+Param( Stop,   int,  wxT("Duty Cycle End"),   3,    1,    INT_MAX, 1   );
 
 EffectFindClipping::EffectFindClipping()
 {
@@ -50,19 +51,24 @@ EffectFindClipping::~EffectFindClipping()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectFindClipping::GetSymbol()
+ComponentInterfaceSymbol EffectFindClipping::GetSymbol()
 {
    return FINDCLIPPING_PLUGIN_SYMBOL;
 }
 
 wxString EffectFindClipping::GetDescription()
 {
-   return XO("Creates labels where clipping is detected");
+   return _("Creates labels where clipping is detected");
 }
 
-// EffectIdentInterface implementation
+wxString EffectFindClipping::ManualPage()
+{
+   return wxT("Find_Clipping");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectFindClipping::GetType()
 {
@@ -70,8 +76,13 @@ EffectType EffectFindClipping::GetType()
 }
 
 // EffectClientInterface implementation
+bool EffectFindClipping::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( mStart, Start );
+   S.SHUTTLE_PARAM( mStop, Stop );
+   return true;
+}
 
-bool EffectFindClipping::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectFindClipping::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_Start, mStart);
    parms.Write(KEY_Stop, mStop);
@@ -79,7 +90,7 @@ bool EffectFindClipping::GetAutomationParameters(EffectAutomationParameters & pa
    return true;
 }
 
-bool EffectFindClipping::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectFindClipping::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyInt(Start);
    ReadAndVerifyInt(Stop);
@@ -96,29 +107,22 @@ bool EffectFindClipping::Process()
 {
    std::shared_ptr<AddedAnalysisTrack> addedTrack;
    Maybe<ModifiedAnalysisTrack> modifiedTrack;
-   //Track *original = NULL;
    const wxString name{ _("Clipping") };
 
-   LabelTrack *lt = NULL;
-   TrackListOfKindIterator iter(Track::Label, mTracks);
-   for (Track *t = iter.First(); t; t = iter.Next()) {
-      if (t->GetName() == name) {
-         lt = (LabelTrack *)t;
-         break;
-      }
-   }
+   auto clt = *inputTracks()->Any< const LabelTrack >().find_if(
+      [&]( const Track *track ){ return track->GetName() == name; } );
 
-   if (!lt)
+   LabelTrack *lt{};
+   if (!clt)
       addedTrack = (AddAnalysisTrack(name)), lt = addedTrack->get();
    else
-      modifiedTrack.create(ModifyAnalysisTrack(lt, name)), lt = modifiedTrack->get();
+      modifiedTrack.create(ModifyAnalysisTrack(clt, name)),
+      lt = modifiedTrack->get();
 
    int count = 0;
 
    // JC: Only process selected tracks.
-   SelectedTrackListOfKindIterator waves(Track::Wave, mTracks);
-   WaveTrack *t = (WaveTrack *) waves.First();
-   while (t) {
+   for (auto t : inputTracks()->Selected< const WaveTrack >()) {
       double trackStart = t->GetStartTime();
       double trackEnd = t->GetEndTime();
       double t0 = mT0 < trackStart ? trackStart : mT0;
@@ -135,7 +139,6 @@ bool EffectFindClipping::Process()
       }
 
       count++;
-      t = (WaveTrack *) waves.Next();
    }
 
    // No cancellation, so commit the addition of the track.
@@ -159,19 +162,21 @@ bool EffectFindClipping::ProcessOne(LabelTrack * lt,
       return true;
    }
 
-   float *buffer;
+   Floats buffer;
    try {
-      if (blockSize < mStart)
+      // mStart should be positive.
+      // if we are throwing bad_alloc and mStart is negative, find out why.
+      if (mStart < 0 || (int)blockSize < mStart)
          // overflow
          throw std::bad_alloc{};
-      buffer = new float[blockSize];
+      buffer.reinit(blockSize);
    }
    catch( const std::bad_alloc & ) {
-      wxMessageBox(_("Requested value exceeds memory capacity."));
+      Effect::MessageBox(_("Requested value exceeds memory capacity."));
       return false;
    }
 
-   float *ptr = buffer;
+   float *ptr = buffer.get();
 
    decltype(len) s = 0, startrun = 0, stoprun = 0, samps = 0;
    decltype(blockSize) block = 0;
@@ -188,8 +193,8 @@ bool EffectFindClipping::ProcessOne(LabelTrack * lt,
 
          block = limitSampleBufferSize( blockSize, len - s );
 
-         wt->Get((samplePtr)buffer, floatSample, start + s, block);
-         ptr = buffer;
+         wt->Get((samplePtr)buffer.get(), floatSample, start + s, block);
+         ptr = buffer.get();
       }
 
       float v = fabs(*ptr++);
@@ -212,7 +217,8 @@ bool EffectFindClipping::ProcessOne(LabelTrack * lt,
             if (stoprun >= mStop) {
                lt->AddLabel(SelectedRegion(startTime,
                                           wt->LongSamplesToTime(start + s - mStop)),
-                           wxString::Format(wxT("%lld of %lld"), startrun.as_long_long(), (samps - mStop).as_long_long()));
+                           wxString::Format(wxT("%lld of %lld"), startrun.as_long_long(), (samps - mStop).as_long_long()),
+                           -2);
                startrun = 0;
                stoprun = 0;
                samps = 0;
@@ -226,8 +232,6 @@ bool EffectFindClipping::ProcessOne(LabelTrack * lt,
       s++;
       block--;
    }
-
-   delete [] buffer;
 
    return bGoodResult;
 }

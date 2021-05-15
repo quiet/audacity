@@ -12,8 +12,9 @@
 #define __AUDACITY_VIEWINFO__
 
 #include <vector>
-#include <wx/event.h>
+#include <wx/event.h> // inherit wxEvtHandler
 #include "SelectedRegion.h"
+#include "MemoryX.h"
 
 
 class Track;
@@ -84,11 +85,16 @@ public:
    static double GetDefaultZoom()
    { return 44100.0 / 512.0; }
 
-   // There is NO GetZoom()!
-   // Use TimeToPosition and PositionToTime and OffsetTimeByPixels!
 
    // Limits zoom to certain bounds
    void SetZoom(double pixelsPerSecond);
+
+   // This function should not be used to convert positions to times and back
+   // Use TimeToPosition and PositionToTime and OffsetTimeByPixels instead
+   double GetZoom() const;
+
+   static double GetMaxZoom( );
+   static double GetMinZoom( );
 
    // Limits zoom to certain bounds
    // multipliers above 1.0 zoom in, below out
@@ -157,8 +163,6 @@ public:
 
    // Scroll info
 
-   Track *track;                // first visible track
-
    double total;                // total width in secs
    // Current horizontal scroll bar positions, in pixels
    wxInt64 sbarH;
@@ -180,12 +184,13 @@ public:
    bool bUpdateTrackIndicator;
 
    bool bScrollBeyondZero;
+   bool bAdjustSelectionEdges;
 
    // During timer update, grab the volatile stream time just once, so that
    // various other drawing code can use the exact same value.
    double mRecentStreamTime;
 
-   void WriteXMLAttributes(XMLWriter &xmlFile);
+   void WriteXMLAttributes(XMLWriter &xmlFile) const;
    bool ReadXMLAttribute(const wxChar *attr, const wxChar *value);
 
    // Receive track panel timer notifications

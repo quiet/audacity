@@ -30,6 +30,11 @@
 #ifndef __EXPERIMENTAL__
 #define __EXPERIMENTAL__
 
+#ifndef __AUDACITY_H__
+// Audacity.h is needed for the USE_* macros
+#error Must include Audacity.h before Experimental.h
+#endif
+
 // ACH 08 Jan 2014
 // EQ accelerated code
 //#define EXPERIMENTAL_EQ_SSE_THREADED
@@ -48,14 +53,49 @@
 // feature to link audio tracks to a label track
 #define EXPERIMENTAL_SYNC_LOCK
 
-// experimental theming
-// Work in progress, June-2008.
-// This mostly sets up a weird color scheme currently.
-//#define EXPERIMENTAL_THEMING
+// DA: Enables dark audacity theme and customisations.
+#define EXPERIMENTAL_DA
+
+#ifdef EXPERIMENTAL_DA
+#define EXPERIMENTAL_METER_SLIDERS
+#endif
+
+// These CFG macros allow easy distinction between Audacity and DA defaults.
+#ifdef EXPERIMENTAL_DA
+#define CFG_A( x ) 
+#define CFG_DA( x ) x
+#else
+#define CFG_A( x ) x
+#define CFG_DA( x ) 
+#endif
+
+
+// Define this so that sync-lock tiles shine through spectrogram.
+// The spectrogram pastes a bitmap over the tiles.
+// This makes it use alpha blending, most transparent where least intense.
+#define EXPERIMENTAL_SPECTROGRAM_OVERLAY
+
+// Define this so that sync-lock tiles shine through note/MIDI track.
+// The note track then relies on the same code for drawing background as
+// Wavetrack, and draws its notes and lines over the top.
+#define EXPERIMENTAL_NOTETRACK_OVERLAY
+
+// Define this, and the option to zoom to half wave is added in the VZoom menu.
+// Also we go to half wave on collapse, full wave on restore.
+#define EXPERIMENTAL_HALF_WAVE
+
+// EXPERIMENTAL_THEMING is mostly mainstream now.
+// the define is still present to mark out old code before theming, that we might
+// conceivably need.
+// TODO: Agree on and then tidy this code.
+#define EXPERIMENTAL_THEMING
 
 //August 2009 - Theming not locked down enough for a stable release.
 // This turns on the Theme panel in Prefs dialog. It is independent of EXPERIMENTAL_THEMING.
 //#define EXPERIMENTAL_THEME_PREFS
+
+// This shows the zoom toggle button on the edit toolbar.
+#define EXPERIMENTAL_ZOOM_TOGGLE_BUTTON
 
 //Next line enables Mic monitoring at times when it was previously off.
 //More work is needed as after recording or playing it results in an
@@ -107,17 +147,21 @@
 // Paul Licameli (PRL) 29 Nov 2014
 // #define EXPERIMENTAL_IMPROVED_SEEKING
 
+//#define EXPERIMENTAL_MIDI_IN
+
 // RBD, 1 Sep 2008
 // Enables MIDI Output of NoteTrack (MIDI) data during playback
 // USE_MIDI must be defined in order for EXPERIMENTAL_MIDI_OUT to work
-#ifdef USE_MIDI
-//#define EXPERIMENTAL_MIDI_OUT
-#endif
+#define EXPERIMENTAL_MIDI_OUT
+// JKC, 17 Aug 2017
+// Enables the MIDI note stretching feature, which currently
+// a) Is broken on Linux (Bug 1646)
+// b) Crashes with Sync-Lock (Bug 1719)
+// c) Needs UI design review.
+//#define EXPERIMENTAL_MIDI_STRETCHING
 
 // USE_MIDI must be defined in order for EXPERIMENTAL_SCOREALIGN to work
-#ifdef USE_MIDI
 //#define EXPERIMENTAL_SCOREALIGN
-#endif
 
 //If you want any of these files, ask JKC.  They are not
 //yet checked in to Audacity SVN as of 12-Feb-2010
@@ -135,10 +179,6 @@
    //Automatically tries to find an acceptable input volume
    //#define EXPERIMENTAL_AUTOMATED_INPUT_LEVEL_ADJUSTMENT
 #endif
-
-// John (Thales) work to make the display show the result of the pan and gain sliders, rather than their input.
-// First committed by Martyn, 30th May 2013.
-//#define EXPERIMENTAL_OUTPUT_DISPLAY
 
 // Module prefs provides a panel in prefs where users can choose which modules
 // to enable.
@@ -184,16 +224,43 @@
 // scrolling past zero is enabled. Perhaps that lessens confusion.
 #define EXPERIMENTAL_TWO_TONE_TIME_RULER
 
-// Define to include crash reporting
-#include <wx/defs.h>
-#define EXPERIMENTAL_CRASH_REPORT
-#if !defined(wxUSE_DEBUGREPORT) || !wxUSE_DEBUGREPORT
-#undef EXPERIMENTAL_CRASH_REPORT
+#ifndef IN_RC
+   // Define to include crash reporting
+   #define EXPERIMENTAL_CRASH_REPORT
+   #ifdef EXPERIMENTAL_CRASH_REPORT
+      #include <wx/setup.h> // for wxUSE* macros
+      #if !defined(wxUSE_DEBUGREPORT) || !wxUSE_DEBUGREPORT
+         #undef EXPERIMENTAL_CRASH_REPORT
+      #endif
+   #endif
 #endif
 
 // Paul Licameli (PRL) 31 May 2015
 // Zero-padding factor for spectrograms can smooth the display of spectrograms by
 // interpolating in frequency domain.
 #define EXPERIMENTAL_ZERO_PADDED_SPECTROGRAMS
+
+// PRL 11 Jul 2017
+// Highlight more things in TrackPanel when the mouse moves over them,
+// using delibrately ugly pens and brushes until there is better cooperation
+// with themes
+//#define EXPERIMENTAL_TRACK_PANEL_HIGHLIGHTING
+
+// Paul Licameli (PRL) 28 Dec 2017
+// Easy drag-and-drop to add Nyquist, LADSPA, and VST plug-ins
+// #define EXPERIMENTAL_DRAG_DROP_PLUG_INS
+
+// PRL 5 Jan 2018
+// Easy change of keystroke bindings for menu items
+#define EXPERIMENTAL_EASY_CHANGE_KEY_BINDINGS
+
+// PRL 1 Jun 2018
+#define EXPERIMENTAL_PUNCH_AND_ROLL
+
+// PRL 31 July 2018
+#define EXPERIMENTAL_DRAGGABLE_PLAY_HEAD
+
+// mmm-1 22 Aug 2018
+//#define EXPERIMENTAL_R128_NORM
 
 #endif

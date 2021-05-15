@@ -15,12 +15,14 @@
 #define __AUDACITY_COLOR__
 
 #include "MemoryX.h"
-#include <wx/brush.h>
-#include <wx/pen.h>
+#include <wx/brush.h> // member variable
+#include <wx/pen.h> // member variable
 
 class wxDC;
+class wxGraphicsContext;
 class wxRect;
 
+/// Used to restore pen, brush and logical-op in a DC back to what they were.
 struct DCUnchanger {
 public:
    DCUnchanger() {}
@@ -36,9 +38,8 @@ public:
    long logicalOperation {};
 };
 
-// Like wxDCPenChanger, etc., but simple and general
-// Make temporary drawing context changes that you back out of, RAII style
-
+/// Makes temporary drawing context changes that you back out of, RAII style
+//  It's like wxDCPenChanger, etc., but simple and general
 class ADCChanger : public std::unique_ptr<wxDC, ::DCUnchanger>
 {
    using Base = std::unique_ptr<wxDC, ::DCUnchanger>;
@@ -63,20 +64,29 @@ class AColor {
    static void ReInit();
 
    static void Arrow(wxDC & dc, wxCoord x, wxCoord y, int width, bool down = true);
+
+   // Draw a line, INCLUSIVE of both endpoints
+   // (unlike what wxDC::DrawLine() documentation specifies)
    static void Line(wxDC & dc, wxCoord x1, wxCoord y1, wxCoord x2, wxCoord y2);
+
+   // Draw lines, INCLUSIVE of all endpoints
+   static void Lines(wxDC &dc, size_t nPoints, const wxPoint points[]);
+
    static void DrawFocus(wxDC & dc, wxRect & r);
    static void Bevel(wxDC & dc, bool up, const wxRect & r);
-   static void Bevel2(wxDC & dc, bool up, const wxRect & r);
-   static void BevelTrackInfo(wxDC & dc, bool up, const wxRect & r);
+   static void Bevel2
+      (wxDC & dc, bool up, const wxRect & r, bool bSel=false, bool bHighlight = false);
+   static void BevelTrackInfo(wxDC & dc, bool up, const wxRect & r, bool highlight = false);
    static wxColour Blend(const wxColour & c1, const wxColour & c2);
 
-   static void UseThemeColour( wxDC * dc, int iIndex );
+   static void UseThemeColour( wxDC * dc, int iBrush, int iPen=-1, int alpha = 255 );
+   static void UseThemeColour( wxGraphicsContext * gc, int iBrush, int iPen=-1, int alpha = 255 );
    static void TrackPanelBackground(wxDC * dc, bool selected);
 
-   static void Light(wxDC * dc, bool selected);
+   static void Light(wxDC * dc, bool selected, bool highlight = false);
    static void Medium(wxDC * dc, bool selected);
    static void MediumTrackInfo(wxDC * dc, bool selected);
-   static void Dark(wxDC * dc, bool selected);
+   static void Dark(wxDC * dc, bool selected, bool highlight = false);
 
    static void CursorColor(wxDC * dc);
    static void IndicatorColor(wxDC * dc, bool bIsNotRecording);
@@ -84,6 +94,10 @@ class AColor {
 
    static void Mute(wxDC * dc, bool on, bool selected, bool soloing);
    static void Solo(wxDC * dc, bool on, bool selected);
+
+   // In all of these, channel is 1-indexed (1 through 16); if out of bounds
+   // (either due to being explicitly set to 0 or due to an allegro file with
+   // more than 16 channels) a gray color is returned.
 
    static void MIDIChannel(wxDC * dc, int channel /* 1 - 16 */ );
    static void LightMIDIChannel(wxDC * dc, int channel /* 1 - 16 */ );
@@ -137,6 +151,10 @@ class AColor {
    static bool gradient_inited;
    static const int gradientSteps = 512;
    static unsigned char gradient_pre[ColorGradientTotal][2][gradientSteps][3];
+
+   // For experiments in mouse-over highlighting only
+   static wxPen uglyPen;
+   static wxBrush uglyBrush;
 
  private:
    static wxPen sparePen;

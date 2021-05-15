@@ -17,28 +17,44 @@
 
 *//*******************************************************************/
 
-#include "../Audacity.h"
+#include "../Audacity.h" // for USE_* macros
+#include "EffectsPrefs.h"
 
+#include "../Experimental.h"
+
+#include <wx/choice.h>
 #include <wx/defs.h>
 
-#include "../AudacityApp.h"
 #include "../Languages.h"
 #include "../PluginManager.h"
 #include "../Prefs.h"
 #include "../ShuttleGui.h"
 
-#include "EffectsPrefs.h"
+#include "../Internat.h"
 
-#include "../Experimental.h"
-
-EffectsPrefs::EffectsPrefs(wxWindow * parent)
-:  PrefsPanel(parent, _("Effects"))
+EffectsPrefs::EffectsPrefs(wxWindow * parent, wxWindowID winid)
+:  PrefsPanel(parent, winid, _("Effects"))
 {
    Populate();
 }
 
 EffectsPrefs::~EffectsPrefs()
 {
+}
+
+ComponentInterfaceSymbol EffectsPrefs::GetSymbol()
+{
+   return EFFECTS_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString EffectsPrefs::GetDescription()
+{
+   return _("Preferences for Effects");
+}
+
+wxString EffectsPrefs::HelpPageName()
+{
+   return "Effects_Preferences";
 }
 
 void EffectsPrefs::Populate()
@@ -55,11 +71,13 @@ void EffectsPrefs::Populate()
 void EffectsPrefs::PopulateOrExchange(ShuttleGui & S)
 {
    S.SetBorder(2);
+   S.StartScroller();
 
    S.StartStatic(_("Enable Effects"));
    {
 
 #if USE_AUDIO_UNITS
+/* i18n-hint: Audio Unit is the name of an Apple audio software protocol */
       S.TieCheckBox(_("Audio Unit"),
                     wxT("/AudioUnit/Enable"),
                     true);
@@ -67,30 +85,43 @@ void EffectsPrefs::PopulateOrExchange(ShuttleGui & S)
 
       // JKC: LADSPA, LV2, Nyquist, VST, VAMP should not be translated.
 #if USE_LADSPA
-      S.TieCheckBox(wxT("&LADSPA"),
-                    wxT("/Ladspa/Enable"),
+/* i18n-hint: abbreviates "Linux Audio Developer's Simple Plugin API"
+   (Application programming interface)
+ */
+      S.TieCheckBox(_("&LADSPA"),
+                    wxT("/LADSPA/Enable"),
                     true);
 #endif
 
 #if USE_LV2
-      S.TieCheckBox(wxT("LV&2"),
+/* i18n-hint: abbreviates
+   "Linux Audio Developer's Simple Plugin API (LADSPA) version 2" */
+      S.TieCheckBox(_("LV&2"),
                     wxT("/LV2/Enable"),
                     true);
 #endif
 #if USE_NYQUIST
-      S.TieCheckBox(wxT("N&yquist"),
+/* i18n-hint: "Nyquist" is an embedded interpreted programming language in
+ Audacity, named in honor of the Swedish-American Harry Nyquist (or Nyqvist).
+ In the translations of this and other strings, you may transliterate the
+ name into another alphabet.  */
+      S.TieCheckBox(_("N&yquist"),
                     wxT("/Nyquist/Enable"),
                     true);
 #endif
 
 #if USE_VAMP
-      S.TieCheckBox(wxT("&VAMP"),
-                    wxT("/VAMP/Enable"),
+/* i18n-hint: Vamp is the proper name of a software protocol for sound analysis.
+   It is not an abbreviation for anything.  See http://vamp-plugins.org */
+      S.TieCheckBox(_("&Vamp"),
+                    wxT("/Vamp/Enable"),
                     true);
 #endif
 
 #if USE_VST
-      S.TieCheckBox(wxT("V&ST"),
+/* i18n-hint: Abbreviates Virtual Studio Technology, an audio software protocol
+   developed by Steinberg GmbH */
+      S.TieCheckBox(_("V&ST"),
                     wxT("/VST/Enable"),
                     true);
 #endif
@@ -101,34 +132,39 @@ void EffectsPrefs::PopulateOrExchange(ShuttleGui & S)
    {
       S.StartMultiColumn(2);
       {
-         wxArrayString visualgroups;
-         wxArrayString prefsgroups;
-      
-         visualgroups.Add(_("Sorted by Effect Name"));
-         visualgroups.Add(_("Sorted by Publisher and Effect Name"));
-         visualgroups.Add(_("Sorted by Type and Effect Name"));
-         visualgroups.Add(_("Grouped by Publisher"));
-         visualgroups.Add(_("Grouped by Type"));
-      
-         prefsgroups.Add(wxT("sortby:name"));
-         prefsgroups.Add(wxT("sortby:publisher:name"));
-         prefsgroups.Add(wxT("sortby:type:name"));
-         prefsgroups.Add(wxT("groupby:publisher"));
-         prefsgroups.Add(wxT("groupby:type"));
+         wxArrayStringEx visualgroups{
+            _("Sorted by Effect Name") ,
+            _("Sorted by Publisher and Effect Name") ,
+            _("Sorted by Type and Effect Name") ,
+            _("Grouped by Publisher") ,
+            _("Grouped by Type") ,
+         };
 
-         wxChoice *c = S.TieChoice(_("Effects in menus are:"),
+         wxArrayStringEx prefsgroups{
+            wxT("sortby:name") ,
+            wxT("sortby:publisher:name") ,
+            wxT("sortby:type:name") ,
+            wxT("groupby:publisher") ,
+            wxT("groupby:type") ,
+         };
+
+         wxChoice *c = S.TieChoice(_("S&ort or Group:"),
                                    wxT("/Effects/GroupBy"),
-                                   wxT("name"),
+                                   wxT("sortby:name"),
                                    visualgroups,
                                    prefsgroups);
-         c->SetMinSize(c->GetBestSize());
-                     
-         S.TieNumericTextBox(_("Maximum effects per group (0 to disable):"),
+         if( c ) c->SetMinSize(c->GetBestSize());
+
+         S.TieNumericTextBox(_("&Group size (0 to disable):"),
                              wxT("/Effects/MaxPerGroup"),
 #if defined(__WXGTK__)
                              15,
 #else
+#ifdef EXPERIMENTAL_DA
+                             15,
+#else
                              0,
+#endif
 #endif
                              5);
       }
@@ -158,9 +194,10 @@ void EffectsPrefs::PopulateOrExchange(ShuttleGui & S)
    }
    S.EndStatic();
 #endif
+   S.EndScroller();
 }
 
-bool EffectsPrefs::Apply()
+bool EffectsPrefs::Commit()
 {
    ShuttleGui S(this, eIsSavingToPrefs);
    PopulateOrExchange(S);
@@ -168,8 +205,8 @@ bool EffectsPrefs::Apply()
    return true;
 }
 
-PrefsPanel *EffectsPrefsFactory::Create(wxWindow *parent)
+PrefsPanel *EffectsPrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew EffectsPrefs(parent);
+   return safenew EffectsPrefs(parent, winid);
 }

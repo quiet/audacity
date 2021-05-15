@@ -21,21 +21,21 @@
 #include "../Audacity.h"
 
 #include "../MemoryX.h"
+#include <vector>
 #include <wx/defs.h>
-#include <wx/evtloop.h>
-#include <wx/gauge.h>
-#include <wx/stattext.h>
-#include <wx/utils.h>
-#include <wx/msgdlg.h>
+#include <wx/evtloop.h> // member variable
 
-#include "wxPanelWrapper.h"
+#include "wxPanelWrapper.h" // to inherit
 
-enum
+class wxGauge;
+class wxStaticText;
+
+enum class ProgressResult : unsigned
 {
-   eProgressCancelled = 0, //<! User says that whatever is happening is undesirable and shouldn't have happened at all
-   eProgressSuccess,       //<! User says nothing, everything works fine, continue doing whatever we're doing
-   eProgressFailed,        //<! Something has gone wrong, we should stop and cancel everything we did
-   eProgressStopped        //<! Nothing is wrong, but user says we should stop now and leave things as they are now
+   Cancelled = 0, //<! User says that whatever is happening is undesirable and shouldn't have happened at all
+   Success,       //<! User says nothing, everything works fine, continue doing whatever we're doing
+   Failed,        //<! Something has gone wrong, we should stop and cancel everything we did
+   Stopped        //<! Nothing is wrong, but user says we should stop now and leave things as they are now
 };
 
 enum ProgressDialogFlags
@@ -57,32 +57,55 @@ class AUDACITY_DLL_API ProgressDialog /* not final */ : public wxDialogWrapper
 {
 public:
    ProgressDialog();
+
+   // Display a simple message.
    ProgressDialog(const wxString & title,
-                  const wxString & message = wxEmptyString,
+                  const wxString & message = {},
                   int flags = pdlgDefaultFlags,
-                  const wxString & sRemainingLabelText = wxEmptyString);
-   virtual ~ProgressDialog();
+                  const wxString & sRemainingLabelText = {});
 
-   // NEW virtual?  It doesn't override wxDialog
-   virtual bool Create(const wxString & title,
-                       const wxString & message = wxEmptyString,
-                       int flags = pdlgDefaultFlags,
-                       const wxString & sRemainingLabelText = wxEmptyString);
-
-   int Update(int value, const wxString & message = wxEmptyString);
-   int Update(double current, const wxString & message = wxEmptyString);
-   int Update(double current, double total, const wxString & message = wxEmptyString);
-   int Update(wxULongLong_t current, wxULongLong_t total, const wxString & message = wxEmptyString);
-   int Update(wxLongLong current, wxLongLong total, const wxString & message = wxEmptyString);
-   int Update(wxLongLong_t current, wxLongLong_t total, const wxString & message = wxEmptyString);
-   int Update(int current, int total, const wxString & message = wxEmptyString);
-   void SetMessage(const wxString & message);
-
-   // 'ETB' character to indicate a new column in the message text.
-   static const wxChar ColoumnSplitMarker = (char)23;
+   using MessageColumn = std::vector< wxString >;
+   using MessageTable = std::vector< MessageColumn >;
 
 protected:
-   wxWindow *mHadFocus;
+   // Display a table of messages.
+   // Each member of the table is a column of messages.
+   // Each member of a column is a string that should have no newlines,
+   // and each column should have the same number of elements, to make
+   // proper correspondences, but this is not checked.
+   ProgressDialog(const wxString & title,
+                  const MessageTable & columns,
+                  int flags = pdlgDefaultFlags,
+                  const wxString & sRemainingLabelText = {});
+
+public:
+   virtual ~ProgressDialog();
+
+   bool Create(const wxString & title,
+               const wxString & message = {},
+               int flags = pdlgDefaultFlags,
+               const wxString & sRemainingLabelText = {});
+
+   void Reinit();
+
+protected:
+   bool Create(const wxString & title,
+               const MessageTable & columns,
+               int flags = pdlgDefaultFlags,
+               const wxString & sRemainingLabelText = {});
+
+public:
+   ProgressResult Update(int value, const wxString & message = {});
+   ProgressResult Update(double current, const wxString & message = {});
+   ProgressResult Update(double current, double total, const wxString & message = {});
+   ProgressResult Update(wxULongLong_t current, wxULongLong_t total, const wxString & message = {});
+   ProgressResult Update(wxLongLong current, wxLongLong total, const wxString & message = {});
+   ProgressResult Update(wxLongLong_t current, wxLongLong_t total, const wxString & message = {});
+   ProgressResult Update(int current, int total, const wxString & message = {});
+   void SetMessage(const wxString & message);
+
+protected:
+   wxWindowRef mHadFocus;
 
    wxStaticText *mElapsed;
    wxStaticText *mRemaining;
@@ -114,7 +137,8 @@ private:
                       const wxString & sTitle,
                       int iButtonID = -1);
 
-   void AddMessageAsColumn(wxBoxSizer * pSizer, const wxString & sText, bool bFirstColumn);
+   void AddMessageAsColumn(wxBoxSizer * pSizer,
+                           const MessageColumn &column, bool bFirstColumn);
 
 private:
    // This guarantees we have an active event loop...possible during OnInit()
@@ -122,9 +146,9 @@ private:
 
    std::unique_ptr<wxWindowDisabler> mDisable;
 
-   wxStaticText *mMessage;
-   int mLastW;
-   int mLastH;
+   wxStaticText *mMessage{} ;
+   int mLastW{ 0 };
+   int mLastH{ 0 };
 
    DECLARE_EVENT_TABLE()
 };
@@ -133,14 +157,21 @@ class AUDACITY_DLL_API TimerProgressDialog final : public ProgressDialog
 {
 public:
    TimerProgressDialog(const wxLongLong_t duration,
-                       const wxString & title,
-                       const wxString & message = wxEmptyString,
+                       const wxString &title,
+                       const MessageTable & columns,
                        int flags = pdlgDefaultFlags,
-                       const wxString & sRemainingLabelText = wxEmptyString);
-   int Update(const wxString & message = wxEmptyString);
+                       const wxString & sRemainingLabelText = {});
+
+   // Oh no, there is an inherited nullary "Update" in wxDialog!
+   // Choose another name then...
+   ProgressResult UpdateProgress();
 
 protected:
    wxLongLong_t mDuration;
+
+   // Disallow direct use of the inherited overloads of Update because it
+   // doesn't support changes of message
+   using ProgressDialog::Update;
 };
 
 #endif

@@ -39,17 +39,23 @@
     * 9: Gaussian(a=4.5)
 */
 
+#include "Audacity.h"
 #include "FFT.h"
 
+#include "Internat.h"
+
+#include "MemoryX.h"
+#include "SampleFormat.h"
+
+#include <wx/wxcrtvararg.h>
 #include <wx/intl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
 
 #include "RealFFTf.h"
-#include "Experimental.h"
 
-static int **gFFTBitTable = NULL;
+static ArraysOf<int> gFFTBitTable;
 static const size_t MaxFastBits = 16;
 
 /* Declare Static functions */
@@ -69,7 +75,7 @@ static bool IsPowerOfTwo(size_t x)
 static size_t NumberOfBitsNeeded(size_t PowerOfTwo)
 {
    if (PowerOfTwo < 2) {
-      fprintf(stderr, "Error: FFT called with size %ld\n", PowerOfTwo);
+      wxFprintf(stderr, "Error: FFT called with size %ld\n", PowerOfTwo);
       exit(1);
    }
 
@@ -94,15 +100,14 @@ int ReverseBits(size_t index, size_t NumBits)
 
 void InitFFT()
 {
-   gFFTBitTable = new int *[MaxFastBits];
+   gFFTBitTable.reinit(MaxFastBits);
 
    size_t len = 2;
    for (size_t b = 1; b <= MaxFastBits; b++) {
-
-      gFFTBitTable[b - 1] = new int[len];
-
+      auto &array = gFFTBitTable[b - 1];
+      array.reinit(len);
       for (size_t i = 0; i < len; i++)
-         gFFTBitTable[b - 1][i] = ReverseBits(i, b);
+         array[i] = ReverseBits(i, b);
 
       len <<= 1;
    }
@@ -110,14 +115,7 @@ void InitFFT()
 
 void DeinitFFT()
 {
-   if (gFFTBitTable) {
-      for (size_t b = 1; b <= MaxFastBits; b++) {
-         delete[] gFFTBitTable[b-1];
-      }
-      delete[] gFFTBitTable;
-   }
-   // Deallocate any unused RealFFTf tables
-   CleanupFFT();
+   gFFTBitTable.reset();
 }
 
 static inline size_t FastReverseBits(size_t i, size_t NumBits)
@@ -141,7 +139,7 @@ void FFT(size_t NumSamples,
    double tr, ti;                /* temp real, temp imaginary */
 
    if (!IsPowerOfTwo(NumSamples)) {
-      fprintf(stderr, "%ld is not a power of two\n", NumSamples);
+      wxFprintf(stderr, "%ld is not a power of two\n", NumSamples);
       exit(1);
    }
 
@@ -233,32 +231,29 @@ void FFT(size_t NumSamples,
 
 void RealFFT(size_t NumSamples, const float *RealIn, float *RealOut, float *ImagOut)
 {
-   size_t i;
-   HFFT hFFT = GetFFT(NumSamples);
-   float *pFFT = new float[NumSamples];
+   auto hFFT = GetFFT(NumSamples);
+   Floats pFFT{ NumSamples };
    // Copy the data into the processing buffer
-   for(i = 0; i < NumSamples; i++)
+   for(size_t i = 0; i < NumSamples; i++)
       pFFT[i] = RealIn[i];
 
    // Perform the FFT
-   RealFFTf(pFFT, hFFT);
+   RealFFTf(pFFT.get(), hFFT.get());
 
    // Copy the data into the real and imaginary outputs
-   for(i = 1; i < (NumSamples / 2); i++) {
+   for (size_t i = 1; i<(NumSamples / 2); i++) {
       RealOut[i]=pFFT[hFFT->BitReversed[i]  ];
       ImagOut[i]=pFFT[hFFT->BitReversed[i]+1];
    }
    // Handle the (real-only) DC and Fs/2 bins
    RealOut[0] = pFFT[0];
-   RealOut[i] = pFFT[1];
-   ImagOut[0] = ImagOut[i] = 0;
+   RealOut[NumSamples / 2] = pFFT[1];
+   ImagOut[0] = ImagOut[NumSamples / 2] = 0;
    // Fill in the upper half using symmetry properties
-   for(i++ ; i < NumSamples; i++) {
+   for(size_t i = NumSamples / 2 + 1; i < NumSamples; i++) {
       RealOut[i] =  RealOut[NumSamples-i];
       ImagOut[i] = -ImagOut[NumSamples-i];
    }
-   delete [] pFFT;
-   ReleaseFFT(hFFT);
 }
 
 /*
@@ -275,30 +270,26 @@ void RealFFT(size_t NumSamples, const float *RealIn, float *RealOut, float *Imag
 void InverseRealFFT(size_t NumSamples, const float *RealIn, const float *ImagIn,
 		    float *RealOut)
 {
-   size_t i;
-   HFFT hFFT = GetFFT(NumSamples);
-   float *pFFT = new float[NumSamples];
+   auto hFFT = GetFFT(NumSamples);
+   Floats pFFT{ NumSamples };
    // Copy the data into the processing buffer
-   for(i = 0; i < (NumSamples / 2); i++)
+   for (size_t i = 0; i < (NumSamples / 2); i++)
       pFFT[2*i  ] = RealIn[i];
    if(ImagIn == NULL) {
-      for(i = 0; i < (NumSamples/2); i++)
+      for (size_t i = 0; i < (NumSamples / 2); i++)
          pFFT[2*i+1] = 0;
    } else {
-      for(i = 0; i < (NumSamples/2); i++)
+      for (size_t i = 0; i < (NumSamples / 2); i++)
          pFFT[2*i+1] = ImagIn[i];
    }
    // Put the fs/2 component in the imaginary part of the DC bin
-   pFFT[1] = RealIn[i];
+   pFFT[1] = RealIn[NumSamples / 2];
 
    // Perform the FFT
-   InverseRealFFTf(pFFT, hFFT);
+   InverseRealFFTf(pFFT.get(), hFFT.get());
 
    // Copy the data to the (purely real) output buffer
-   ReorderToTime(hFFT, pFFT, RealOut);
-
-   delete [] pFFT;
-   ReleaseFFT(hFFT);
+   ReorderToTime(hFFT.get(), pFFT.get(), RealOut);
 }
 
 /*
@@ -314,26 +305,23 @@ void InverseRealFFT(size_t NumSamples, const float *RealIn, const float *ImagIn,
 
 void PowerSpectrum(size_t NumSamples, const float *In, float *Out)
 {
-   size_t i;
-   HFFT hFFT = GetFFT(NumSamples);
-   float *pFFT = new float[NumSamples];
+   auto hFFT = GetFFT(NumSamples);
+   Floats pFFT{ NumSamples };
    // Copy the data into the processing buffer
-   for(i = 0; i < NumSamples; i++)
+   for (size_t i = 0; i<NumSamples; i++)
       pFFT[i] = In[i];
 
    // Perform the FFT
-   RealFFTf(pFFT, hFFT);
+   RealFFTf(pFFT.get(), hFFT.get());
 
    // Copy the data into the real and imaginary outputs
-   for(i = 1; i < NumSamples / 2; i++) {
+   for (size_t i = 1; i<NumSamples / 2; i++) {
       Out[i]= (pFFT[hFFT->BitReversed[i]  ]*pFFT[hFFT->BitReversed[i]  ])
          + (pFFT[hFFT->BitReversed[i]+1]*pFFT[hFFT->BitReversed[i]+1]);
    }
    // Handle the (real-only) DC and Fs/2 bins
    Out[0] = pFFT[0]*pFFT[0];
-   Out[i] = pFFT[1]*pFFT[1];
-   delete [] pFFT;
-   ReleaseFFT(hFFT);
+   Out[NumSamples / 2] = pFFT[1]*pFFT[1];
 }
 
 /*
@@ -356,7 +344,7 @@ const wxChar *WindowFuncName(int whichFunction)
    case eWinFuncHamming:
       return wxT("Hamming");
    case eWinFuncHanning:
-      return wxT("Hanning");
+      return wxT("Hann");
    case eWinFuncBlackman:
       return wxT("Blackman");
    case eWinFuncBlackmanHarris:
@@ -372,8 +360,9 @@ const wxChar *WindowFuncName(int whichFunction)
    }
 }
 
-void NewWindowFunc(int whichFunction, size_t NumSamples, bool extraSample, float *in)
+void NewWindowFunc(int whichFunction, size_t NumSamplesIn, bool extraSample, float *in)
 {
+   int NumSamples = (int)NumSamplesIn;
    if (extraSample) {
       wxASSERT(NumSamples > 0);
       --NumSamples;
@@ -382,7 +371,7 @@ void NewWindowFunc(int whichFunction, size_t NumSamples, bool extraSample, float
 
    switch (whichFunction) {
    default:
-      fprintf(stderr, "FFT::WindowFunc - Invalid window function: %d\n", whichFunction);
+      wxFprintf(stderr, "FFT::WindowFunc - Invalid window function: %d\n", whichFunction);
       break;
    case eWinFuncRectangular:
       // Multiply all by 1.0f -- do nothing
@@ -416,7 +405,7 @@ void NewWindowFunc(int whichFunction, size_t NumSamples, bool extraSample, float
       break;
    case eWinFuncHanning:
    {
-      // Hanning
+      // Hann
       const double multiplier = 2 * M_PI / NumSamples;
       static const double coeff0 = 0.5, coeff1 = -0.5;
       for (int ii = 0; ii < NumSamples; ++ii)
@@ -548,7 +537,7 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
       wxASSERT(NumSamples > 0);
       --NumSamples;
       // in[0] *= 1.0f;
-      for (int ii = 1; ii < NumSamples; ++ii)
+      for (int ii = 1; ii < (int)NumSamples; ++ii)
          in[ii] = 0.0f;
       in[NumSamples] *= -1.0f;
       return;
@@ -597,10 +586,12 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
       // There are deltas at the ends
       const double multiplier = 2 * M_PI / NumSamples;
       static const double coeff0 = 0.54, coeff1 = -0.46 * multiplier;
+      // TODO This code should be more explicit about the precision it intends.
+      // For now we get C4305 warnings, truncation from 'const double' to 'float' 
       in[0] *= coeff0;
       if (!extraSample)
          --NumSamples;
-      for (int ii = 0; ii < NumSamples; ++ii)
+      for (int ii = 0; ii < (int)NumSamples; ++ii)
          in[ii] *= - coeff1 * sin(ii * multiplier);
       if (extraSample)
          in[NumSamples] *= - coeff0;
@@ -611,10 +602,10 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
       break;
    case eWinFuncHanning:
    {
-      // Hanning
+      // Hann
       const double multiplier = 2 * M_PI / NumSamples;
       const double coeff1 = -0.5 * multiplier;
-      for (int ii = 0; ii < NumSamples; ++ii)
+      for (int ii = 0; ii < (int)NumSamples; ++ii)
          in[ii] *= - coeff1 * sin(ii * multiplier);
       if (extraSample)
          in[NumSamples] = 0.0f;
@@ -626,7 +617,7 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
       const double multiplier = 2 * M_PI / NumSamples;
       const double multiplier2 = 2 * multiplier;
       const double coeff1 = -0.5 * multiplier, coeff2 = 0.08 * multiplier2;
-      for (int ii = 0; ii < NumSamples; ++ii)
+      for (int ii = 0; ii < (int)NumSamples; ++ii)
          in[ii] *= - coeff1 * sin(ii * multiplier) - coeff2 * sin(ii * multiplier2);
       if (extraSample)
          in[NumSamples] = 0.0f;
@@ -640,7 +631,7 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
       const double multiplier3 = 3 * multiplier;
       const double coeff1 = -0.48829 * multiplier,
          coeff2 = 0.14128 * multiplier2, coeff3 = -0.01168 * multiplier3;
-      for (int ii = 0; ii < NumSamples; ++ii)
+      for (int ii = 0; ii < (int)NumSamples; ++ii)
          in[ii] *= - coeff1 * sin(ii * multiplier) - coeff2 * sin(ii * multiplier2) - coeff3 * sin(ii * multiplier3);
       if (extraSample)
          in[NumSamples] = 0.0f;
@@ -651,7 +642,7 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
       // Welch
       const float N = NumSamples;
       const float NN = NumSamples * NumSamples;
-      for (int ii = 0; ii < NumSamples; ++ii) {
+      for (int ii = 0; ii < (int)NumSamples; ++ii) {
          in[ii] *= 4 * (N - ii - ii) / NN;
       }
       if (extraSample)
@@ -683,7 +674,7 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
       in[0] *= exp(A * 0.25) * (1 - invN);
       if (!extraSample)
          --NumSamples;
-      for (int ii = 1; ii < NumSamples; ++ii) {
+      for (int ii = 1; ii < (int)NumSamples; ++ii) {
          const float iOverN = ii * invN;
          in[ii] *= exp(A * (0.25 + (iOverN * iOverN) - iOverN)) * (2 * ii * invNN - invN);
       }
@@ -697,6 +688,6 @@ void DerivativeOfWindowFunc(int whichFunction, size_t NumSamples, bool extraSamp
    }
       break;
    default:
-      fprintf(stderr, "FFT::DerivativeOfWindowFunc - Invalid window function: %d\n", whichFunction);
+      wxFprintf(stderr, "FFT::DerivativeOfWindowFunc - Invalid window function: %d\n", whichFunction);
    }
 }

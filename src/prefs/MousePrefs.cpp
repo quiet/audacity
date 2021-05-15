@@ -33,6 +33,8 @@
 *//********************************************************************/
 
 #include "../Audacity.h"
+#include "MousePrefs.h"
+
 #include "../Experimental.h"
 
 #include <wx/defs.h>
@@ -41,12 +43,11 @@
 
 #include "../Prefs.h"
 #include "../ShuttleGui.h"
-#include "MousePrefs.h"
+#include "../Internat.h"
 
 // The numbers of the columns of the mList.
 enum
 {
-   BlankColumn,
    ToolColumn,
    ActionColumn,
    ButtonsColumn,
@@ -60,14 +61,29 @@ enum
 #endif
 
 /// Constructor
-MousePrefs::MousePrefs(wxWindow * parent)
-:  PrefsPanel(parent, _("Mouse"))
+MousePrefs::MousePrefs(wxWindow * parent, wxWindowID winid)
+:  PrefsPanel(parent, winid, _("Mouse"))
 {
    Populate();
 }
 
 MousePrefs::~MousePrefs()
 {
+}
+
+ComponentInterfaceSymbol MousePrefs::GetSymbol()
+{
+   return MOUSE_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString MousePrefs::GetDescription()
+{
+   return _("Preferences for Mouse");
+}
+
+wxString MousePrefs::HelpPageName()
+{
+   return "Mouse_Preferences";
 }
 
 /// Creates the dialog and its contents.
@@ -81,6 +97,12 @@ void MousePrefs::Populate()
    PopulateOrExchange(S);
    // ----------------------- End of main section --------------
    CreateList();
+   if (mList->GetItemCount() > 0) {
+      // set first item to be selected (and the focus when the
+      // list first becomes the focus)
+      mList->SetItemState(0, wxLIST_STATE_FOCUSED | wxLIST_STATE_SELECTED,
+         wxLIST_STATE_FOCUSED | wxLIST_STATE_SELECTED);
+   }
 }
 
 /// Places controls on the panel and also exchanges data with them.
@@ -98,13 +120,14 @@ void MousePrefs::PopulateOrExchange(ShuttleGui & S)
 /// Creates the contents of mList
 void MousePrefs::CreateList()
 {
-   //An empty first column is a workaround - under Win98 the first column
+   //A dummy first column, which is then deleted, is a workaround - under Windows the first column
    //can't be right aligned.
-   mList->InsertColumn(BlankColumn,   wxT(""),              wxLIST_FORMAT_LEFT);
-   mList->InsertColumn(ToolColumn,    _("Tool"),            wxLIST_FORMAT_RIGHT);
-   mList->InsertColumn(ActionColumn,  _("Command Action"),  wxLIST_FORMAT_RIGHT);
-   mList->InsertColumn(ButtonsColumn, _("Buttons"),         wxLIST_FORMAT_LEFT);
-   mList->InsertColumn(CommentColumn, _("Comments"),        wxLIST_FORMAT_LEFT);
+   mList->InsertColumn(0,             wxT(""),              wxLIST_FORMAT_LEFT);
+   mList->InsertColumn(ToolColumn + 1,    _("Tool"),            wxLIST_FORMAT_RIGHT);
+   mList->InsertColumn(ActionColumn + 1,  _("Command Action"),  wxLIST_FORMAT_RIGHT);
+   mList->InsertColumn(ButtonsColumn + 1, _("Buttons"),         wxLIST_FORMAT_LEFT);
+   mList->InsertColumn(CommentColumn + 1, _("Comments"),        wxLIST_FORMAT_LEFT);
+   mList->DeleteColumn(0);
 
    AddItem(_("Left-Click"),        _("Select"),   _("Set Selection Point"));
    AddItem(_("Left-Drag"),         _("Select"),   _("Set Selection Range"));
@@ -159,7 +182,6 @@ void MousePrefs::CreateList()
    AddItem(CTRL + _("-Wheel-Rotate"),        _("Any"),   _("Zoom waveform in or out"));
    AddItem(CTRL + _("-Shift-Wheel-Rotate"),  _("Any"),   _("Vertical Scale Waveform (dB) range"));
 
-   mList->SetColumnWidth(BlankColumn, 0);
    mList->SetColumnWidth(ToolColumn, wxLIST_AUTOSIZE);
    mList->SetColumnWidth(ActionColumn, wxLIST_AUTOSIZE);
    mList->SetColumnWidth(ButtonsColumn, wxLIST_AUTOSIZE);
@@ -176,8 +198,7 @@ void MousePrefs::AddItem(wxString const & buttons, wxString const & tool,
                          wxString const & action, wxString const & comment)
 {
    int i = mList->GetItemCount();
-   mList->InsertItem(i, wxT(""));
-   mList->SetItem(i, ToolColumn, tool);
+   mList->InsertItem(i, tool);
    mList->SetItem(i, ActionColumn, action);
    mList->SetItem(i, ButtonsColumn, buttons);
 
@@ -189,7 +210,7 @@ void MousePrefs::AddItem(wxString const & buttons, wxString const & tool,
 
 /// Update the preferences stored on disk.
 /// Currently does nothing as Mouse Preferences don't change.
-bool MousePrefs::Apply()
+bool MousePrefs::Commit()
 {
 // Not yet required...
 //   ShuttleGui S(this, eIsSavingToPrefs);
@@ -197,8 +218,8 @@ bool MousePrefs::Apply()
    return true;
 }
 
-PrefsPanel *MousePrefsFactory::Create(wxWindow *parent)
+PrefsPanel *MousePrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew MousePrefs(parent);
+   return safenew MousePrefs(parent, winid);
 }

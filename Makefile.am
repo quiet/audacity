@@ -8,14 +8,15 @@ dist_doc_DATA = LICENSE.txt README.txt
 dist_pkgdata_DATA = presets/EQDefaultCurves.xml
 
 nobase_dist_pkgdata_DATA = \
+   include/audacity/ComponentInterface.h \
    include/audacity/ConfigInterface.h \
    include/audacity/EffectAutomationParameters.h \
    include/audacity/EffectInterface.h \
-   include/audacity/IdentInterface.h \
    include/audacity/ImporterInterface.h \
    include/audacity/ModuleInterface.h \
    include/audacity/PluginInterface.h \
    include/audacity/Types.h \
+   nyquist/aud-do-support.lsp \
    nyquist/dspprims.lsp \
    nyquist/envelopes.lsp \
    nyquist/equalizer.lsp \
@@ -69,9 +70,11 @@ nobase_dist_pkgdata_DATA = \
    plug-ins/limiter.ny \
    plug-ins/lowpass.ny \
    plug-ins/notch.ny \
+   plug-ins/nyquist-plug-in-installer.ny \
    plug-ins/pluck.ny \
    plug-ins/rhythmtrack.ny \
    plug-ins/rissetdrum.ny \
+   plug-ins/rms.ny \
    plug-ins/sample-data-export.ny \
    plug-ins/sample-data-import.ny \
    plug-ins/SilenceMarker.ny \
@@ -96,6 +99,8 @@ audacity$(EXEEXT): src/audacity$(EXEEXT)
 modules:
 	mkdir -p modules
 	(cd lib-src/mod-nyq-bench && make clean && make && cp .libs/mod-nyq-bench.so ../../modules)
+	(cd lib-src/mod-script-pipe && make clean && make && cp .libs/mod-script-pipe.so ../../modules)
+	(cd lib-src/mod-null && make clean && make && cp .libs/mod-null.so ../../modules)
 
 .PHONY: modules
 

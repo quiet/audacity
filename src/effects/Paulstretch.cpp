@@ -25,9 +25,11 @@
 #include <wx/intl.h>
 #include <wx/valgen.h>
 
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../FFT.h"
 #include "../widgets/valnum.h"
+#include "../widgets/ErrorDialog.h"
 #include "../Prefs.h"
 
 #include "../WaveTrack.h"
@@ -35,9 +37,11 @@
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name    Type     Key                     Def      Min      Max      Scale
-Param( Amount, float,   XO("Stretch Factor"),   10.0,    1.0,     FLT_MAX, 1   );
-Param( Time,   float,   XO("Time Resolution"),  0.25f,   0.00099f,  FLT_MAX, 1   );
+Param( Amount, float,   wxT("Stretch Factor"),   10.0,    1.0,     FLT_MAX, 1   );
+Param( Time,   float,   wxT("Time Resolution"),  0.25f,   0.00099f,  FLT_MAX, 1   );
 
+/// \brief Class that helps EffectPaulStretch.  It does the FFTs and inner loop 
+/// of the effect.
 class PaulStretch
 {
 public:
@@ -45,7 +49,7 @@ public:
    //in_bufsize is also a half of a FFT buffer (in samples)
    virtual ~PaulStretch();
 
-   void process(float *smps,int nsmps);
+   void process(float *smps, size_t nsmps);
 
    size_t get_nsamples();//how many samples are required to be added in the pool next time
    size_t get_nsamples_for_fill();//how many samples are required to be added for a complete buffer refill (at start of the song or after seek)
@@ -59,24 +63,20 @@ private:
 
 public:
    const size_t out_bufsize;
-   float *const out_buf;
+   const Floats out_buf;
 
 private:
-   float *const old_out_smp_buf;
+   const Floats old_out_smp_buf;
 
 public:
    const size_t poolsize;//how many samples are inside the input_pool size (need to know how many samples to fill when seeking)
 
 private:
-   float *const in_pool;//de marimea in_bufsize
+   const Floats in_pool;//de marimea in_bufsize
 
    double remained_samples;//how many fraction of samples has remained (0..1)
 
-   float *const fft_smps;
-   float *const fft_c;
-   float *const fft_s;
-   float *const fft_freq;
-   float *const fft_tmp;
+   const Floats fft_smps, fft_c, fft_s, fft_freq, fft_tmp;
 };
 
 //
@@ -99,19 +99,24 @@ EffectPaulstretch::~EffectPaulstretch()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectPaulstretch::GetSymbol()
+ComponentInterfaceSymbol EffectPaulstretch::GetSymbol()
 {
    return PAULSTRETCH_PLUGIN_SYMBOL;
 }
 
 wxString EffectPaulstretch::GetDescription()
 {
-   return XO("Use Paulstretch only for an extreme time-stretch or \"stasis\" effect");
+   return _("Paulstretch is only for an extreme time-stretch or \"stasis\" effect");
 }
 
-// EffectIdentInterface implementation
+wxString EffectPaulstretch::ManualPage()
+{
+   return wxT("Paulstretch");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectPaulstretch::GetType()
 {
@@ -119,8 +124,13 @@ EffectType EffectPaulstretch::GetType()
 }
 
 // EffectClientInterface implementation
+bool EffectPaulstretch::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( mAmount, Amount );
+   S.SHUTTLE_PARAM( mTime_resolution, Time );
+   return true;
+}
 
-bool EffectPaulstretch::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectPaulstretch::GetAutomationParameters(CommandParameters & parms)
 {
    parms.WriteFloat(KEY_Amount, mAmount);
    parms.WriteFloat(KEY_Time, mTime_resolution);
@@ -128,7 +138,7 @@ bool EffectPaulstretch::GetAutomationParameters(EffectAutomationParameters & par
    return true;
 }
 
-bool EffectPaulstretch::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectPaulstretch::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyFloat(Amount);
    ReadAndVerifyFloat(Time);
@@ -157,11 +167,9 @@ double EffectPaulstretch::CalcPreviewInputLength(double previewLength)
 bool EffectPaulstretch::Process()
 {
    CopyInputTracks();
-   SelectedTrackListOfKindIterator iter(Track::Wave, mOutputTracks.get());
-   WaveTrack *track = (WaveTrack *) iter.First();
    m_t1=mT1;
    int count=0;
-   while (track) {
+   for( auto track : mOutputTracks->Selected< WaveTrack >() ) {
       double trackStart = track->GetStartTime();
       double trackEnd = track->GetEndTime();
       double t0 = mT0 < trackStart? trackStart: mT0;
@@ -172,7 +180,6 @@ bool EffectPaulstretch::Process()
             return false;
       }
 
-      track = (WaveTrack *) iter.Next();
       count++;
    }
    mT1=m_t1;
@@ -196,7 +203,7 @@ void EffectPaulstretch::PopulateOrExchange(ShuttleGui & S)
        */
       S.AddTextBox(_("Stretch Factor:"), wxT(""), 10)->SetValidator(vldAmount);
 
-      FloatingPointValidator<float> vldTime(3, &mTime_resolution, NUM_VAL_ONE_TRAILING_ZERO);
+      FloatingPointValidator<float> vldTime(3, &mTime_resolution, NumValidatorStyle::ONE_TRAILING_ZERO);
       vldTime.SetMin(MIN_Time);
       S.AddTextBox(_("Time Resolution (seconds):"), wxT(""), 10)->SetValidator(vldTime);
    }
@@ -254,7 +261,7 @@ bool EffectPaulstretch::ProcessOne(WaveTrack *track,double t0,double t1,int coun
 
    const auto stretch_buf_size = GetBufferSize(track->GetRate());
    if (stretch_buf_size == 0) {
-      ::wxMessageBox( badAllocMessage );
+      ::Effect::MessageBox( badAllocMessage );
       return false;
    }
 
@@ -267,7 +274,7 @@ bool EffectPaulstretch::ProcessOne(WaveTrack *track,double t0,double t1,int coun
    const auto minDuration = stretch_buf_size * 2 + 1;
    if (minDuration < stretch_buf_size) {
       // overflow!
-      ::wxMessageBox( badAllocMessage );
+      ::Effect::MessageBox( badAllocMessage );
       return false;
    }
 
@@ -283,30 +290,30 @@ bool EffectPaulstretch::ProcessOne(WaveTrack *track,double t0,double t1,int coun
 
          /* i18n-hint: 'Time Resolution' is the name of a control in the Paulstretch effect.*/
          if ((minDuration / mProjectRate) < defaultPreviewLen) {
-            ::wxMessageBox (wxString::Format(_("Audio selection too short to preview.\n\n"
+            ::Effect::MessageBox (wxString::Format(_("Audio selection too short to preview.\n\n"
                                                "Try increasing the audio selection to at least %.1f seconds,\n"
                                                "or reducing the 'Time Resolution' to less than %.1f seconds."),
                                              (minDuration / track->GetRate()) + 0.05, // round up to 1/10 s.
                                              floor(maxTimeRes * 10.0) / 10.0),
-                            GetName(), wxOK | wxICON_EXCLAMATION);
+                            wxOK | wxICON_EXCLAMATION);
          }
          else {
             /* i18n-hint: 'Time Resolution' is the name of a control in the Paulstretch effect.*/
-            ::wxMessageBox (wxString::Format(_("Unable to Preview.\n\n"
+            ::Effect::MessageBox (wxString::Format(_("Unable to Preview.\n\n"
                                                "For the current audio selection, the maximum\n"
                                                "'Time Resolution' is %.1f seconds."),
                                              floor(maxTimeRes * 10.0) / 10.0),
-                            GetName(), wxOK | wxICON_EXCLAMATION);
+                            wxOK | wxICON_EXCLAMATION);
          }
       }
       else {
          /* i18n-hint: 'Time Resolution' is the name of a control in the Paulstretch effect.*/
-         ::wxMessageBox (wxString::Format(_("The 'Time Resolution' is too long for the selection.\n\n"
+         ::Effect::MessageBox (wxString::Format(_("The 'Time Resolution' is too long for the selection.\n\n"
                                             "Try increasing the audio selection to at least %.1f seconds,\n"
                                             "or reducing the 'Time Resolution' to less than %.1f seconds."),
                                           (minDuration / track->GetRate()) + 0.05, // round up to 1/10 s.
                                           floor(maxTimeRes * 10.0) / 10.0),
-                         GetName(), wxOK | wxICON_EXCLAMATION);
+                         wxOK | wxICON_EXCLAMATION);
       }
 
       return false;
@@ -329,72 +336,71 @@ bool EffectPaulstretch::ProcessOne(WaveTrack *track,double t0,double t1,int coun
       auto nget = stretch.get_nsamples_for_fill();
 
       auto bufsize = stretch.poolsize;
-      float *buffer0 = new float[bufsize];
-      float *bufferptr0 = buffer0;
+      Floats buffer0{ bufsize };
+      float *bufferptr0 = buffer0.get();
       bool first_time = true;
 
       const auto fade_len = std::min<size_t>(100, bufsize / 2 - 1);
-      float *fade_track_smps = new float[fade_len];
-      decltype(len) s = 0;
       bool cancelled = false;
 
-      while (s < len) {
-         track->Get((samplePtr)bufferptr0, floatSample, start + s, nget);
-         stretch.process(buffer0, nget);
+      {
+         Floats fade_track_smps{ fade_len };
+         decltype(len) s=0;
 
-         if (first_time) {
-            stretch.process(buffer0, 0);
-         };
+         while (s < len) {
+            track->Get((samplePtr)bufferptr0, floatSample, start + s, nget);
+            stretch.process(buffer0.get(), nget);
 
-         s += nget;
-
-         if (first_time) {//blend the the start of the selection
-            track->Get((samplePtr)fade_track_smps, floatSample, start, fade_len);
-            first_time = false;
-            for (int i = 0; i < fade_len; i++){
-               float fi = (float)i / (float)fade_len;
-               stretch.out_buf[i] =
-                  stretch.out_buf[i] * fi + (1.0 - fi) * fade_track_smps[i];
+            if (first_time) {
+               stretch.process(buffer0.get(), 0);
             };
-         };
-         if (s >= len) {//blend the end of the selection
-            track->Get((samplePtr)fade_track_smps,floatSample,end-fade_len,fade_len);
-            for (int i = 0; i < fade_len; i++){
-               float fi = (float)i / (float)fade_len;
-               auto i2 = bufsize / 2 - 1 - i;
-               stretch.out_buf[i2] =
-                  stretch.out_buf[i2] * fi + (1.0 - fi) *
-                  fade_track_smps[fade_len - 1 - i];
-            };
-         };
 
-         outputTrack->Append((samplePtr)stretch.out_buf, floatSample,
-                             stretch.out_bufsize);
+            s += nget;
 
-         nget = stretch.get_nsamples();
-         if (TrackProgress(count,
-            s.as_double() / len.as_double()
-         )) {
-            cancelled=true;
-            break;
+            if (first_time){//blend the the start of the selection
+               track->Get((samplePtr)fade_track_smps.get(), floatSample, start, fade_len);
+               first_time = false;
+               for (size_t i = 0; i < fade_len; i++){
+                  float fi = (float)i / (float)fade_len;
+                  stretch.out_buf[i] =
+                     stretch.out_buf[i] * fi + (1.0 - fi) * fade_track_smps[i];
+               }
+            }
+            if (s >= len){//blend the end of the selection
+               track->Get((samplePtr)fade_track_smps.get(), floatSample, end - fade_len, fade_len);
+               for (size_t i = 0; i < fade_len; i++){
+                  float fi = (float)i / (float)fade_len;
+                  auto i2 = bufsize / 2 - 1 - i;
+                  stretch.out_buf[i2] =
+                     stretch.out_buf[i2] * fi + (1.0 - fi) *
+                     fade_track_smps[fade_len - 1 - i];
+               }
+            }
+
+            outputTrack->Append((samplePtr)stretch.out_buf.get(), floatSample, stretch.out_bufsize);
+
+            nget = stretch.get_nsamples();
+            if (TrackProgress(count,
+               s.as_double() / len.as_double()
+            )) {
+               cancelled = true;
+               break;
+            }
          }
       }
 
-      delete [] fade_track_smps;
-      outputTrack->Flush();
+      if (!cancelled){
+         outputTrack->Flush();
 
-      track->Clear(t0,t1);
-      bool success = track->Paste(t0, outputTrack.get());
-      if (!cancelled && success){
+         track->Clear(t0,t1);
+         track->Paste(t0, outputTrack.get());
          m_t1 = mT0 + outputTrack->GetEndTime();
       }
-      
-      delete []buffer0;
       
       return !cancelled;
    }
    catch ( const std::bad_alloc& ) {
-      ::wxMessageBox( badAllocMessage );
+      ::Effect::MessageBox( badAllocMessage );
       return false;
    }
 };
@@ -407,32 +413,24 @@ PaulStretch::PaulStretch(float rap_, size_t in_bufsize_, float samplerate_ )
    , rap { std::max(1.0f, rap_) }
    , in_bufsize { in_bufsize_ }
    , out_bufsize { std::max(size_t{ 8 }, in_bufsize) }
-   , out_buf { new float[out_bufsize] }
-   , old_out_smp_buf { new float[out_bufsize * 2] { 0.0f } }
+   , out_buf { out_bufsize }
+   , old_out_smp_buf { out_bufsize * 2, true }
    , poolsize { in_bufsize_ * 2 }
-   , in_pool { new float[poolsize] { 0.0f } }
+   , in_pool { poolsize, true }
    , remained_samples { 0.0 }
-   , fft_smps { new float[poolsize] { 0.0f } }
-   , fft_s { new float[poolsize] { 0.0f } }
-   , fft_c { new float[poolsize] { 0.0f } }
-   , fft_freq { new float[poolsize] { 0.0f } }
-   , fft_tmp { new float[poolsize] }
+   , fft_smps { poolsize, true }
+   , fft_c { poolsize, true }
+   , fft_s { poolsize, true }
+   , fft_freq { poolsize, true }
+   , fft_tmp { poolsize }
 {
 }
 
 PaulStretch::~PaulStretch()
 {
-   delete [] out_buf;
-   delete [] old_out_smp_buf;
-   delete [] in_pool;
-   delete [] fft_smps;
-   delete [] fft_c;
-   delete [] fft_s;
-   delete [] fft_freq;
-   delete [] fft_tmp;
 }
 
-void PaulStretch::process(float *smps,int nsmps)
+void PaulStretch::process(float *smps, size_t nsmps)
 {
    //add NEW samples to the pool
    if ((smps != NULL) && (nsmps != 0)) {
@@ -446,20 +444,20 @@ void PaulStretch::process(float *smps,int nsmps)
          in_pool[i] = in_pool[i + nsmps];
 
       //add NEW samples to the pool
-      for (int i = 0; i < nsmps; i++)
+      for (size_t i = 0; i < nsmps; i++)
          in_pool[i + nleft] = smps[i];
    }
 
    //get the samples from the pool
    for (size_t i = 0; i < poolsize; i++)
       fft_smps[i] = in_pool[i];
-   WindowFunc(eWinFuncHanning, poolsize, fft_smps);
+   WindowFunc(eWinFuncHanning, poolsize, fft_smps.get());
 
-   RealFFT(poolsize, fft_smps, fft_c, fft_s);
+   RealFFT(poolsize, fft_smps.get(), fft_c.get(), fft_s.get());
 
    for (size_t i = 0; i < poolsize / 2; i++)
       fft_freq[i] = sqrt(fft_c[i] * fft_c[i] + fft_s[i] * fft_s[i]);
-   process_spectrum(fft_freq);
+   process_spectrum(fft_freq.get());
 
 
    //put randomize phases to frequencies and do a IFFT
@@ -477,7 +475,7 @@ void PaulStretch::process(float *smps,int nsmps)
    fft_c[0] = fft_s[0] = 0.0;
    fft_c[poolsize / 2] = fft_s[poolsize / 2] = 0.0;
 
-   FFT(poolsize, true, fft_c, fft_s, fft_smps, fft_tmp);
+   FFT(poolsize, true, fft_c.get(), fft_s.get(), fft_smps.get(), fft_tmp.get());
 
    float max = 0.0, max2 = 0.0;
    for (size_t i = 0; i < poolsize; i++) {

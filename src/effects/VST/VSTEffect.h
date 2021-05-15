@@ -8,20 +8,29 @@
 
 **********************************************************************/
 
-#if USE_VST
+#include "../../Audacity.h" // for USE_* macros
 
-#include <wx/wx.h>
+#if USE_VST
 
 #include "audacity/EffectInterface.h"
 #include "audacity/ModuleInterface.h"
 #include "audacity/PluginInterface.h"
 
+#include "../../SampleFormat.h"
 #include "../../widgets/NumericTextCtrl.h"
+#include "../../xml/XMLTagHandler.h"
 
+class wxSizerItem;
+class wxSlider;
+class wxStaticText;
+
+class VSTControl;
 #include "VSTControl.h"
 
 #define VSTCMDKEY wxT("-checkvst")
-#define VSTPLUGINTYPE wxT("VST")
+/* i18n-hint: Abbreviates Virtual Studio Technology, an audio software protocol
+   developed by Steinberg GmbH */
+#define VSTPLUGINTYPE XO("VST")
 
 #define audacityVSTID CCONST('a', 'u', 'D', 'y');
 
@@ -53,6 +62,13 @@ class wxDynamicLibrary;
 
 #if defined(__WXMAC__)
 struct __CFBundle;
+typedef struct __CFBundle *CFBundleRef;
+#if __LP64__
+typedef int CFBundleRefNum;
+#else
+typedef signed short                    SInt16;
+typedef SInt16 CFBundleRefNum;
+#endif
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -61,11 +77,17 @@ struct __CFBundle;
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-WX_DEFINE_ARRAY_PTR(VSTEffect *, VSTEffectArray);
+using VSTEffectArray = std::vector < std::unique_ptr<VSTEffect> > ;
 
 DECLARE_LOCAL_EVENT_TYPE(EVT_SIZEWINDOW, -1);
 DECLARE_LOCAL_EVENT_TYPE(EVT_UPDATEDISPLAY, -1);
 
+///////////////////////////////////////////////////////////////////////////////
+///
+/// VSTEffect is an Audacity EffectClientInterface that forwards actual 
+/// audio processing via a VSTEffectLink
+///
+///////////////////////////////////////////////////////////////////////////////
 class VSTEffect final : public wxEvtHandler,
                   public EffectClientInterface,
                   public EffectUIClientInterface,
@@ -73,22 +95,21 @@ class VSTEffect final : public wxEvtHandler,
                   public VSTEffectLink
 {
  public:
-   VSTEffect(const wxString & path, VSTEffect *master = NULL);
+   VSTEffect(const PluginPath & path, VSTEffect *master = NULL);
    virtual ~VSTEffect();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetPath() override;
-   wxString GetSymbol() override;
-   wxString GetName() override;
-   wxString GetVendor() override;
+   PluginPath GetPath() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   VendorSymbol GetVendor() override;
    wxString GetVersion() override;
    wxString GetDescription() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
-   wxString GetFamily() override;
+   EffectFamilySymbol GetFamily() override;
    bool IsInteractive() override;
    bool IsDefault() override;
    bool IsLegacy() override;
@@ -130,13 +151,13 @@ class VSTEffect final : public wxEvtHandler,
 
    bool ShowInterface(wxWindow *parent, bool forceModal = false) override;
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
-   bool LoadUserPreset(const wxString & name) override;
-   bool SaveUserPreset(const wxString & name) override;
+   bool LoadUserPreset(const RegistryPath & name) override;
+   bool SaveUserPreset(const RegistryPath & name) override;
 
-   wxArrayString GetFactoryPresets() override;
+   RegistryPaths GetFactoryPresets() override;
    bool LoadFactoryPreset(int id) override;
    bool LoadFactoryDefaults() override;
 
@@ -172,11 +193,11 @@ private:
    // Plugin loading and unloading
    bool Load();
    void Unload();
-   wxArrayInt GetEffectIDs();
+   std::vector<int> GetEffectIDs();
 
    // Parameter loading and saving
-   bool LoadParameters(const wxString & group);
-   bool SaveParameters(const wxString & group);
+   bool LoadParameters(const RegistryPath & group);
+   bool SaveParameters(const RegistryPath & group);
 
    // Base64 encoding and decoding
    static wxString b64encode(const void *in, int len);
@@ -188,7 +209,6 @@ private:
 
    // UI
    void OnSlider(wxCommandEvent & evt);
-   void OnSize(wxSizeEvent & evt);
    void OnSizeWindow(wxCommandEvent & evt);
    void OnUpdateDisplay(wxCommandEvent & evt);
 
@@ -240,7 +260,8 @@ private:
 
    // VST methods
 
-   intptr_t callDispatcher(int opcode, int index, intptr_t value, void *ptr, float opt);
+   intptr_t callDispatcher(int opcode, int index,
+                           intptr_t value, void *ptr, float opt) override;
    void callProcessReplacing(float **inputs, float **outputs, int sampleframes);
    void callSetParameter(int index, float value);
    float callGetParameter(int index);
@@ -261,14 +282,14 @@ private:
 
    EffectHostInterface *mHost;
    PluginID mID;
-   wxString mPath;
+   PluginPath mPath;
    unsigned mAudioIns;
    unsigned mAudioOuts;
    int mMidiIns;
    int mMidiOuts;
    bool mAutomatable;
    float mSampleRate;
-   int mUserBlockSize;
+   size_t mUserBlockSize;
    wxString mName;
    wxString mVendor;
    wxString mDescription;
@@ -294,15 +315,27 @@ private:
 
    BundleHandle mBundleRef;
 
-   struct ResourceDeleter {
-      const BundleHandle *mpHandle;
-      ResourceDeleter(const BundleHandle *pHandle = nullptr)
-         : mpHandle(pHandle) {}
-      void operator() (void*) const;
+   struct ResourceHandle {
+      ResourceHandle(
+         CFBundleRef pHandle = nullptr, CFBundleRefNum num = 0)
+      : mpHandle{ pHandle }, mNum{ num }
+      {}
+      ResourceHandle& operator=( ResourceHandle &&other )
+      {
+         if (this != &other) {
+            mpHandle = other.mpHandle;
+            mNum = other.mNum;
+            other.mpHandle = nullptr;
+            other.mNum = 0;
+         }
+         return *this;
+      }
+      ~ResourceHandle() { reset(); }
+      void reset();
+
+      CFBundleRef mpHandle{};
+      CFBundleRefNum mNum{};
    };
-   using ResourceHandle = std::unique_ptr<
-      char, ResourceDeleter
-   >;
    ResourceHandle mResource;
 #endif
 
@@ -313,7 +346,7 @@ private:
    bool mUseLatency;
    int mBufferDelay;
 
-   int mBlockSize;
+   unsigned mBlockSize;
 
    int mProcessLevel;
    bool mHasPower;
@@ -329,8 +362,7 @@ private:
    VSTEffect *mMaster;     // non-NULL if a slave
    VSTEffectArray mSlaves;
    unsigned mNumChannels;
-   float **mMasterIn;
-   float **mMasterOut;
+   FloatBuffers mMasterIn, mMasterOut;
    size_t mNumSamples;
 
    // UI
@@ -343,10 +375,10 @@ private:
    VSTControl *mControl;
 
    NumericTextCtrl *mDuration;
-   wxStaticText **mNames;
-   wxSlider **mSliders;
-   wxStaticText **mDisplays;
-   wxStaticText **mLabels;
+   ArrayOf<wxStaticText *> mNames;
+   ArrayOf<wxSlider *> mSliders;
+   ArrayOf<wxStaticText *> mDisplays;
+   ArrayOf<wxStaticText *> mLabels;
 
    bool mInSet;
    bool mInChunk;
@@ -360,23 +392,22 @@ private:
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-//
-// VSTEffectsModule
-//
+///
+/// VSTEffectsModule is an Audacity ModuleInterface, in other words it 
+/// represents one plug in.
+///
 ///////////////////////////////////////////////////////////////////////////////
-
 class VSTEffectsModule final : public ModuleInterface
 {
 public:
    VSTEffectsModule(ModuleManagerInterface *moduleManager, const wxString *path);
    virtual ~VSTEffectsModule();
 
-   // IdentInterface implementatino
+   // ComponentInterface implementation
 
-   wxString GetPath() override;
-   wxString GetSymbol() override;
-   wxString GetName() override;
-   wxString GetVendor() override;
+   PluginPath GetPath() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   VendorSymbol GetVendor() override;
    wxString GetVersion() override;
    wxString GetDescription() override;
 
@@ -385,14 +416,20 @@ public:
    bool Initialize() override;
    void Terminate() override;
 
+   FileExtensions GetFileExtensions() override;
+   FilePath InstallPath() override;
+
    bool AutoRegisterPlugins(PluginManagerInterface & pm) override;
-   wxArrayString FindPlugins(PluginManagerInterface & pm) override;
-   bool RegisterPlugin(PluginManagerInterface & pm, const wxString & path) override;
+   PluginPaths FindPluginPaths(PluginManagerInterface & pm) override;
+   unsigned DiscoverPluginsAtPath(
+      const PluginPath & path, wxString &errMsg,
+      const RegistrationCallback &callback)
+         override;
 
-   bool IsPluginValid(const wxString & path, bool bFast) override;
+   bool IsPluginValid(const PluginPath & path, bool bFast) override;
 
-   IdentInterface *CreateInstance(const wxString & path) override;
-   void DeleteInstance(IdentInterface *instance) override;
+   ComponentInterface *CreateInstance(const PluginPath & path) override;
+   void DeleteInstance(ComponentInterface *instance) override;
 
    // VSTEffectModule implementation
 
@@ -400,7 +437,7 @@ public:
 
 private:
    ModuleManagerInterface *mModMan;
-   wxString mPath;
+   PluginPath mPath;
 };
 
 #endif // USE_VST

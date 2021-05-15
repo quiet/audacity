@@ -19,11 +19,15 @@
 // headers
 // ----------------------------------------------------------------------------
 
+#include "../Audacity.h"
+#include "valnum.h"
+
 // For compilers that support precompilation, includes "wx.h".
 #include <wx/wxprec.h>
 
-#include "../Audacity.h"
-#include "valnum.h"
+#include <wx/setup.h> // for wxUSE_* macros
+
+#include "ErrorDialog.h"
 
 #ifdef __BORLANDC__
     #pragma hdrstop
@@ -32,14 +36,15 @@
 #if wxUSE_VALIDATORS && wxUSE_TEXTCTRL
 
 #ifndef WX_PRECOMP
-    #include <wx/msgdlg.h>
     #include <wx/textctrl.h>
+    #include <wx/combobox.h>
 #endif
 
 #include <wx/clipbrd.h>
 #include <wx/dataobj.h>
 
 #include "numformatter.h"
+#include "../Internat.h"
 
 // ============================================================================
 // NumValidatorBase implementation
@@ -54,15 +59,15 @@ END_EVENT_TABLE()
 int NumValidatorBase::GetFormatFlags() const
 {
    int flags = NumberFormatter::Style_None;
-   if ( m_style & NUM_VAL_THOUSANDS_SEPARATOR )
+   if ( m_style & NumValidatorStyle::THOUSANDS_SEPARATOR )
       flags |= NumberFormatter::Style_WithThousandsSep;
-   if ( m_style & NUM_VAL_NO_TRAILING_ZEROES )
+   if ( m_style & NumValidatorStyle::NO_TRAILING_ZEROES )
       flags |= NumberFormatter::Style_NoTrailingZeroes;
-   if ( m_style & NUM_VAL_ONE_TRAILING_ZERO )
+   if ( m_style & NumValidatorStyle::ONE_TRAILING_ZERO )
       flags |= NumberFormatter::Style_OneTrailingZero;
-   if ( m_style & NUM_VAL_TWO_TRAILING_ZEROES )
+   if ( m_style & NumValidatorStyle::TWO_TRAILING_ZEROES )
       flags |= NumberFormatter::Style_TwoTrailingZeroes;
-   if ( m_style & NUM_VAL_THREE_TRAILING_ZEROES )
+   if ( m_style & NumValidatorStyle::THREE_TRAILING_ZEROES )
       flags |= NumberFormatter::Style_ThreeTrailingZeroes;
 
    return flags;
@@ -74,6 +79,11 @@ wxTextEntry *NumValidatorBase::GetTextEntry() const
    if ( wxTextCtrl *text = wxDynamicCast(m_validatorWindow, wxTextCtrl) )
       return text;
 #endif // wxUSE_TEXTCTRL
+
+#if wxUSE_COMBOBOX
+    if ( wxComboBox *combo = wxDynamicCast(m_validatorWindow, wxComboBox) )
+        return combo;
+#endif // wxUSE_COMBOBOX
 
    wxFAIL_MSG(wxT("Can only be used with wxTextCtrl or wxComboBox"));
 
@@ -91,13 +101,13 @@ bool NumValidatorBase::Validate(wxWindow *parent)
 
    if ( !res )
    {
-      wxMessageBox(errmsg, _("Validation error"),
+      AudacityMessageBox(errmsg, _("Validation error"),
                   wxOK | wxICON_ERROR, parent);
       wxTextEntry *te = GetTextEntry();
       if ( te )
       {
          te->SelectAll();
-         te->SetFocus();
+         m_validatorWindow->SetFocus();
       }
       return false;
    }
@@ -229,7 +239,7 @@ void NumValidatorBase::OnPaste(wxClipboardTextEvent& event)
    int pos;
    GetCurrentValueAndInsertionPoint(val, pos);
 
-   for (size_t i = 0, cnt = toPaste.Length(); i < cnt; i++)
+   for (size_t i = 0, cnt = toPaste.length(); i < cnt; i++)
    {
       const wxChar ch = toPaste[i];
 
@@ -352,7 +362,7 @@ bool IntegerValidatorBase::DoValidateNumber(wxString * errMsg) const
    if ( s.empty() )
    {
       // Is blank, but allowed. Stop here
-      if ( HasFlag(NUM_VAL_ZERO_AS_BLANK) )
+      if ( HasFlag(NumValidatorStyle::ZERO_AS_BLANK) )
       {
          return true;
       }
@@ -477,7 +487,7 @@ bool FloatingPointValidatorBase::DoValidateNumber(wxString * errMsg) const
 
    if ( s.empty() )
    {
-      if ( HasFlag(NUM_VAL_ZERO_AS_BLANK) )
+      if ( HasFlag(NumValidatorStyle::ZERO_AS_BLANK) )
          return true; //Is blank, but allowed. Stop here
       else
       {

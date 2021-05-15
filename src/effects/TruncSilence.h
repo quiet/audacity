@@ -17,11 +17,6 @@
 #ifndef __AUDACITY_EFFECT_TRUNC_SILENCE__
 #define __AUDACITY_EFFECT_TRUNC_SILENCE__
 
-#include <wx/arrstr.h>
-#include <wx/event.h>
-#include <wx/list.h>
-#include <wx/string.h>
-
 #include "Effect.h"
 
 class ShuttleGui;
@@ -29,7 +24,7 @@ class wxChoice;
 class wxTextCtrl;
 class wxCheckBox;
 
-#define TRUNCATESILENCE_PLUGIN_SYMBOL XO("Truncate Silence")
+#define TRUNCATESILENCE_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Truncate Silence") }
 
 class RegionList;
 
@@ -39,19 +34,21 @@ public:
    EffectTruncSilence();
    virtual ~EffectTruncSilence();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 
@@ -63,7 +60,7 @@ public:
    // amount of input for previewing.
    bool Analyze(RegionList &silenceList,
                         RegionList &trackSilences,
-                        WaveTrack* wt,
+                        const WaveTrack *wt,
                         sampleCount* silentFrame,
                         sampleCount* index,
                         int whichTrack,
@@ -88,25 +85,24 @@ private:
    bool ProcessIndependently();
    bool ProcessAll();
    bool FindSilences
-      (RegionList &silences, TrackList *list, Track *firstTrack, Track *lastTrack);
+      (RegionList &silences, const TrackList *list,
+       const Track *firstTrack, const Track *lastTrack);
    bool DoRemoval
       (const RegionList &silences, unsigned iGroup, unsigned nGroups, Track *firstTrack, Track *lastTrack,
        double &totalCutLen);
 
 private:
 
-   int mTruncDbChoiceIndex;
+   double mThresholdDB {} ;
    int mActionIndex;
    double mInitialAllowedSilence;
    double mTruncLongestAllowedSilence;
    double mSilenceCompressPercent;
    bool mbIndependent;
 
-   wxArrayString mDbChoices;
-
    size_t mBlendFrameCount;
 
-   wxChoice *mTruncDbChoice;
+   wxTextCtrl *mThresholdText;
    wxChoice *mActionChoice;
    wxTextCtrl *mInitialAllowedSilenceT;
    wxTextCtrl *mTruncLongestAllowedSilenceT;

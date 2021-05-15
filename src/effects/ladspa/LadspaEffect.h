@@ -13,7 +13,8 @@ class wxStaticText;
 class wxTextCtrl;
 class wxCheckBox;
 
-#include <wx/dialog.h>
+#include "../../MemoryX.h"
+#include <wx/dynlib.h> // member variable
 
 #include "audacity/EffectInterface.h"
 #include "audacity/ModuleInterface.h"
@@ -22,17 +23,19 @@ class wxCheckBox;
 #include "../../widgets/NumericTextCtrl.h"
 
 #include "ladspa.h"
+#include "../../SampleFormat.h"
 
 #define LADSPAEFFECTS_VERSION wxT("1.0.0.0")
-#define LADSPAEFFECTS_FAMILY wxT("LADSPA")
+/* i18n-hint: abbreviates "Linux Audio Developer's Simple Plugin API"
+   (Application programming interface)
+ */
+#define LADSPAEFFECTS_FAMILY XO("LADSPA")
 
 ///////////////////////////////////////////////////////////////////////////////
 //
 // LadspaEffect
 //
 ///////////////////////////////////////////////////////////////////////////////
-
-WX_DEFINE_ARRAY_PTR(LADSPA_Handle, LadspaSlaveArray);
 
 class LadspaEffectMeter;
 
@@ -44,19 +47,18 @@ public:
    LadspaEffect(const wxString & path, int index);
    virtual ~LadspaEffect();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetPath() override;
-   wxString GetSymbol() override;
-   wxString GetName() override;
-   wxString GetVendor() override;
+   PluginPath GetPath() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   VendorSymbol GetVendor() override;
    wxString GetVersion() override;
    wxString GetDescription() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
-   wxString GetFamily() override;
+   EffectFamilySymbol GetFamily() override;
    bool IsInteractive() override;
    bool IsDefault() override;
    bool IsLegacy() override;
@@ -98,13 +100,13 @@ public:
 
    bool ShowInterface(wxWindow *parent, bool forceModal = false) override;
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
-   bool LoadUserPreset(const wxString & name) override;
-   bool SaveUserPreset(const wxString & name) override;
+   bool LoadUserPreset(const RegistryPath & name) override;
+   bool SaveUserPreset(const RegistryPath & name) override;
 
-   wxArrayString GetFactoryPresets() override;
+   RegistryPaths GetFactoryPresets() override;
    bool LoadFactoryPreset(int id) override;
    bool LoadFactoryDefaults() override;
 
@@ -130,8 +132,8 @@ private:
    bool Load();
    void Unload();
 
-   bool LoadParameters(const wxString & group);
-   bool SaveParameters(const wxString & group);
+   bool LoadParameters(const RegistryPath & group);
+   bool SaveParameters(const RegistryPath & group);
 
    LADSPA_Handle InitInstance(float sampleRate);
    void FreeInstance(LADSPA_Handle handle);
@@ -158,38 +160,37 @@ private:
 
    double mSampleRate;
    size_t mBlockSize;
-   int mUserBlockSize;
 
    bool mInteractive;
 
    unsigned mAudioIns;
-   unsigned long *mInputPorts;
+   ArrayOf<unsigned long> mInputPorts;
 
    unsigned mAudioOuts;
-   unsigned long *mOutputPorts;
+   ArrayOf<unsigned long> mOutputPorts;
 
    int mNumInputControls;
-   float *mInputControls;
+   Floats mInputControls;
    int mNumOutputControls;
-   float *mOutputControls;
+   Floats mOutputControls;
 
    bool mUseLatency;
    int mLatencyPort;
    bool mLatencyDone;
 
    // Realtime processing
-   LadspaSlaveArray mSlaves;
+   std::vector<LADSPA_Handle> mSlaves;
 
    EffectUIHostInterface *mUIHost;
 
    NumericTextCtrl *mDuration;
    wxDialog *mDialog;
    wxWindow *mParent;
-   wxSlider **mSliders;
-   wxTextCtrl **mFields;
-   wxStaticText **mLabels;
-   wxCheckBox **mToggles;
-   LadspaEffectMeter **mMeters;
+   ArrayOf<wxSlider*> mSliders;
+   ArrayOf<wxTextCtrl*> mFields;
+   ArrayOf<wxStaticText*> mLabels;
+   ArrayOf<wxCheckBox*> mToggles;
+   ArrayOf<LadspaEffectMeter *> mMeters;
 
    DECLARE_EVENT_TABLE()
 
@@ -208,12 +209,11 @@ public:
    LadspaEffectsModule(ModuleManagerInterface *moduleManager, const wxString *path);
    virtual ~LadspaEffectsModule();
 
-   // IdentInterface implementatino
+   // ComponentInterface implementation
 
-   wxString GetPath() override;
-   wxString GetSymbol() override;
-   wxString GetName() override;
-   wxString GetVendor() override;
+   PluginPath GetPath() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   VendorSymbol GetVendor() override;
    wxString GetVersion() override;
    wxString GetDescription() override;
 
@@ -222,18 +222,24 @@ public:
    bool Initialize() override;
    void Terminate() override;
 
+   FileExtensions GetFileExtensions() override;
+   FilePath InstallPath() override;
+
    bool AutoRegisterPlugins(PluginManagerInterface & pm) override;
-   wxArrayString FindPlugins(PluginManagerInterface & pm) override;
-   bool RegisterPlugin(PluginManagerInterface & pm, const wxString & path) override;
+   PluginPaths FindPluginPaths(PluginManagerInterface & pm) override;
+   unsigned DiscoverPluginsAtPath(
+      const PluginPath & path, wxString &errMsg,
+      const RegistrationCallback &callback)
+         override;
 
-   bool IsPluginValid(const wxString & path, bool bFast) override;
+   bool IsPluginValid(const PluginPath & path, bool bFast) override;
 
-   IdentInterface *CreateInstance(const wxString & path) override;
-   void DeleteInstance(IdentInterface *instance) override;
+   ComponentInterface *CreateInstance(const PluginPath & path) override;
+   void DeleteInstance(ComponentInterface *instance) override;
 
    // LadspaEffectModule implementation
 
-   wxArrayString GetSearchPaths();
+   FilePaths GetSearchPaths();
 
 private:
    ModuleManagerInterface *mModMan;

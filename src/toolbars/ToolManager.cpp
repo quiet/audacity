@@ -25,12 +25,16 @@
 *//**********************************************************************/
 
 #include "../Audacity.h"
+#include "ToolManager.h"
+
+#include "../Experimental.h"
 
 // For compilers that support precompilation, includes "wx/wx.h".
 #include <wx/wxprec.h>
 
 #ifndef WX_PRECOMP
 #include <wx/app.h>
+#include <wx/dcclient.h>
 #include <wx/defs.h>
 #include <wx/event.h>
 #include <wx/frame.h>
@@ -38,6 +42,7 @@
 #include <wx/intl.h>
 #include <wx/region.h>
 #include <wx/settings.h>
+#include <wx/sizer.h>
 #include <wx/sysopt.h>
 #include <wx/timer.h>
 #include <wx/utils.h>
@@ -47,7 +52,8 @@
 #include <wx/minifram.h>
 #include <wx/popupwin.h>
 
-#include "ToolManager.h"
+#include "../AudacityApp.h"
+
 #include "ControlToolBar.h"
 #include "DeviceToolBar.h"
 #include "EditToolBar.h"
@@ -55,6 +61,7 @@
 #include "MixerToolBar.h"
 #include "ScrubbingToolBar.h"
 #include "SelectionBar.h"
+#include "TimeToolbar.h"
 #include "SpectralSelectionBar.h"
 #include "ToolsToolBar.h"
 #include "TranscriptionToolBar.h"
@@ -67,9 +74,9 @@
 #include "../Project.h"
 #include "../Theme.h"
 #include "../widgets/AButton.h"
+#include "../widgets/ASlider.h"
+#include "../widgets/Meter.h"
 #include "../widgets/Grabber.h"
-
-#include "../Experimental.h"
 
 ////////////////////////////////////////////////////////////
 /// Methods for ToolFrame
@@ -80,7 +87,7 @@
 // Constructor
 //
 ToolFrame::ToolFrame
-   ( wxWindow *parent, ToolManager *manager, ToolBar *bar, wxPoint pos )
+   ( AudacityProject *parent, ToolManager *manager, ToolBar *bar, wxPoint pos )
    : wxFrame( parent,
           bar->GetId(),
           wxEmptyString,
@@ -92,6 +99,7 @@ ToolFrame::ToolFrame
           wxFRAME_TOOL_WINDOW |
 #endif
           wxFRAME_FLOAT_ON_PARENT )
+   , mParent{ parent }
 {
    int width = bar->GetSize().x;
    int border;
@@ -113,7 +121,6 @@ ToolFrame::ToolFrame
 #endif
 
    // Save parameters
-   mParent = parent;
    mManager = manager;
    mBar = bar;
 
@@ -170,8 +177,9 @@ void ToolFrame::OnGrabber( GrabberEvent & event )
 void ToolFrame::OnToolBarUpdate( wxCommandEvent & event )
 {
    // Resize floater window to exactly contain toolbar
+   // use actual size rather than minimum size.
    if (mBar)
-      mBar->GetParent()->SetClientSize( mBar->GetMinSize() );
+      mBar->GetParent()->SetClientSize( mBar->GetSize() );// ->GetMinSize() );
 
    // Allow it to propagate to our parent
    event.Skip();
@@ -183,10 +191,10 @@ void ToolFrame::OnPaint( wxPaintEvent & WXUNUSED(event) )
    wxSize sz = GetSize();
    wxRect r;
 
-   dc.SetPen( wxColour( 90, 90, 90 ) );
-
+   dc.SetPen( theTheme.Colour( clrTrackPanelText) );
 #if !defined(__WXMAC__)
-   dc.SetBackground(wxBrush(wxSystemSettings::GetColour(wxSYS_COLOUR_3DFACE)));
+   wxBrush clearer( theTheme.Colour( clrMedium ));
+   dc.SetBackground( clearer ); 
    dc.Clear();
    dc.SetBrush( *wxTRANSPARENT_BRUSH );
    dc.DrawRectangle( 0, 0, sz.GetWidth(), sz.GetHeight() );
@@ -377,15 +385,13 @@ ToolManager::ToolManager( AudacityProject *parent, wxWindow *topDockParent )
    };
 
    // Hook the creation event...only needed on GTK, but doesn't hurt for all
-   mIndicator->Connect( wxEVT_CREATE,
-                        wxWindowCreateEventHandler( ToolManager::OnIndicatorCreate ),
-                        NULL,
+   mIndicator->Bind( wxEVT_CREATE,
+                        &ToolManager::OnIndicatorCreate,
                         this );
 
    // Hook the paint event...needed for all
-   mIndicator->Connect( wxEVT_PAINT,
-                        wxPaintEventHandler( ToolManager::OnIndicatorPaint ),
-                        NULL,
+   mIndicator->Bind( wxEVT_PAINT,
+                        &ToolManager::OnIndicatorPaint,
                         this );
 
    // It's a little shy
@@ -393,17 +399,14 @@ ToolManager::ToolManager( AudacityProject *parent, wxWindow *topDockParent )
 
    // Hook the parents mouse events...using the parent helps greatly
    // under GTK
-   mParent->Connect( wxEVT_LEFT_UP,
-                     wxMouseEventHandler( ToolManager::OnMouse ),
-                     NULL,
+   mParent->Bind( wxEVT_LEFT_UP,
+                     &ToolManager::OnMouse,
                      this );
-   mParent->Connect( wxEVT_MOTION,
-                     wxMouseEventHandler( ToolManager::OnMouse ),
-                     NULL,
+   mParent->Bind( wxEVT_MOTION,
+                     &ToolManager::OnMouse,
                      this );
-   mParent->Connect( wxEVT_MOUSE_CAPTURE_LOST,
-                     wxMouseCaptureLostEventHandler( ToolManager::OnCaptureLost ),
-                     NULL,
+   mParent->Bind( wxEVT_MOUSE_CAPTURE_LOST,
+                     &ToolManager::OnCaptureLost,
                      this );
 
    // Create the top and bottom docks
@@ -422,6 +425,7 @@ ToolManager::ToolManager( AudacityProject *parent, wxWindow *topDockParent )
    mBars[ MixerBarID ]         =  ToolBar::Holder{ safenew MixerToolBar() };
    mBars[ TranscriptionBarID ] =  ToolBar::Holder{ safenew TranscriptionToolBar() };
    mBars[ SelectionBarID ]     =  ToolBar::Holder{ safenew SelectionBar() };
+   mBars[ TimeBarID ]          =  ToolBar::Holder{ safenew TimeToolbar() };
    mBars[ DeviceBarID ]        =  ToolBar::Holder{ safenew DeviceToolBar() };
 #ifdef EXPERIMENTAL_SPECTRAL_EDITING
    mBars[SpectralSelectionBarID] =  ToolBar::Holder{ safenew SpectralSelectionBar() };
@@ -433,6 +437,8 @@ ToolManager::ToolManager( AudacityProject *parent, wxWindow *topDockParent )
 
    // Process the toolbar config settings
    ReadConfig();
+
+   wxEvtHandler::AddFilter(this);
 }
 
 //
@@ -440,32 +446,17 @@ ToolManager::ToolManager( AudacityProject *parent, wxWindow *topDockParent )
 //
 ToolManager::~ToolManager()
 {
+   wxEvtHandler::RemoveFilter(this);
+
    // Save the toolbar states
    WriteConfig();
 
-   // Remove handlers from parent
-   mParent->Disconnect( wxEVT_LEFT_UP,
-                        wxMouseEventHandler( ToolManager::OnMouse ),
-                        NULL,
-                        this );
-   mParent->Disconnect( wxEVT_MOTION,
-                        wxMouseEventHandler( ToolManager::OnMouse ),
-                        NULL,
-                        this );
-   mParent->Disconnect( wxEVT_MOUSE_CAPTURE_LOST,
-                        wxMouseCaptureLostEventHandler( ToolManager::OnCaptureLost ),
-                        NULL,
-                        this );
-
-   // Remove our event handlers
-   mIndicator->Disconnect( wxEVT_CREATE,
-                           wxWindowCreateEventHandler( ToolManager::OnIndicatorCreate ),
-                           NULL,
-                           this );
-   mIndicator->Disconnect( wxEVT_PAINT,
-                           wxPaintEventHandler( ToolManager::OnIndicatorPaint ),
-                           NULL,
-                           this );
+   // This function causes the toolbars to be destroyed, so
+   // clear the configuration of the ToolDocks which refer to
+   // these toolbars. This change was needed to stop Audacity
+   // crashing when running with Jaws on Windows 10 1703.
+   mTopDock->GetConfiguration().Clear();
+   mBotDock->GetConfiguration().Clear();
 }
 
 // This table describes the default configuration of the toolbars as
@@ -488,8 +479,15 @@ static struct DefaultConfigEntry {
    { ToolsBarID,             TransportBarID,         NoBarID                },
    { RecordMeterBarID,       ToolsBarID,             NoBarID                },
    { PlayMeterBarID,         RecordMeterBarID,       NoBarID                },
+
+// DA: Transcription Toolbar not docked, by default.
+#ifdef EXPERIMENTAL_DA
+   { MixerBarID,             NoBarID,         NoBarID                },
+   { EditBarID,              PlayMeterBarID,             NoBarID                },
+#else
    { MixerBarID,             PlayMeterBarID,         NoBarID                },
    { EditBarID,              MixerBarID,             NoBarID                },
+#endif
    { TranscriptionBarID,     EditBarID,              NoBarID                },
 
    // start another top dock row
@@ -501,6 +499,9 @@ static struct DefaultConfigEntry {
 
    // Bottom dock
    { SelectionBarID,         NoBarID,                NoBarID                },
+
+   // Bottom dock
+   { TimeBarID,              SelectionBarID,         NoBarID                },
 
    // Hidden by default in bottom dock
    { SpectralSelectionBarID, NoBarID,                NoBarID                },
@@ -518,6 +519,7 @@ void ToolManager::Reset()
          (entry.rightOf == NoBarID) ? nullptr : mBars[ entry.rightOf ].get(),
          (entry.below == NoBarID) ? nullptr : mBars[ entry.below ].get()
       };
+      bar->SetSize( 20,20 );
 
       wxWindow *floater;
       ToolDock *dock;
@@ -534,24 +536,29 @@ void ToolManager::Reset()
          floater = bar->GetParent();
       }
 
+      // Decide which dock.
       if (ndx == SelectionBarID 
+         || ndx == TimeBarID
 #ifdef EXPERIMENTAL_SPECTRAL_EDITING
          || ndx == SpectralSelectionBarID
 #endif
          )
-      {
          dock = mBotDock;
-
-         wxCommandEvent e;
-         bar->GetEventHandler()->ProcessEvent(e);
-      }
       else
-      {
          dock = mTopDock;
-         bar->ReCreateButtons();
-      }
 
+      // PRL: Destroy the tool frame before recreating buttons.
+      // This fixes some subtle sizing problems on macOs.
+      bar->Reparent( dock );
+      //OK (and good) to DELETE floater, as bar is no longer in it.
+      if( floater )
+         floater->Destroy();
+
+      // Recreate bar buttons (and resize it)
+      bar->SetToDefaultSize();
+      bar->ReCreateButtons();
       bar->EnableDisableButtons();
+
 #if 0
       if( bar->IsResizable() )
       {
@@ -559,24 +566,29 @@ void ToolManager::Reset()
       }
 #endif
 
-      if( ndx == MeterBarID
+      // Hide some bars.
+      if( 
+         ndx == ScrubbingBarID
+         || ndx == MeterBarID // combined meter
 #ifdef EXPERIMENTAL_SPECTRAL_EDITING
          || ndx == SpectralSelectionBarID
 #endif
-         || ndx == ScrubbingBarID
+// DA: Hides three more toolbars.
+#ifdef EXPERIMENTAL_DA
+         || ndx == DeviceBarID
+         || ndx == TranscriptionBarID
+         || ndx == MixerBarID
+#endif
          )
-      {
          expose = false;
-      }
 
+      // Next condition will alwys (?) be true, as the reset configuration is
+      // with no floating toolbars.
       if( dock != NULL )
       {
          // when we dock, we reparent, so bar is no longer a child of floater.
          dock->Dock( bar, false, position );
          Expose( ndx, expose );
-         //OK (and good) to DELETE floater, as bar is no longer in it.
-         if( floater )
-            floater->Destroy();
       }
       else
       {
@@ -609,7 +621,6 @@ void ToolManager::Reset()
    // It would be nice to show them again, but hardly essential as
    // they will show up again on the next play.
    // SetVUMeters(AudacityProject *p);
-   LayoutToolBars();
    Updated();
 }
 
@@ -621,13 +632,37 @@ void ToolManager::RegenerateTooltips()
    }
 }
 
+int ToolManager::FilterEvent(wxEvent &event)
+{
+   // Snoop the global event stream for changes of focused window.  Remember
+   // the last one of our own that is not a grabber.
+
+   if (event.GetEventType() == wxEVT_KILL_FOCUS) {
+      auto &focusEvent = static_cast<wxFocusEvent&>(event);
+      auto window = focusEvent.GetWindow();
+      auto top = wxGetTopLevelParent(window);
+      if(auto toolFrame = dynamic_cast<ToolFrame*>(top))
+         top = toolFrame->GetParent();
+      // window is that which will GET the focus
+      if ( window &&
+           !dynamic_cast<Grabber*>( window ) &&
+           !dynamic_cast<ToolFrame*>( window ) &&
+           top == mParent )
+         // Note this is a dangle-proof wxWindowRef:
+         mLastFocus = window;
+   }
+
+   return Event_Skip;
+}
+
 //
 // Read the toolbar states
 //
 void ToolManager::ReadConfig()
 {
    wxString oldpath = gPrefs->GetPath();
-   wxArrayInt unordered[ DockCount ];
+   std::vector<int> unordered[ DockCount ];
+   std::vector<ToolBar*> dockedAndHidden;
    bool show[ ToolBarCount ];
    int width[ ToolBarCount ];
    int height[ ToolBarCount ];
@@ -644,6 +679,18 @@ void ToolManager::ReadConfig()
    gPrefs->SetPath( wxT("/GUI/ToolBars") );
 
    ToolBarConfiguration::Legacy topLegacy, botLegacy;
+
+   int vMajor, vMinor, vMicro;
+   wxGetApp().GetVersionKeysInit(vMajor, vMinor, vMicro);
+   bool useLegacyDock = false;
+   // note that vMajor, vMinor, and vMicro will all be zero if either it's a new audacity.cfg file
+   // or the version is less than 1.3.13 (when there were no version keys according to the comments in
+   // InitPreferences()). So for new audacity.cfg
+   // file useLegacyDock will be true, but this doesn't matter as there are no Dock or DockV2 keys in the file yet.
+   if (vMajor <= 1 ||
+      (vMajor == 2 && (vMinor <= 1 || (vMinor == 2 && vMicro <= 1))))   // version <= 2.2.1
+      useLegacyDock = true;
+
 
    // Load and apply settings for each bar
    for( ndx = 0; ndx < ToolBarCount; ndx++ )
@@ -662,8 +709,11 @@ void ToolManager::ReadConfig()
       
       if( ndx == SelectionBarID )
          defaultDock = BotDockID;
+      if( ndx == TimeBarID )
+         defaultDock = BotDockID;
       if( ndx == MeterBarID )
          bShownByDefault = false;
+
       if( ndx == ScrubbingBarID )
          bShownByDefault = false;
 
@@ -675,7 +725,12 @@ void ToolManager::ReadConfig()
 #endif
 
       // Read in all the settings
-      gPrefs->Read( wxT("Dock"), &dock, -1);
+
+      if (useLegacyDock)
+         gPrefs->Read( wxT("Dock"), &dock, -1);       // legacy version of DockV2
+      else
+         gPrefs->Read( wxT("DockV2"), &dock, -1);
+        
       const bool found = (dock != -1);
       if (found)
          someFound = true;
@@ -691,11 +746,19 @@ void ToolManager::ReadConfig()
          default:        d = nullptr; pLegacy = nullptr; break;
       }
 
-      bool ordered = ToolBarConfiguration::Read
-         (d ? &d->GetConfiguration() : nullptr,
-          pLegacy,
-          bar, show[ ndx ], bShownByDefault)
+      bool ordered = ToolBarConfiguration::Read(
+         d ? &d->GetConfiguration() : nullptr,
+         pLegacy,
+         bar, show[ ndx ], bShownByDefault)
       && found;
+
+#ifdef EXPERIMENTAL_DA
+      // These are now combined in the meter toolbar
+      if( ndx == MixerBarID )
+         show[ ndx ] = false;
+      if( ndx == DeviceBarID )
+         show[ ndx ] = false;
+#endif
 
       gPrefs->Read( wxT("X"), &x, -1 );
       gPrefs->Read( wxT("Y"), &y, -1 );
@@ -755,11 +818,14 @@ void ToolManager::ReadConfig()
             }
          }
 #endif
+         // make a note of docked and hidden toolbars
+         if (!show[ndx])
+            dockedAndHidden.push_back(bar);         
 
          if (!ordered)
          {
             // These must go at the end
-            unordered[ dock - 1 ].Add( ndx );
+            unordered[ dock - 1 ].push_back( ndx );
          }
       }
       else
@@ -812,7 +878,7 @@ void ToolManager::ReadConfig()
 
       // Add all unordered toolbars
       bool deviceWasPositioned = false;
-      for( int ord = 0; ord < (int) unordered[ dock ].GetCount(); ord++ )
+      for( int ord = 0; ord < (int) unordered[ dock ].size(); ord++ )
       {
          ToolBar *t = mBars[ unordered[ dock ][ ord ] ].get();
 
@@ -846,7 +912,7 @@ void ToolManager::ReadConfig()
             const auto deviceToolBar = mBars[ DeviceBarID ].get();
             if (deviceToolBar->GetDock() == mTopDock) {
                deviceToolBar->GetDock()->Undock(deviceToolBar);
-               position = { t, nullptr };
+               position = ToolBarConfiguration::Position{ t, nullptr };
                mTopDock->Dock(deviceToolBar, false, position);
 
                // Remember not to place the device toolbar again
@@ -862,6 +928,13 @@ void ToolManager::ReadConfig()
          // Show or hide the bar
          Expose( t->GetId(), show[ t->GetId() ] );
       }
+   }
+
+   // hidden docked toolbars
+   for (auto bar : dockedAndHidden) {
+      bar->SetVisible(false );
+      bar->GetDock()->Dock(bar, false);
+      bar->Expose(false);
    }
 
    // Restore original config path
@@ -905,8 +978,15 @@ void ToolManager::WriteConfig()
       bool bo = mBotDock->GetConfiguration().Contains( bar );
 
       // Save
-      gPrefs->Write( wxT("Dock"), (int) (to ? TopDockID : bo ? BotDockID : NoDockID ));
-      auto dock = to ? mTopDock : bo ? mBotDock : nullptr;
+      // Note that DockV2 was introduced in 2.2.2 to fix bug #1554. Dock is retained so that
+      // the toolbar layout is not changed when opening a version before 2.2.2, and in particular
+      // its value is compatible with versions 2.1.3 to 2.2.1 which have this bug.
+      ToolDock* dock = bar->GetDock();       // dock for both shown and hidden toolbars
+      gPrefs->Write( wxT("DockV2"), static_cast<int>(dock == mTopDock ? TopDockID : dock == mBotDock ? BotDockID : NoDockID ));
+      
+      gPrefs->Write( wxT("Dock"), static_cast<int>( to ? TopDockID : bo ? BotDockID : NoDockID));
+
+      dock = to ? mTopDock : bo ? mBotDock : nullptr;    // dock for shown toolbars
       ToolBarConfiguration::Write
          (dock ? &dock->GetConfiguration() : nullptr, bar);
 
@@ -1002,6 +1082,7 @@ bool ToolManager::IsVisible( int type )
 void ToolManager::ShowHide( int type )
 {
    Expose( type, !mBars[ type ]->IsVisible() );
+   Updated();
 }
 
 //
@@ -1058,7 +1139,7 @@ void ToolManager::OnMouse( wxMouseEvent & event )
    // Can't do anything if we're not dragging.  This also prevents
    // us from intercepting events that don't belong to us from the
    // parent since we're Connect()ed to a couple.
-   if( !mDragWindow )
+   if( !mClicked )
    {
       return;
    }
@@ -1072,14 +1153,22 @@ void ToolManager::OnMouse( wxMouseEvent & event )
    wxPoint pos =
       ( (wxWindow *)event.GetEventObject() )->ClientToScreen( event.GetPosition() ) - mDragOffset;
 
-   // Button was released...finish the drag
+
    if( !event.LeftIsDown() )
    {
+      // Button was released...finish the drag
       // Transition the bar to a dock
-      if( mDragDock && !event.ShiftDown() )
+      if (!mDidDrag) {
+         if (mPrevDock)
+            mPrevDock->RestoreConfiguration(mPrevConfiguration);
+         DoneDragging();
+         return;
+      }
+      else if( mDragDock && !event.ShiftDown() )
       {
          // Trip over...everyone ashore that's going ashore...
          mDragDock->Dock( mDragBar, true, mDragBefore );
+         Updated();
          mDragWindow->ClearBar();
 
          // Done with the floater
@@ -1097,6 +1186,19 @@ void ToolManager::OnMouse( wxMouseEvent & event )
    }
    else if( event.Dragging() && pos != mLastPos )
    {
+      if (!mDidDrag) {
+         // Must set the bar afloat if it's currently docked
+         mDidDrag = true;
+         wxPoint mp = event.GetPosition();
+         mp = mParent->ClientToScreen(mp);
+         if (!mDragWindow) {
+            // We no longer have control
+            if (mPrevDock)
+               mPrevDock->GetConfiguration().Remove( mDragBar );
+            UndockBar(mp);
+         }
+      }
+
       // Make toolbar follow the mouse
       mDragWindow->Move( pos  );
 
@@ -1269,9 +1371,12 @@ void ToolManager::OnTimer( wxTimerEvent & event )
 //
 void ToolManager::OnIndicatorPaint( wxPaintEvent & event )
 {
+   // TODO: Better to use a bitmap than a triangular region.
    wxWindow *w = (wxWindow *)event.GetEventObject();
    wxPaintDC dc( w );
-   dc.SetBackground( *wxBLUE_BRUSH );
+   // TODO: Better (faster) to use the existing spare brush.
+   wxBrush brush( theTheme.Colour( clrTrackPanelText ) );
+   dc.SetBackground( brush );
    dc.Clear();
 }
 
@@ -1287,6 +1392,36 @@ void ToolManager::OnIndicatorCreate( wxWindowCreateEvent & event )
    mIndicator->SetShape( *mCurrent );
 #endif
    event.Skip();
+}
+
+void ToolManager::UndockBar( wxPoint mp )
+{
+#if defined(__WXMAC__)
+   // Disable window animation
+   wxSystemOptions::SetOption( wxMAC_WINDOW_PLAIN_TRANSITION, 1 );
+#endif
+
+   // Adjust the starting position
+   mp -= mDragOffset;
+
+   // Inform toolbar of change
+   mDragBar->SetDocked( NULL, true );
+   mDragBar->SetPositioned();
+
+   // Construct a NEW floater
+   wxASSERT(mParent);
+   mDragWindow = safenew ToolFrame( mParent, this, mDragBar, mp );
+   mDragWindow->SetLayoutDirection(wxLayout_LeftToRight);
+   // Make sure the ferry is visible
+   mDragWindow->Show();
+
+   // Notify parent of change
+   Updated();
+
+#if defined(__WXMAC__)
+   // Reinstate original transition
+   wxSystemOptions::SetOption( wxMAC_WINDOW_PLAIN_TRANSITION, mTransition );
+#endif
 }
 
 //
@@ -1319,35 +1454,10 @@ void ToolManager::OnGrabber( GrabberEvent & event )
                  mDragBar->GetParent()->ClientToScreen( mDragBar->GetPosition() ) +
       wxPoint( 1, 1 );
 
-   // Must set the bar afloat if it's currently docked
+   mClicked = true;
    if( mPrevDock )
    {
-#if defined(__WXMAC__)
-      // Disable window animation
-      wxSystemOptions::SetOption( wxMAC_WINDOW_PLAIN_TRANSITION, 1 );
-#endif
-
-      // Adjust the starting position
-      mp -= mDragOffset;
-
-      // Inform toolbar of change
-      mDragBar->SetDocked( NULL, true );
-      mDragBar->SetPositioned();
-
-      // Construct a NEW floater
-      wxASSERT(mParent);
-      mDragWindow = safenew ToolFrame( mParent, this, mDragBar, mp );
-
-      // Make sure the ferry is visible
-      mDragWindow->Show();
-
-      // Notify parent of change
-      Updated();
-
-#if defined(__WXMAC__)
-      // Reinstate original transition
-      wxSystemOptions::SetOption( wxMAC_WINDOW_PLAIN_TRANSITION, mTransition );
-#endif
+      mDragWindow = nullptr;
    }
    else
    {
@@ -1374,6 +1484,7 @@ void ToolManager::HandleEscapeKey()
          // I want to go home.
          mPrevDock->RestoreConfiguration(mPrevConfiguration);
          mPrevDock->Dock( mDragBar, true, mPrevSlot );
+         Updated();
 
          // Done with the floater
          mDragWindow->ClearBar();
@@ -1413,4 +1524,20 @@ void ToolManager::DoneDragging()
    mLastPos.x = mBarPos.x = -1;
    mLastPos.y = mBarPos.y = -1;
    mTimer.Stop();
+   mDidDrag = false;
+   mClicked = false;
+
+   RestoreFocus();
+}
+
+bool ToolManager::RestoreFocus()
+{
+   if (mLastFocus) {
+      auto temp1 = AButton::TemporarilyAllowFocus();
+      auto temp2 = ASlider::TemporarilyAllowFocus();
+      auto temp3 = MeterPanel::TemporarilyAllowFocus();
+      mLastFocus->SetFocus();
+      return true;
+   }
+   return false;
 }

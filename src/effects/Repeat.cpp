@@ -21,24 +21,25 @@
 
 
 #include "../Audacity.h"
+#include "Repeat.h"
 
 
 #include <math.h>
 
 #include <wx/intl.h>
+#include <wx/stattext.h>
 
 #include "../LabelTrack.h"
+#include "../Shuttle.h"
 #include "../ShuttleGui.h"
 #include "../WaveTrack.h"
 #include "../widgets/NumericTextCtrl.h"
 #include "../widgets/valnum.h"
 
-#include "Repeat.h"
-
 // Define keys, defaults, minimums, and maximums for the effect parameters
 //
 //     Name    Type  Key             Def  Min   Max      Scale
-Param( Count,  int,  XO("Count"),    1,  1,    INT_MAX, 1  );
+Param( Count,  int,  wxT("Count"),    1,  1,    INT_MAX, 1  );
 
 BEGIN_EVENT_TABLE(EffectRepeat, wxEvtHandler)
    EVT_TEXT(wxID_ANY, EffectRepeat::OnRepeatTextChange)
@@ -55,19 +56,24 @@ EffectRepeat::~EffectRepeat()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectRepeat::GetSymbol()
+ComponentInterfaceSymbol EffectRepeat::GetSymbol()
 {
    return REPEAT_PLUGIN_SYMBOL;
 }
 
 wxString EffectRepeat::GetDescription()
 {
-   return XO("Repeats the selection the specified number of times");
+   return _("Repeats the selection the specified number of times");
 }
 
-// EffectIdentInterface implementation
+wxString EffectRepeat::ManualPage()
+{
+   return wxT("Repeat");
+}
+
+// EffectDefinitionInterface implementation
 
 EffectType EffectRepeat::GetType()
 {
@@ -75,15 +81,19 @@ EffectType EffectRepeat::GetType()
 }
 
 // EffectClientInterface implementation
+bool EffectRepeat::DefineParams( ShuttleParams & S ){
+   S.SHUTTLE_PARAM( repeatCount, Count );
+   return true;
+}
 
-bool EffectRepeat::GetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectRepeat::GetAutomationParameters(CommandParameters & parms)
 {
    parms.Write(KEY_Count, repeatCount);
 
    return true;
 }
 
-bool EffectRepeat::SetAutomationParameters(EffectAutomationParameters & parms)
+bool EffectRepeat::SetAutomationParameters(CommandParameters & parms)
 {
    ReadAndVerifyInt(Count);
 
@@ -97,34 +107,26 @@ bool EffectRepeat::SetAutomationParameters(EffectAutomationParameters & parms)
 bool EffectRepeat::Process()
 {
    // Set up mOutputTracks.
-   // This effect needs Track::All for sync-lock grouping.
-   CopyInputTracks(Track::All);
+   // This effect needs all for sync-lock grouping.
+   CopyInputTracks(true);
 
    int nTrack = 0;
    bool bGoodResult = true;
    double maxDestLen = 0.0; // used to change selection to generated bit
 
-   TrackListIterator iter(mOutputTracks.get());
-
-   for (Track *t = iter.First(); t && bGoodResult; t = iter.Next())
-   {
-      if (t->GetKind() == Track::Label)
+   mOutputTracks->Any().VisitWhile( bGoodResult,
+      [&](LabelTrack *track)
       {
-         if (t->GetSelected() || t->IsSyncLockSelected())
+         if (track->GetSelected() || track->IsSyncLockSelected())
          {
-            LabelTrack* track = (LabelTrack*)t;
-
             if (!track->Repeat(mT0, mT1, repeatCount))
-            {
                bGoodResult = false;
-               break;
-            }
          }
-      }
-      else if (t->GetKind() == Track::Wave && t->GetSelected())
+      },
+      [&](WaveTrack *track, const Track::Fallthrough &fallthrough)
       {
-         WaveTrack* track = (WaveTrack*)t;
-
+         if (!track->GetSelected())
+            return fallthrough(); // Fall through to next lambda
          auto start = track->TimeToLongSamples(mT0);
          auto end = track->TimeToLongSamples(mT1);
          auto len = end - start;
@@ -132,30 +134,29 @@ bool EffectRepeat::Process()
          double tc = mT0 + tLen;
 
          if (len <= 0)
-         {
-            continue;
-         }
+            return;
 
          auto dest = track->Copy(mT0, mT1);
          for(int j=0; j<repeatCount; j++)
          {
-            if (!track->Paste(tc, dest.get()) ||
-                  TrackProgress(nTrack, j / repeatCount)) // TrackProgress returns true on Cancel.
+            if (TrackProgress(nTrack, j / repeatCount)) // TrackProgress returns true on Cancel.
             {
                bGoodResult = false;
-               break;
+               return;
             }
+            track->Paste(tc, dest.get());
             tc += tLen;
          }
          if (tc > maxDestLen)
             maxDestLen = tc;
          nTrack++;
-      }
-      else if (t->IsSyncLockSelected())
+      },
+      [&](Track *t)
       {
-         t->SyncLockAdjust(mT1, mT1 + (mT1 - mT0) * repeatCount);
+         if( t->IsSyncLockSelected() )
+            t->SyncLockAdjust(mT1, mT1 + (mT1 - mT0) * repeatCount);
       }
-   }
+   );
 
    if (bGoodResult)
    {
@@ -222,7 +223,7 @@ void EffectRepeat::DisplayNewTime()
                        mT1 - mT0,
                        mProjectRate);
 
-   str = _("Current selection length: ") + nc.GetString();
+   str = wxString::Format( _("Current selection length: %s"), nc.GetString() );
 
    mCurrentTime->SetLabel(str);
    mCurrentTime->SetName(str); // fix for bug 577 (NVDA/Narrator screen readers do not read static text in dialogs)
@@ -232,7 +233,7 @@ void EffectRepeat::DisplayNewTime()
       repeatCount = l;
 
       nc.SetValue((mT1 - mT0) * (repeatCount + 1));
-      str = _("New selection length: ") + nc.GetString();
+      str = wxString::Format( _("New selection length: %s"), nc.GetString() );
    }
    else {
       str = _("Warning: No repeats.");

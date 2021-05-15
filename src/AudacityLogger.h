@@ -16,22 +16,20 @@
 
 #include "Audacity.h"
 
-#include "MemoryX.h"
-#include <wx/event.h>
-#include <wx/log.h>
-#include <wx/frame.h>
-#include <wx/textctrl.h>
-#include <wx/string.h>
-
 #include "Experimental.h"
+
+#include "MemoryX.h"
+#include <wx/log.h> // to inherit
+#include <wx/event.h> // to inherit wxEvtHandler
+
+class wxFrame;
+class wxTextCtrl;
 
 class AudacityLogger final : public wxEvtHandler, public wxLog {
  public:
    AudacityLogger();
-   virtual ~AudacityLogger();
 
    void Show(bool show = true);
-   void Destroy();
 
 #if defined(EXPERIMENTAL_CRASH_REPORT)
    wxString GetLog();

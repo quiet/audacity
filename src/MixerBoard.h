@@ -8,22 +8,24 @@
 
 **********************************************************************/
 
+#include "Audacity.h" // for USE_* macros
 #include "Experimental.h"
 
 #ifndef __AUDACITY_MIXER_BOARD__
 #define __AUDACITY_MIXER_BOARD__
 
-#include <wx/frame.h>
-#include <wx/bmpbuttn.h>
-#include <wx/hashmap.h>
-#include <wx/image.h>
-#include <wx/scrolwin.h>
-#include <wx/statbmp.h>
-#include <wx/stattext.h>
+#include <wx/frame.h> // to inherit
+#include <wx/scrolwin.h> // to inherit
 
-#include "widgets/AButton.h"
-#include "widgets/ASlider.h"
-#include "widgets/wxPanelWrapper.h"
+#include "widgets/ASlider.h" // to inherit
+#include "commands/CommandManagerWindowClasses.h"
+
+class wxArrayString;
+class wxBitmapButton;
+class wxImage;
+class wxMemoryDC;
+class AButton;
+struct TrackListEvent;
 
 // containment hierarchy:
 //    MixerBoardFrame -> MixerBoard -> MixerBoardScrolledWindow -> MixerTrackCluster(s)
@@ -39,11 +41,7 @@ public:
                      const wxString &name,
                      const wxPoint & pos,
                      const wxSize & size,
-                     int style = FRAC_SLIDER,
-                     bool popup = true,
-                     bool canUseShift = true,
-                     float stepValue = STEP_CONTINUOUS,
-                     int orientation = wxHORIZONTAL);
+                     const ASlider::Options &options = ASlider::Options{});
    virtual ~MixerTrackSlider() {}
 
    void OnMouseEvent(wxMouseEvent & event);
@@ -60,40 +58,47 @@ public:
 
 
 class AudacityProject;
-class Meter;
+class MeterPanel;
 class MixerBoard;
-#ifdef EXPERIMENTAL_MIDI_OUT
+
 class Track;
+#ifdef USE_MIDI
 class NoteTrack;
 #endif
+class PlayableTrack;
+
 class WaveTrack;
+class auStaticText;
 
 class MixerTrackCluster final : public wxPanelWrapper
 {
 public:
    MixerTrackCluster(wxWindow* parent,
                      MixerBoard* grandParent, AudacityProject* project,
-                     WaveTrack* pLeftTrack, WaveTrack* pRightTrack = NULL,
+                     const std::shared_ptr<PlayableTrack> &pTrack,
                      const wxPoint& pos = wxDefaultPosition,
                      const wxSize& size = wxDefaultSize);
    virtual ~MixerTrackCluster() {}
 
-   void UpdatePrefs();
+   WaveTrack *GetWave() const;
+   WaveTrack *GetRight() const;
+#ifdef EXPERIMENTAL_MIDI_OUT
+   NoteTrack *GetNote() const;
+#endif
+
+   //void UpdatePrefs();
 
    void HandleResize(); // For wxSizeEvents, update gain slider and meter.
 
    void HandleSliderGain(const bool bWantPushState = false);
+#ifdef EXPERIMENTAL_MIDI_OUT
+   void HandleSliderVelocity(const bool bWantPushState = false);
+#endif
    void HandleSliderPan(const bool bWantPushState = false);
 
    void ResetMeter(const bool bResetClipping);
 
-   // These are used by TrackPanel for synchronizing control states.
-   void UpdateForStateChange(); // Update the controls that can be affected by state change.
-   void UpdateName();
-   void UpdateMute();
-   void UpdateSolo();
-   void UpdatePan();
-   void UpdateGain();
+   void UpdateForStateChange();
    void UpdateMeter(const double t0, const double t1);
 
 private:
@@ -108,6 +113,9 @@ private:
 
    void OnButton_MusicalInstrument(wxCommandEvent& event);
    void OnSlider_Gain(wxCommandEvent& event);
+#ifdef EXPERIMENTAL_MIDI_OUT
+   void OnSlider_Velocity(wxCommandEvent& event);
+#endif
    void OnSlider_Pan(wxCommandEvent& event);
    void OnButton_Mute(wxCommandEvent& event);
    void OnButton_Solo(wxCommandEvent& event);
@@ -115,42 +123,27 @@ private:
 
 
 public:
-#ifdef EXPERIMENTAL_MIDI_OUT
-   // mTrack is redundant, but simplifies code that operates on either
-   // mLeftTrack or mNoteTrack.
-   Track* mTrack; // either mLeftTrack or mNoteTrack, whichever is not NULL
-#endif
-   WaveTrack* mLeftTrack; // NULL if Note Track
-   WaveTrack* mRightTrack; // NULL if mono
-
-   //vvv Vaughan, 2010-11-05:
-   //    I suggest that when this is no longer experimental, rather than all these #ifdef's,
-   //    this be done by factoring, i.e., add two subclasses to MixerTrackCluster,
-   //    MixerNoteTrackCluster and MixerWaveTrackCluster, such that all the common
-   //    code is in the parent, and these #ifdef's are only around
-   //    MixerNoteTrackCluster rather than sprinkled throughout MixerTrackCluster.
-#ifdef EXPERIMENTAL_MIDI_OUT
-   NoteTrack* mNoteTrack; // NULL if Wave Track
-#endif
+   std::shared_ptr<PlayableTrack>   mTrack;
 
 private:
    MixerBoard* mMixerBoard;
    AudacityProject* mProject;
 
    // controls
-   wxStaticText* mStaticText_TrackName;
+   auStaticText* mStaticText_TrackName;
    wxBitmapButton* mBitmapButton_MusicalInstrument;
    AButton* mToggleButton_Mute;
    AButton* mToggleButton_Solo;
    MixerTrackSlider* mSlider_Pan;
    MixerTrackSlider* mSlider_Gain;
-   Meter* mMeter;
+#ifdef EXPERIMENTAL_MIDI_OUT
+   MixerTrackSlider* mSlider_Velocity;
+#endif
+   wxWeakRef<MeterPanel> mMeter;
 
 public:
    DECLARE_EVENT_TABLE()
 };
-
-WX_DEFINE_ARRAY(MixerTrackCluster*, MixerTrackClusterArray);
 
 
 class MusicalInstrument
@@ -163,7 +156,7 @@ public:
    wxArrayString  mKeywords;
 };
 
-using MusicalInstrumentArray = std::vector<movable_ptr<MusicalInstrument>>;
+using MusicalInstrumentArray = std::vector<std::unique_ptr<MusicalInstrument>>;
 
 
 
@@ -204,7 +197,6 @@ public:
                wxFrame* parent,
                const wxPoint& pos = wxDefaultPosition,
                const wxSize& size = wxDefaultSize);
-   virtual ~MixerBoard();
 
    void UpdatePrefs();
 
@@ -213,65 +205,36 @@ public:
    void UpdateTrackClusters();
 
    int GetTrackClustersWidth();
-#ifdef EXPERIMENTAL_MIDI_OUT
-   void MoveTrackCluster(const Track* pTrack, bool bUp); // Up in TrackPanel is left in MixerBoard.
-   void RemoveTrackCluster(const Track* pTrack);
 
 
-   wxBitmap* GetMusicalInstrumentBitmap(const wxString & name);
-#else
-   void MoveTrackCluster(const WaveTrack* pTrack, bool bUp); // Up in TrackPanel is left in MixerBoard.
-   void RemoveTrackCluster(const WaveTrack* pTrack);
-
-
-   wxBitmap* GetMusicalInstrumentBitmap(const WaveTrack* pLeftTrack);
-#endif
+   wxBitmap* GetMusicalInstrumentBitmap(const Track *pTrack);
 
    bool HasSolo();
 
-#ifdef EXPERIMENTAL_MIDI_OUT
-   void RefreshTrackCluster(const Track* pTrack, bool bEraseBackground = true);
-#else
-   void RefreshTrackCluster(const WaveTrack* pTrack, bool bEraseBackground = true);
-#endif
    void RefreshTrackClusters(bool bEraseBackground = true);
    void ResizeTrackClusters();
-
-   void ResetMeters(const bool bResetClipping);
-
-#ifdef EXPERIMENTAL_MIDI_OUT
-   void UpdateName(const Track* pTrack);
-   void UpdateMute(const Track* pTrack = NULL); // NULL means update for all tracks.
-   void UpdateSolo(const Track* pTrack = NULL); // NULL means update for all tracks.
-   void UpdatePan(const Track* pTrack);
-   void UpdateGain(const Track* pTrack);
-#else
-   void UpdateName(const WaveTrack* pTrack);
-   void UpdateMute(const WaveTrack* pTrack = NULL); // NULL means update for all tracks.
-   void UpdateSolo(const WaveTrack* pTrack = NULL); // NULL means update for all tracks.
-   void UpdatePan(const WaveTrack* pTrack);
-   void UpdateGain(const WaveTrack* pTrack);
-#endif
 
    void UpdateMeters(const double t1, const bool bLoopedPlay);
 
    void UpdateWidth();
 
 private:
+   void ResetMeters(const bool bResetClipping);   
+   void RemoveTrackCluster(size_t nIndex);
+   void MakeButtonBitmap( wxMemoryDC & dc, wxBitmap & bitmap,
+      wxRect & bev, const wxString & str, bool up );
    void CreateMuteSoloImages();
-#ifdef EXPERIMENTAL_MIDI_OUT
-   int FindMixerTrackCluster(const Track* pTrack,
+   int FindMixerTrackCluster(const PlayableTrack* pTrack,
                               MixerTrackCluster** hMixerTrackCluster) const;
-#else
-   int FindMixerTrackCluster(const WaveTrack* pLeftTrack,
-                              MixerTrackCluster** hMixerTrackCluster) const;
-#endif
    void LoadMusicalInstruments();
 
    // event handlers
+   void OnPaint(wxPaintEvent& evt);
    void OnSize(wxSizeEvent &evt);
    void OnTimer(wxCommandEvent &event);
-
+   void OnTrackSetChanged(wxEvent &event);
+   void OnTrackChanged(TrackListEvent &event);
+   void OnStartStop(wxCommandEvent &event);
 
 public:
    // mute & solo button images: Create once and store on MixerBoard for use in all MixerTrackClusters.
@@ -283,24 +246,29 @@ public:
 
 private:
    // Track clusters are maintained in the same order as the WaveTracks.
-   MixerTrackClusterArray     mMixerTrackClusters;
+   std::vector<MixerTrackCluster*> mMixerTrackClusters;
 
    MusicalInstrumentArray     mMusicalInstruments;
    AudacityProject*           mProject;
    MixerBoardScrolledWindow*  mScrolledWindow; // Holds the MixerTrackClusters and handles scrolling.
    double                     mPrevT1;
    TrackList*                 mTracks;
+   bool                       mUpToDate{ false };
 
 public:
    DECLARE_EVENT_TABLE()
 };
 
 
-class MixerBoardFrame final : public wxFrame
+class MixerBoardFrame final
+   : public wxFrame
+   , public TopLevelKeystrokeHandlingWindow
 {
 public:
    MixerBoardFrame(AudacityProject* parent);
    virtual ~MixerBoardFrame();
+
+   void Recreate(AudacityProject *pProject);
 
 private:
    // event handlers

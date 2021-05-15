@@ -9,40 +9,27 @@
 
 **********************************************************************/
 
-#ifndef __AUDACITY_BATCH_COMMAND_DIALOG__
-#define __AUDACITY_BATCH_COMMAND_DIALOG__
+#ifndef __AUDACITY_MACRO_COMMAND_DIALOG__
+#define __AUDACITY_MACRO_COMMAND_DIALOG__
 
 #include <wx/defs.h>
-#include <wx/string.h>
 
-
-#ifdef __WXMSW__
-    #include  <wx/ownerdrw.h>
-#endif
-
-//#include  "wx/log.h"
-#include  <wx/sizer.h>
-#include  <wx/menuitem.h>
-#include  <wx/checklst.h>
+#include "BatchCommands.h"
 
 class wxWindow;
-class wxCheckBox;
-class wxChoice;
 class wxTextCtrl;
-class wxStaticText;
-class wxRadioButton;
 class wxListCtrl;
 class wxListEvent;
 class wxButton;
 class ShuttleGui;
 
-class BatchCommandDialog final : public wxDialogWrapper {
+class MacroCommandDialog final : public wxDialogWrapper {
  public:
    // constructors and destructors
-   BatchCommandDialog(wxWindow *parent, wxWindowID id);
-   void SetCommandAndParams(const wxString &Command, const wxString &Params);
+   MacroCommandDialog(wxWindow *parent, wxWindowID id);
+   void SetCommandAndParams(const CommandID &Command, const wxString &Params);
  public:
-   wxString   mSelectedCommand;
+   CommandID   mSelectedCommand;
    wxString   mSelectedParameters;
  private:
    void Populate();
@@ -52,17 +39,25 @@ class BatchCommandDialog final : public wxDialogWrapper {
    void OnChoice(wxCommandEvent &event);
    void OnOk(wxCommandEvent &event);
    void OnCancel(wxCommandEvent &event);
+   void OnHelp(wxCommandEvent &event);
    void OnItemSelected(wxListEvent &event);
+   wxString GetHelpPageName() { return wxT("Scripting Reference") ; }
 
    void ValidateChoices();
    void PopulateCommandList();
-   int GetSelectedItem();
+   //int GetSelectedItem();
 
    wxButton   *mEditParams;
    wxButton   *mUsePreset;
    wxListCtrl *mChoices;
    wxTextCtrl * mCommand;
    wxTextCtrl * mParameters;
+   wxTextCtrl * mDetails;
+
+   CommandID mInternalCommandName;
+
+   const MacroCommandsCatalog mCatalog;
+
    DECLARE_EVENT_TABLE()
 };
 

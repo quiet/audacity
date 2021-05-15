@@ -36,8 +36,8 @@ force the script thread to wait until a response is available.
 
 #include <queue>
 #include <string>
-#include <wx/thread.h>
-#include <wx/string.h>
+#include <wx/thread.h> // member variable
+#include <wx/string.h> // member variable
 
 class wxMutex;
 class wxCondition;
@@ -48,7 +48,7 @@ class Response {
       std::string mMessage;
    public:
       Response(const wxString &response)
-         : mMessage(response.mb_str())
+         : mMessage(response.utf8_str())
       { }
 
       wxString GetMessage()

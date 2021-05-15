@@ -12,9 +12,7 @@
 #define __AUDACITY_EXT_IMPORT_PREFS__
 
 #include <wx/defs.h>
-#include <wx/dnd.h>
-#include <wx/window.h>
-#include "../widgets/Grid.h"
+#include <wx/dnd.h> // to inherit wxDropTarget
 
 #include "PrefsPanel.h"
 
@@ -22,10 +20,15 @@
 #include "../import/ImportPlugin.h"
 
 class wxButton;
+class wxGridEvent;
+class wxGridRangeSelectEvent;
 class wxListCtrl;
 class wxListEvent;
 class ExtImportPrefs;
+class Grid;
 class ShuttleGui;
+
+#define EXT_IMPORT_PREFS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Ext Import") }
 
 class ExtImportPrefsDropTarget final : public wxDropTarget
 {
@@ -46,9 +49,14 @@ private:
 class ExtImportPrefs final : public PrefsPanel
 {
  public:
-   ExtImportPrefs(wxWindow * parent);
+   ExtImportPrefs(wxWindow * parent, wxWindowID winid);
    ~ExtImportPrefs();
-   bool Apply() override;
+   ComponentInterfaceSymbol GetSymbol() override;
+   wxString GetDescription() override;
+
+   bool Commit() override;
+   wxString HelpPageName() override;
+   void PopulateOrExchange(ShuttleGui & S) override;
 
    void OnPluginKeyDown(wxListEvent& event);
    void OnPluginBeginDrag(wxListEvent& event);
@@ -102,14 +110,14 @@ class ExtImportPrefs final : public PrefsPanel
    void DoOnRuleTableSelect (int toprow);
    void AddItemToTable (int index, const ExtImportItem *item);
    void Populate();
-   void PopulateOrExchange(ShuttleGui & S);
    DECLARE_EVENT_TABLE()
 };
 
 
+/// A PrefsPanelFactory that creates one ExtImportPrefs panel.
 class ExtImportPrefsFactory final : public PrefsPanelFactory
 {
 public:
-   PrefsPanel *Create(wxWindow *parent) override;
+   PrefsPanel *operator () (wxWindow *parent, wxWindowID winid) override;
 };
 #endif

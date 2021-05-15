@@ -14,11 +14,12 @@
 #ifndef __AUDACITY_EDIT_TOOLBAR__
 #define __AUDACITY_EDIT_TOOLBAR__
 
+#include "../Experimental.h"
+
 #include <wx/defs.h>
 
 #include "ToolBar.h"
 #include "../Theme.h"
-#include "../Experimental.h"
 
 class wxCommandEvent;
 class wxDC;
@@ -38,15 +39,19 @@ enum {
    ETBRedoID,
 
 #ifdef EXPERIMENTAL_SYNC_LOCK
+   //Undefined, so no sync-lock on/off button.
+   //#define OPTION_SYNC_LOCK_BUTTON
+#endif
+
+#ifdef OPTION_SYNC_LOCK_BUTTON
    ETBSyncLockID,
 #endif
 
    ETBZoomInID,
    ETBZoomOutID,
-
-   #if 0 // Disabled for version 1.2.0 since it doesn't work quite right...
+#ifdef EXPERIMENTAL_ZOOM_TOGGLE_BUTTON
    ETBZoomToggleID,
-   #endif
+#endif
 
    ETBZoomSelID,
    ETBZoomFitID,
@@ -58,6 +63,14 @@ enum {
    ETBNumButtons
 };
 
+const int first_ETB_ID = 11300;
+
+// flags so 1,2,4,8 etc.
+enum {
+   ETBActTooltips = 1,
+   ETBActEnableDisable = 2,
+};
+
 class EditToolBar final : public ToolBar {
 
  public:
@@ -65,18 +78,20 @@ class EditToolBar final : public ToolBar {
    EditToolBar();
    virtual ~EditToolBar();
 
-   void Create(wxWindow *parent);
+   void Create(wxWindow *parent) override;
 
    void OnButton(wxCommandEvent & event);
 
-   void Populate();
-   void Repaint(wxDC * WXUNUSED(dc)) {};
-   void EnableDisableButtons();
-   void UpdatePrefs();
+   void Populate() override;
+   void Repaint(wxDC * WXUNUSED(dc)) override {};
+   void EnableDisableButtons() override;
+   void UpdatePrefs() override;
 
  private:
 
-   AButton *AddButton(teBmps eEnabledUp, teBmps eEnabledDown, teBmps eDisabled,
+   static AButton *AddButton(
+      EditToolBar *pBar,
+      teBmps eEnabledUp, teBmps eEnabledDown, teBmps eDisabled,
       int id, const wxChar *label, bool toggle = false);
 
    void AddSeparator();
@@ -84,6 +99,7 @@ class EditToolBar final : public ToolBar {
    void MakeButtons();
 
    void RegenerateTooltips() override;
+   void ForAllButtons(int Action);
 
    AButton *mButtons[ETBNumButtons];
 

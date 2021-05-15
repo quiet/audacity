@@ -15,16 +15,13 @@
 #ifndef __AUDACITY_EFFECT_AMPLIFY__
 #define __AUDACITY_EFFECT_AMPLIFY__
 
-#include <wx/checkbox.h>
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-
 #include "Effect.h"
 
-#define AMPLIFY_PLUGIN_SYMBOL XO("Amplify")
+#define AMPLIFY_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Amplify") }
 
+class wxSlider;
+class wxCheckBox;
+class wxTextCtrl;
 class ShuttleGui;
 
 class EffectAmplify final : public Effect
@@ -33,12 +30,13 @@ public:
    EffectAmplify();
    virtual ~EffectAmplify();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
@@ -47,8 +45,9 @@ public:
    unsigned GetAudioInCount() override;
    unsigned GetAudioOutCount() override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
    bool LoadFactoryDefaults() override;
 
    // Effect implementation

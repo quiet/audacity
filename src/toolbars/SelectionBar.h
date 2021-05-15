@@ -15,14 +15,23 @@
 
 #include "ToolBar.h"
 
-class wxBitmap;
-class wxCheckBox;
+// Column for 
+//   Project rate
+//   Snap To
+//   Option Button
+//   Vertical Line
+//   Selection fields
+//   Vertical Line
+//   Cursor position
+
+#define SIZER_COLS 5
+
 class wxChoice;
 class wxComboBox;
 class wxCommandEvent;
 class wxDC;
-class wxRadioButton;
 class wxSizeEvent;
+class wxStaticText;
 
 class SelectionBarListener;
 class NumericTextCtrl;
@@ -30,11 +39,10 @@ class NumericTextCtrl;
 class SelectionBar final : public ToolBar {
 
  public:
-
    SelectionBar();
    virtual ~SelectionBar();
 
-   void Create(wxWindow *parent);
+   void Create(wxWindow *parent) override;
 
    void Populate() override;
    void Repaint(wxDC * WXUNUSED(dc)) override {};
@@ -42,53 +50,56 @@ class SelectionBar final : public ToolBar {
    void UpdatePrefs() override;
 
    void SetTimes(double start, double end, double audio);
-   double GetLeftTime();
-   double GetRightTime();
-   void SetField(const wxChar *msg, int fieldNum);
    void SetSnapTo(int);
-   void SetSelectionFormat(const wxString & format);
+   void SetSelectionFormat(const NumericFormatSymbol & format);
    void SetRate(double rate);
    void SetListener(SelectionBarListener *l);
    void RegenerateTooltips() override;
 
  private:
+   auStaticText * AddTitle( const wxString & Title, 
+      wxSizer * pSizer );
+   NumericTextCtrl * AddTime( const wxString Name, int id, wxSizer * pSizer );
+   void AddVLine(  wxSizer * pSizer );
 
+   void SetSelectionMode(int mode);
+   void ShowHideControls(int mode);
+   void SetDrivers( int driver1, int driver2 );
    void ValuesToControls();
    void OnUpdate(wxCommandEvent &evt);
-   void OnLeftTime(wxCommandEvent &evt);
-   void OnRightTime(wxCommandEvent &evt);
-
-   void OnEndRadio(wxCommandEvent &evt);
-   void OnLengthRadio(wxCommandEvent &evt);
+   void OnChangedTime(wxCommandEvent &evt);
 
    void OnRate(wxCommandEvent & event);
-
    void OnSnapTo(wxCommandEvent & event);
-
+   void OnChoice(wxCommandEvent & event);
    void OnFocus(wxFocusEvent &event);
    void OnCaptureKey(wxCommandEvent &event);
-
    void OnSize(wxSizeEvent &evt);
 
-   void ModifySelection(bool done = false);
-
+   void ModifySelection(int newDriver, bool done = false);
    void UpdateRates();
+   void SelectionModeUpdated();
 
    SelectionBarListener * mListener;
    double mRate;
-   double mStart, mEnd, mAudio;
-   wxString mField[10];
+   double mStart, mEnd, mLength, mCenter;
 
-   NumericTextCtrl   *mLeftTime;
-   NumericTextCtrl   *mRightTime;
-   wxRadioButton  *mRightEndButton;
-   wxRadioButton  *mRightLengthButton;
-   NumericTextCtrl   *mAudioTime;
+   // These two numbers say which two controls 
+   // drive the other two.
+   int mDrive1;
+   int mDrive2;
 
-   wxComboBox     *mRateBox;
-   wxChoice       *mSnapTo;
+   int mSelectionMode;
 
-   wxWindow       *mRateText;
+   NumericTextCtrl   *mStartTime;
+   NumericTextCtrl   *mCenterTime;
+   NumericTextCtrl   *mLengthTime;
+   NumericTextCtrl   *mEndTime;
+   wxChoice          *mChoice;
+   wxStaticText      *mProxy;
+   wxComboBox        *mRateBox;
+   wxChoice          *mSnapTo;
+   wxWindow          *mRateText;
 
  public:
 

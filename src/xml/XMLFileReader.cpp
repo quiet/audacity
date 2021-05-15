@@ -13,6 +13,8 @@
 
 *//*******************************************************************/
 
+#include "XMLFileReader.h"
+
 #include <wx/defs.h>
 #include <wx/ffile.h>
 #include <wx/intl.h>
@@ -20,7 +22,6 @@
 #include <string.h>
 
 #include "../Internat.h"
-#include "XMLFileReader.h"
 
 XMLFileReader::XMLFileReader()
 {
@@ -29,7 +30,6 @@ XMLFileReader::XMLFileReader()
    XML_SetElementHandler(mParser, startElement, endElement);
    XML_SetCharacterDataHandler(mParser, charHandler);
    mBaseHandler = NULL;
-   mErrorStr = wxT("");
    mHandler.reserve(128);
 }
 
@@ -39,11 +39,11 @@ XMLFileReader::~XMLFileReader()
 }
 
 bool XMLFileReader::Parse(XMLTagHandler *baseHandler,
-                          const wxString &fname)
+                          const FilePath &fname)
 {
    wxFFile theXMLFile(fname, wxT("rb"));
    if (!theXMLFile.IsOpened()) {
-      mErrorStr.Printf(_("Could not open file: \"%s\""), fname.c_str());
+      mErrorStr.Printf(_("Could not open file: \"%s\""), fname);
       return false;
    }
 
@@ -72,7 +72,7 @@ bool XMLFileReader::Parse(XMLTagHandler *baseHandler,
    if (mBaseHandler)
       return true;
    else {
-      mErrorStr.Printf(_("Could not load file: \"%s\""), fname.c_str());
+      mErrorStr.Printf(_("Could not load file: \"%s\""), fname);
       return false;
    }
 }

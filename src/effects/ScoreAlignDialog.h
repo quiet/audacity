@@ -9,14 +9,52 @@
 #ifndef __AUDACITY_SCORE_ALIGN_DIALOG__
 #define __AUDACITY_SCORE_ALIGN_DIALOG__
 
-#include <wx/dialog.h>
-#include <wx/slider.h>
-#include <wx/checkbox.h>
+#include "../Experimental.h"
+
+#ifdef EXPERIMENTAL_SCOREALIGN
+
+#if 1
+
 #include "ScoreAlignParams.h"
 
+#else
+
+// Stub definitions
+struct ScoreAlignParams
+{
+   int mStatus;
+   double mMidiStart, mMidiEnd;
+   double mAudioStart, mAudioEnd;
+   float mFramePeriod;
+   float mWindowSize;
+   float mSilenceThreshold;
+   float mForceFinalAlignment;
+   float mIgnoreSilence;
+   float mPresmoothTime;
+   float mLineTime;
+   float mSmoothTime;
+};
+class SAProgress;
+class Alg_seq;
+
+extern int scorealign(
+   void *data,
+   long (*process)(void *data, float **buffer, long n),
+   unsigned channels,
+   double rate,
+   double endTime,
+   Alg_seq *seq,
+   SAProgress *progress,
+   ScoreAlignParams params
+);
+
+#endif
+
 class wxButton;
-class wxSizer;
+class wxCheckBox;
 class wxString;
+class wxSlider;
+class wxStaticText;
 
 void CloseScoreAlignDialog();
 
@@ -64,7 +102,7 @@ public:
    ScoreAlignDialog(ScoreAlignParams &params);
    ~ScoreAlignDialog();
 
-   bool TransferDataFromWindow();
+   bool TransferDataFromWindow() override;
 
 private:
    enum {
@@ -89,5 +127,7 @@ private:
    DECLARE_EVENT_TABLE()
 
 };
+
+#endif
 
 #endif

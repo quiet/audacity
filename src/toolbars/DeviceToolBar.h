@@ -15,11 +15,9 @@
 #include <vector>
 #include "ToolBar.h"
 
-class wxImage;
 class wxSize;
 class wxPoint;
 class wxChoice;
-class wxStaticText;
 struct DeviceSourceMap;
 
 class DeviceToolBar final : public ToolBar {
@@ -29,9 +27,9 @@ class DeviceToolBar final : public ToolBar {
    DeviceToolBar();
    virtual ~DeviceToolBar();
 
-   void Create(wxWindow * parent);
+   void Create(wxWindow * parent) override;
 
-   void UpdatePrefs();
+   void UpdatePrefs() override;
 
    void DeinitChildren();
    void Populate() override;
@@ -44,9 +42,9 @@ class DeviceToolBar final : public ToolBar {
    void OnChoice(wxCommandEvent & event);
 
    /// When the prefs don't exist this value is used.
-   /// It should be small enough to work on tiny screens
-   int GetInitialWidth() { return 620; }
-   int GetMinToolbarWidth() override { return 200; }
+   /// 883 takes a complete row in the default initial size of Audacity.
+   int GetInitialWidth()  override{ return 883; }
+   int GetMinToolbarWidth() override { return 350; }
 
    void ShowInputDialog();
    void ShowOutputDialog();
@@ -65,10 +63,7 @@ class DeviceToolBar final : public ToolBar {
    void RepositionCombos();
    void SetNames();
    void RegenerateTooltips() override;
-
    void ShowComboDialog(wxChoice *combo, const wxString &title);
-
-   std::unique_ptr<wxBitmap> mPlayBitmap, mRecordBitmap;
 
    wxChoice *mInput;
    wxChoice *mOutput;

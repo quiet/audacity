@@ -98,13 +98,9 @@
 #include "ImageRoll.h"
 
 #include <wx/wx.h>
-#include <wx/arrimpl.cpp>
 #include <wx/bitmap.h>
 #include <wx/dcmemory.h>
 #include <wx/image.h>
-
-WX_DEFINE_OBJARRAY(BitmapArray);
-WX_DEFINE_OBJARRAY(ImageArray);
 
 // static
 ImageArray ImageRoll::SplitH(const wxImage &src, wxColour magicColor)
@@ -149,7 +145,7 @@ ImageArray ImageRoll::SplitH(const wxImage &src, wxColour magicColor)
             subImage = src.GetSubImage(subRect);
          else
             subImage = wxImage(subRect.width, subRect.height);
-         result.Add(subImage);
+         result.push_back(subImage);
       }
       else if (!cur && prev) {
          start = i;
@@ -204,7 +200,7 @@ ImageArray ImageRoll::SplitV(const wxImage &src, wxColour magicColor)
             subImage = src.GetSubImage(subRect);
          else
             subImage = wxImage(subRect.width, subRect.height);
-         result.Add(subImage);
+         result.push_back(subImage);
       }
       else if (!cur && prev) {
          start = i;
@@ -233,13 +229,13 @@ void ImageRoll::Init(RollType type, const wxImage &src, wxColour magicColor)
       mMaxSize.x = 9999;
       mMaxSize.y = src.GetHeight();
 
-      for(i=0; i<(int)images.GetCount(); i++) {
+      for(i = 0; i < (int)images.size(); i++) {
          if (images[i].Ok()) {
-            mPieces.Add(wxBitmap(images[i]));
+            mPieces.push_back(wxBitmap(images[i]));
             mMinSize.x += mPieces[i].GetWidth();
          }
          else
-            mPieces.Add(wxBitmap());
+            mPieces.push_back(wxBitmap());
       }
       break;
 
@@ -251,18 +247,18 @@ void ImageRoll::Init(RollType type, const wxImage &src, wxColour magicColor)
       mMaxSize.x = src.GetWidth();
       mMaxSize.y = 9999;
 
-      for(i=0; i<(int)images.GetCount(); i++) {
+      for(i = 0; i < (int)images.size(); i++) {
          if (images[i].Ok()) {
-            mPieces.Add(wxBitmap(images[i]));
+            mPieces.push_back(wxBitmap(images[i]));
             mMinSize.y += mPieces[i].GetHeight();
          }
          else
-            mPieces.Add(wxBitmap());
+            mPieces.push_back(wxBitmap());
       }
       break;
 
    case FixedImage:
-      mPieces.Add(wxBitmap(src));
+      mPieces.push_back(wxBitmap(src));
       mMinSize.x = src.GetWidth();
       mMinSize.y = src.GetHeight();
       mMaxSize.x = src.GetWidth();
@@ -301,23 +297,30 @@ bool ImageRoll::Ok() const
 }
 
 void ImageRoll::DrawBitmap(wxDC &dc, wxBitmap &bitmap,
-                           int x, int y, wxRasterOperationMode logicalFunc)
+                           int x, int y, int logicalFunc)
 {
-   if (logicalFunc == wxCOPY)
+   auto func = static_cast< wxRasterOperationMode >( logicalFunc );
+   if (func == wxCOPY)
       dc.DrawBitmap(bitmap, x, y);
    else {
       wxMemoryDC memDC;
       memDC.SelectObject(bitmap);
       dc.Blit(x, y, bitmap.GetWidth(), bitmap.GetHeight(),
-              &memDC, 0, 0, logicalFunc);
+              &memDC, 0, 0, func);
    }
 }
 
-void ImageRoll::Draw(wxDC &dc, wxRect rect, wxRasterOperationMode WXUNUSED(logicalFunc))
+void ImageRoll::Draw(wxDC &dc, wxRect rect)
 {
+   Draw( dc, rect, wxCOPY );
+}
+
+void ImageRoll::Draw(wxDC &dc, wxRect rect, int WXUNUSED(logicalFunc))
+{
+   auto func = wxCOPY;
    int width = rect.width;
    int height = rect.height;
-   int num = (int)mPieces.GetCount();
+   int num = (int)mPieces.size();
    int i, j;
 
    switch(mType) {
@@ -339,7 +342,7 @@ void ImageRoll::Draw(wxDC &dc, wxRect rect, wxRasterOperationMode WXUNUSED(logic
             // fixed
 
             if (mPieces[i].Ok())
-               DrawBitmap(dc, mPieces[i], rect.x + x, rect.y);
+               DrawBitmap(dc, mPieces[i], rect.x + x, rect.y, func);
             x += w;
          }
          else {
@@ -352,7 +355,7 @@ void ImageRoll::Draw(wxDC &dc, wxRect rect, wxRasterOperationMode WXUNUSED(logic
             j = 0;
             while(j < space) {
                if (mPieces[i].Ok())
-                  DrawBitmap(dc, mPieces[i], rect.x + x + j, rect.y);
+                  DrawBitmap(dc, mPieces[i], rect.x + x + j, rect.y, func);
                j += w;
             }
 
@@ -379,7 +382,7 @@ void ImageRoll::Draw(wxDC &dc, wxRect rect, wxRasterOperationMode WXUNUSED(logic
             // fixed
 
             if (mPieces[i].Ok())
-               DrawBitmap(dc, mPieces[i], rect.x, rect.y + y);
+               DrawBitmap(dc, mPieces[i], rect.x, rect.y + y, func);
             y += h;
          }
          else {
@@ -392,7 +395,7 @@ void ImageRoll::Draw(wxDC &dc, wxRect rect, wxRasterOperationMode WXUNUSED(logic
             j = 0;
             while(j < space) {
                if (mPieces[i].Ok())
-                  DrawBitmap(dc, mPieces[i], rect.x, rect.y + y + j);
+                  DrawBitmap(dc, mPieces[i], rect.x, rect.y + y + j, func);
                j += h;
             }
 
@@ -402,7 +405,7 @@ void ImageRoll::Draw(wxDC &dc, wxRect rect, wxRasterOperationMode WXUNUSED(logic
    } break; // case VerticalRoll
 
    case FixedImage:
-      DrawBitmap(dc, mPieces[0], rect.x, rect.y);
+      DrawBitmap(dc, mPieces[0], rect.x, rect.y, func);
       break;
    /* the other possible cases don't really make sense, but not having them
     * listed gives a GCC warning */
@@ -424,19 +427,19 @@ IMPLEMENT_CLASS(ImageRollPanel, wxPanelWrapper)
 
 ImageRollPanel::ImageRollPanel(wxWindow *parent,
                                wxWindowID id,
-                               ImageRoll &imgRoll,
+                               //ImageRoll &imgRoll,
                                const wxPoint& pos,
                                const wxSize& size,
                                long style):
    wxPanelWrapper(parent, id, pos, size, style),
-   mImageRoll(imgRoll),
+   //mImageRoll(imgRoll),
    mLogicalFunction(wxCOPY)
 {
-   SetSizeHints(mImageRoll.GetMinSize(),
-                mImageRoll.GetMaxSize());
+//   SetSizeHints(mImageRoll.GetMinSize(),
+//                mImageRoll.GetMaxSize());
 }
 
-void ImageRollPanel::SetLogicalFunction(wxRasterOperationMode func)
+void ImageRollPanel::SetLogicalFunction(int /*wxRasterOperationMode*/ func)
 {
    mLogicalFunction = func;
 }
@@ -445,7 +448,7 @@ void ImageRollPanel::OnPaint(wxPaintEvent & WXUNUSED(event))
 {
    wxPaintDC dc(this);
 
-   mImageRoll.Draw(dc, GetClientRect(), mLogicalFunction);
+//   mImageRoll.Draw(dc, GetClientRect(), mLogicalFunction);
 }
 
 void ImageRollPanel::OnSize(wxSizeEvent & WXUNUSED(event))

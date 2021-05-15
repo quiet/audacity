@@ -21,11 +21,11 @@
 #include "Effect.h"
 
 #include "../MemoryX.h"
-#include <wx/dialog.h>
-#include <wx/slider.h>
+#include "../SampleFormat.h"
 
 class wxButton;
 class wxSizer;
+class wxSlider;
 class wxString;
 
 class Envelope;
@@ -36,7 +36,7 @@ class wxTextCtrl;
 
 #include "../RealFFTf.h"
 
-#define NOISEREMOVAL_PLUGIN_SYMBOL XO("Noise Removal")
+#define NOISEREMOVAL_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Noise Removal") }
 
 class EffectNoiseRemoval final : public Effect
 {
@@ -44,12 +44,12 @@ public:
    EffectNoiseRemoval();
    virtual ~EffectNoiseRemoval();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
    bool SupportsAutomation() override;
@@ -60,6 +60,7 @@ public:
    bool Init() override;
    bool CheckWhetherSkipEffect() override;
    bool Process() override;
+   void End() override;
 
 private:
 
@@ -70,12 +71,12 @@ private:
    // Parameters chosen before the first phase
    double    mSampleRate;
    size_t    mWindowSize;
-   int       mSpectrumSize;
+   size_t    mSpectrumSize;
    float     mMinSignalTime;    // in secs
 
    // The frequency-indexed noise threshold derived during the first
    // phase of analysis
-   float    *mNoiseThreshold;  // length is mSpectrumSize
+   Floats mNoiseThreshold;  // length is mSpectrumSize
 
    // Parameters that affect the noise removal, regardless of how the
    // noise profile was extracted
@@ -97,7 +98,6 @@ private:
    void RemoveNoise();
    void RotateHistoryWindows();
    void FinishTrack();
-   void Cleanup();
 
    // Variables that only exist during processing
    std::unique_ptr<WaveTrack> mOutputTrack;
@@ -106,22 +106,22 @@ private:
    int                   mInputPos;
 
    HFFT     hFFT;
-   float    *mFFTBuffer;         // mWindowSize
-   float    *mWindow;            // mWindowSize
+   Floats mFFTBuffer;         // mWindowSize
+   Floats mWindow;            // mWindowSize
 
    int       mFreqSmoothingBins;
    int       mAttackDecayBlocks;
    float     mOneBlockAttackDecay;
    float     mNoiseAttenFactor;
    float     mSensitivityFactor;
-   int       mMinSignalBlocks;
-   int       mHistoryLen;
-   float    *mInWaveBuffer;     // mWindowSize
-   float    *mOutOverlapBuffer; // mWindowSize
-   float   **mSpectrums;        // mHistoryLen x mSpectrumSize
-   float   **mGains;            // mHistoryLen x mSpectrumSize
-   float   **mRealFFTs;         // mHistoryLen x mWindowSize
-   float   **mImagFFTs;         // mHistoryLen x mWindowSize
+   size_t    mMinSignalBlocks;
+   size_t    mHistoryLen;
+   Floats mInWaveBuffer;     // mWindowSize
+   Floats mOutOverlapBuffer; // mWindowSize
+   ArraysOf<float> mSpectrums;        // mHistoryLen x mSpectrumSize
+   ArraysOf<float> mGains;            // mHistoryLen x mSpectrumSize
+   ArraysOf<float> mRealFFTs;         // mHistoryLen x mWindowSize
+   ArraysOf<float> mImagFFTs;         // mHistoryLen x mWindowSize
 
    friend class NoiseRemovalDialog;
 };
@@ -145,8 +145,8 @@ public:
                                    bool set_sizer = true);
 
    void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
 private:
    // handlers

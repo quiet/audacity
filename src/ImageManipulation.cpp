@@ -22,10 +22,13 @@ channel.  This collection of functions fills that gap.
 *//*********************************************************************/
 
 
+#include "Audacity.h" // for USE_* macros
+#include "ImageManipulation.h"
+
 #include <wx/image.h>
 
-#include "Audacity.h"
-#include "ImageManipulation.h"
+#include "AllThemeResources.h"
+#include "Theme.h"
 
 /// This looks at the first pixel in the image, and shifts
 /// the entire image by the vector difference between that
@@ -210,6 +213,25 @@ std::unique_ptr<wxImage> OverlayImage(teBmps eBack, teBmps eForeground,
    unsigned char *dst = dstImage->GetData();
    memcpy(dst, bg, bgWidth * bgHeight * 3);
 
+   // If background image has tranparency, then we want to blend with the 
+   // current backgorund colour.
+   if( imgBack.HasAlpha() ){
+      unsigned char *pAlpha = imgBack.GetAlpha();
+      wxColour c = theTheme.Colour( clrMedium  );
+      unsigned char onePixImage[3];
+      // GetData() guarantees RGB order [wxWidgets does the ocnversion]
+      onePixImage[ 0 ] = c.Red();
+      onePixImage[ 1 ] = c.Green();
+      onePixImage[ 2 ] = c.Blue();
+      for( int i=0;i< bgWidth*bgHeight;i++){
+         unsigned char * pPix = &dst[ 3*i];
+         float alpha = 1.0 - (pAlpha[i]/255.0);
+         pPix[0] = pPix[0] + alpha *( (int)onePixImage[0]-(int)pPix[0]);
+         pPix[1] = pPix[1] + alpha *( (int)onePixImage[1]-(int)pPix[1]);
+         pPix[2] = pPix[2] + alpha *( (int)onePixImage[2]-(int)pPix[2]);
+      }
+   }
+
    // Go through the foreground image bit by bit and mask it on to the
    // background, at an offset of xoff,yoff.
    // BUT...Don't go beyond the size of the background image,
@@ -387,10 +409,12 @@ wxImage GetSubImageWithAlpha( const wxImage & Src,  const wxRect &rect )
       data+=width;
    }
 
+   image.InitAlpha();
+   if( !Src.HasAlpha() )
+      return image;
    // OK, so we've copied the RGB data.
    // Now do the Alpha channel.
-   wxASSERT( Src.HasAlpha() );
-   image.InitAlpha();
+   //wxASSERT( Src.HasAlpha() );
 
    subleft/=3;
    width/=3;

@@ -16,18 +16,15 @@
 #ifndef __AUDACITY_EFFECT_PHASER__
 #define __AUDACITY_EFFECT_PHASER__
 
-#include <wx/event.h>
-#include <wx/slider.h>
-#include <wx/string.h>
-#include <wx/textctrl.h>
-
 #include "Effect.h"
 
+class wxSlider;
+class wxTextCtrl;
 class ShuttleGui;
 
 #define NUM_STAGES 24
 
-#define PHASER_PLUGIN_SYMBOL XO("Phaser")
+#define PHASER_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Phaser") }
 
 class EffectPhaserState
 {
@@ -44,20 +41,19 @@ public:
    int laststages;
 };
 
-WX_DECLARE_OBJARRAY(EffectPhaserState, EffectPhaserStateArray);
-
 class EffectPhaser final : public Effect
 {
 public:
    EffectPhaser();
    virtual ~EffectPhaser();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
    bool SupportsRealtime() override;
@@ -75,14 +71,15 @@ public:
                                        float **inbuf,
                                        float **outbuf,
                                        size_t numSamples) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 
-   void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   void PopulateOrExchange(ShuttleGui & S) override;
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
 private:
    // EffectPhaser implementation
@@ -119,7 +116,7 @@ private:
 
 private:
    EffectPhaserState mMaster;
-   EffectPhaserStateArray mSlaves;
+   std::vector<EffectPhaserState> mSlaves;
 
    // parameters
    int mStages;

@@ -7,7 +7,7 @@
  *
  */
 
-#include "../Audacity.h"
+#include "../Audacity.h" // for USE_* macros
 #include "ODDecodeFlacTask.h"
 
 #include "../Prefs.h"
@@ -15,6 +15,7 @@
 #include <wx/utils.h>
 #include <wx/file.h>
 #include <wx/ffile.h>
+#include <wx/wx.h>
 
 #ifdef USE_LIBID3TAG
 extern "C" {
@@ -33,9 +34,9 @@ ODDecodeFlacTask::~ODDecodeFlacTask()
 }
 
 
-movable_ptr<ODTask> ODDecodeFlacTask::Clone() const
+std::unique_ptr<ODTask> ODDecodeFlacTask::Clone() const
 {
-   auto clone = make_movable<ODDecodeFlacTask>();
+   auto clone = std::make_unique<ODDecodeFlacTask>();
    clone->mDemandSample = GetDemandSample();
 
    //the decoders and blockfiles should not be copied.  They are created as the task runs.
@@ -50,7 +51,7 @@ void ODFLACFile::metadata_callback(const FLAC__StreamMetadata *metadata)
    {
       case FLAC__METADATA_TYPE_VORBIS_COMMENT:
          for (FLAC__uint32 i = 0; i < metadata->data.vorbis_comment.num_comments; i++) {
-            mComments.Add(UTF8CTOWX((char *)metadata->data.vorbis_comment.comments[i].entry));
+            mComments.push_back(UTF8CTOWX((char *)metadata->data.vorbis_comment.comments[i].entry));
          }
       break;
 
@@ -81,8 +82,9 @@ void ODFLACFile::metadata_callback(const FLAC__StreamMetadata *metadata)
       case FLAC__METADATA_TYPE_PICTURE:		// ignore pictures
       case FLAC__METADATA_TYPE_UNDEFINED:	// do nothing with this either
 
-      case FLAC__MAX_METADATA_TYPE: // quiet compiler warning with this line
-
+      // FIXME: not declared when compiling on Ubuntu.
+      //case FLAC__MAX_METADATA_TYPE: // quiet compiler warning with this line
+      default:
       break;
    }
 }
@@ -95,16 +97,16 @@ void ODFLACFile::error_callback(FLAC__StreamDecoderErrorStatus status)
    switch (status)
    {
    case FLAC__STREAM_DECODER_ERROR_STATUS_LOST_SYNC:
-      printf("Flac Error: Lost sync\n");
+      wxPrintf("Flac Error: Lost sync\n");
       break;
    case FLAC__STREAM_DECODER_ERROR_STATUS_FRAME_CRC_MISMATCH:
-      printf("Flac Error: Crc mismatch\n");
+      wxPrintf("Flac Error: Crc mismatch\n");
       break;
    case FLAC__STREAM_DECODER_ERROR_STATUS_BAD_HEADER:
-      printf("Flac Error: Bad Header\n");
+      wxPrintf("Flac Error: Bad Header\n");
       break;
    default:
-      printf("Flac Error: Unknown error code\n");
+      wxPrintf("Flac Error: Unknown error code\n");
       break;
    }
 }
@@ -124,7 +126,7 @@ FLAC__StreamDecoderWriteStatus ODFLACFile::write_callback(const FLAC__Frame *fra
 
    mDecoder->mDecodeBufferWritePosition+=bytesToCopy;
 /*
-   short *tmp=new short[frame->header.blocksize];
+   ArrayOf<short> tmp{ frame->header.blocksize };
 
    for (unsigned int chn=0; chn<mDecoder->mNumChannels; chn++) {
       if (frame->header.bits_per_sample == 16) {
@@ -132,7 +134,7 @@ FLAC__StreamDecoderWriteStatus ODFLACFile::write_callback(const FLAC__Frame *fra
             tmp[s]=buffer[chn][s];
          }
 
-         mDecoder->mChannels[chn]->Append((samplePtr)tmp,
+         mDecoder->mChannels[chn]->Append((samplePtr)tmp.get(),
                   int16Sample,
                   frame->header.blocksize);
       }
@@ -142,8 +144,6 @@ FLAC__StreamDecoderWriteStatus ODFLACFile::write_callback(const FLAC__Frame *fra
                   frame->header.blocksize);
       }
    }
-
-   delete [] tmp;
 */
 
    mDecoder->mSamplesDone += frame->header.blocksize;
@@ -153,7 +153,7 @@ FLAC__StreamDecoderWriteStatus ODFLACFile::write_callback(const FLAC__Frame *fra
 
 //   mDecoder->mUpdateResult = mDecoder->mProgress->Update((wxULongLong_t) mDecoder->mSamplesDone, mDecoder->mNumSamples != 0 ? (wxULongLong_t)mDecoder->mNumSamples : 1);
 /*
-   if (mDecoder->mUpdateResult != eProgressSuccess)
+   if (mDecoder->mUpdateResult != ProgressResult::Success)
    {
       return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
    }
@@ -226,8 +226,7 @@ bool ODFlacDecoder::ReadHeader()
 {
    mFormat = int16Sample;//start with the smallest and move up in the metadata_callback.
                          //we want to use the native flac type for quick conversion.
-      /* (sampleFormat)
-      gPrefs->Read(wxT("/SamplingRate/DefaultProjectSampleFormat"), floatSample);*/
+      /* QualityPrefs::SampleFormatChoice(); */
    mFile = std::make_unique<ODFLACFile>(this);
 
 
@@ -306,7 +305,7 @@ ODFileDecoder* ODDecodeFlacTask::CreateFileDecoder(const wxString & fileName)
    }
 
    // Open the file for import
-   auto decoder = std::make_movable<ODFlacDecoder>(fileName);
+   auto decoder = std::std::make_unique<ODFlacDecoder>(fileName);
 */
 /*
    bool success = decoder->Init();
@@ -315,7 +314,7 @@ ODFileDecoder* ODDecodeFlacTask::CreateFileDecoder(const wxString & fileName)
    }
 */
    // Open the file for import
-   auto decoder = make_movable<ODFlacDecoder>(fileName);
+   auto decoder = std::make_unique<ODFlacDecoder>(fileName);
 
    mDecoders.push_back(std::move(decoder));
    return mDecoders.back().get();

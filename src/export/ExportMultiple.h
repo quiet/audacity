@@ -11,23 +11,21 @@
 #ifndef __AUDACITY_EXPORT_MULTIPLE__
 #define __AUDACITY_EXPORT_MULTIPLE__
 
-#include <wx/dialog.h>
-#include <wx/string.h>
-#include <wx/dynarray.h>   // sadly we are using wx dynamic arrays
-#include <wx/listctrl.h>
-#include <wx/simplebook.h>
-
 #include "Export.h"
-#include "../Tags.h"       // we need to know about the Tags class for metadata
+#include "../wxFileNameWrapper.h" // member variable
 
 class wxButton;
 class wxCheckBox;
 class wxChoice;
+class wxListEvent;
 class wxRadioButton;
+class wxSimplebook;
+class wxStaticText;
 class wxTextCtrl;
 
 class AudacityProject;
 class LabelTrack;
+class SelectionState;
 class ShuttleGui;
 class Track;
 
@@ -54,7 +52,7 @@ private:
     * labels that define them (true), or just numbered (false).
     * @param prefix The string used to prefix the file number if files are being
     * numbered rather than named */
-   int ExportMultipleByLabel(bool byName, const wxString &prefix, bool addNumber);
+   ProgressResult ExportMultipleByLabel(bool byName, const wxString &prefix, bool addNumber);
 
    /** \brief Export each track in the project to a separate file
     *
@@ -62,7 +60,7 @@ private:
     * (true), or just numbered (false).
     * @param prefix The string used to prefix the file number if files are being
     * numbered rather than named */
-   int ExportMultipleByTrack(bool byName, const wxString &prefix, bool addNumber);
+   ProgressResult ExportMultipleByTrack(bool byName, const wxString &prefix, bool addNumber);
 
    /** Export one file of an export multiple set
     *
@@ -74,7 +72,8 @@ private:
     * @param t1 End time for export
     * @param tags Metadata to include in the file (if possible).
     */
-   int DoExport(unsigned channels,
+   ProgressResult DoExport(std::unique_ptr<ProgressDialog> &pDialog,
+                 unsigned channels,
                  const wxFileName &name,
                  bool selectedOnly,
                  double t0,
@@ -100,6 +99,7 @@ private:
    void OnByNumber(wxCommandEvent& event);
    void OnPrefix(wxCommandEvent& event);
    void OnCancel(wxCommandEvent& event);
+   void OnHelp(wxCommandEvent& event);
    void OnExport(wxCommandEvent& event);
 
 private:
@@ -109,12 +109,9 @@ private:
    AudacityProject *mProject;
    TrackList *mTracks;           /**< The list of tracks in the project that is
                                    being exported */
-   LabelTrack *mLabels;
+   const LabelTrack *mLabels;
    int mNumLabels;
    int mNumWaveTracks;
-
-   // PRL:  This is never populated anywhere?
-   std::vector<Track*> mSelected;
 
    int mFilterIndex;          /**< The index in the drop-down list of export
                                 formats (mFormat) of the selected export format.
@@ -127,7 +124,7 @@ private:
    bool mInitialized;
 
    // List of file actually exported
-   wxArrayString mExported;
+   FilePaths mExported;
 
    wxChoice      *mFormat;    /**< Drop-down list of export formats
                                 (combinations of plug-in and subformat) */
@@ -163,6 +160,8 @@ private:
 
    wxSimplebook   *mBook;
 
+   SelectionState &mSelectionState;
+
    DECLARE_EVENT_TABLE()
 
 };
@@ -186,28 +185,6 @@ public:
 private:
    DECLARE_EVENT_TABLE()
 };
-
-
-/** \brief A private class used to store the information needed to do an
-    * export.
-    *
-    * We create a set of these during the interactive phase of the export
-    * cycle, then use them when the actual exports are done. */
-   class ExportKit
-   {
-   public:
-      Tags filetags; /**< The set of metadata to use for the export */
-      wxFileName destfile; /**< The file to export to */
-      double t0;           /**< Start time for the export */
-      double t1;           /**< End time for the export */
-      unsigned channels;   /**< Number of channels for ExportMultipleByTrack */
-   };  // end of ExportKit declaration
-   /* we are going to want an set of these kits, and don't know how many until
-    * runtime. I would dearly like to use a std::vector, but it seems that
-    * this isn't done anywhere else in Audacity, presumably for a reason?, so
-    * I'm stuck with wxArrays, which are much harder, as well as non-standard.
-    */
-   WX_DECLARE_OBJARRAY(ExportKit, ExportKitArray);
 
 
 #endif

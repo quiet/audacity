@@ -29,19 +29,19 @@ EffectStereoToMono::~EffectStereoToMono()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectStereoToMono::GetSymbol()
+ComponentInterfaceSymbol EffectStereoToMono::GetSymbol()
 {
    return STEREOTOMONO_PLUGIN_SYMBOL;
 }
 
 wxString EffectStereoToMono::GetDescription()
 {
-   return XO("Converts stereo tracks to mono");
+   return _("Converts stereo tracks to mono");
 }
 
-// EffectIdentInterface implementation
+// EffectDefinitionInterface implementation
 
 EffectType EffectStereoToMono::GetType()
 {
@@ -66,7 +66,7 @@ unsigned EffectStereoToMono::GetAudioOutCount()
    return 1;
 }
 
-// Effect implementatino
+// Effect implementation
 
 bool EffectStereoToMono::Process()
 {
@@ -75,57 +75,48 @@ bool EffectStereoToMono::Process()
    this->CopyInputTracks(); // Set up mOutputTracks.
    bool bGoodResult = true;
 
-   SelectedTrackListOfKindIterator iter(Track::Wave, mOutputTracks.get());
-   mLeftTrack = (WaveTrack *)iter.First();
+   auto trackRange = mOutputTracks->SelectedLeaders< WaveTrack >();
    bool refreshIter = false;
 
-   if(mLeftTrack)
-   {
-      // create a NEW WaveTrack to hold all of the output
-      AudacityProject *p = GetActiveProject();
-      mOutTrack = p->GetTrackFactory()->NewWaveTrack(floatSample, mLeftTrack->GetRate());
-   }
-
    int count = 0;
-   while (mLeftTrack) {
-      if (mLeftTrack->GetKind() == Track::Wave &&
-         mLeftTrack->GetSelected() &&
-         mLeftTrack->GetLinked()) {
+   while ( trackRange.first != trackRange.second ) {
+      mLeftTrack = *trackRange.first;
+      auto channels = TrackList::Channels( mLeftTrack );
+      if (channels.size() != 2) {
+         // TODO: more-than-two-channels
+         ++ trackRange.first;
+         continue;
+      }
 
-         // Assume linked track is wave
-         mRightTrack = static_cast<WaveTrack*>(iter.Next());
+      mRightTrack = * channels.rbegin();
 
-         if ((mLeftTrack->GetRate() == mRightTrack->GetRate())) {
-            auto leftTrackStart = mLeftTrack->TimeToLongSamples(mLeftTrack->GetStartTime());
-            auto rightTrackStart = mRightTrack->TimeToLongSamples(mRightTrack->GetStartTime());
-            mStart = wxMin(leftTrackStart, rightTrackStart);
+      if ((mLeftTrack->GetRate() == mRightTrack->GetRate())) {
+         auto leftTrackStart = mLeftTrack->TimeToLongSamples(mLeftTrack->GetStartTime());
+         auto rightTrackStart = mRightTrack->TimeToLongSamples(mRightTrack->GetStartTime());
+         mStart = wxMin(leftTrackStart, rightTrackStart);
 
-            auto leftTrackEnd = mLeftTrack->TimeToLongSamples(mLeftTrack->GetEndTime());
-            auto rightTrackEnd = mRightTrack->TimeToLongSamples(mRightTrack->GetEndTime());
-            mEnd = wxMax(leftTrackEnd, rightTrackEnd);
+         auto leftTrackEnd = mLeftTrack->TimeToLongSamples(mLeftTrack->GetEndTime());
+         auto rightTrackEnd = mRightTrack->TimeToLongSamples(mRightTrack->GetEndTime());
+         mEnd = wxMax(leftTrackEnd, rightTrackEnd);
 
-            bGoodResult = ProcessOne(count);
-            if (!bGoodResult)
-               break;
+         bGoodResult = ProcessOne(count);
+         if (!bGoodResult)
+            break;
 
-            mOutTrack->Clear(mOutTrack->GetStartTime(), mOutTrack->GetEndTime());
-
-            // The right channel has been deleted, so we must restart from the beginning
-            refreshIter = true;
-         }
+         // The right channel has been deleted, so we must restart from the beginning
+         refreshIter = true;
       }
 
       if (refreshIter) {
-         mLeftTrack = (WaveTrack *)iter.First();
+         trackRange = mOutputTracks->SelectedLeaders< WaveTrack >();
          refreshIter = false;
       }
-      else {
-         mLeftTrack = (WaveTrack *)iter.Next();
-      }
+      else
+         ++trackRange.first;
+
       count++;
    }
 
-   mOutTrack.reset();
    this->ReplaceProcessedTracks(bGoodResult);
    return bGoodResult;
 }
@@ -138,13 +129,17 @@ bool EffectStereoToMono::ProcessOne(int count)
 
    auto idealBlockLen = mLeftTrack->GetMaxBlockSize() * 2;
    auto index = mStart;
-   float *leftBuffer = new float[idealBlockLen];
-   float *rightBuffer = new float[idealBlockLen];
+   Floats leftBuffer { idealBlockLen };
+   Floats rightBuffer{ idealBlockLen };
    bool bResult = true;
 
+   AudacityProject *p = GetActiveProject();
+   auto outTrack =
+      p->GetTrackFactory()->NewWaveTrack(floatSample, mLeftTrack->GetRate());
+
    while (index < mEnd) {
-      bResult &= mLeftTrack->Get((samplePtr)leftBuffer, floatSample, index, idealBlockLen);
-      bResult &= mRightTrack->Get((samplePtr)rightBuffer, floatSample, index, idealBlockLen);
+      bResult &= mLeftTrack->Get((samplePtr)leftBuffer.get(), floatSample, index, idealBlockLen);
+      bResult &= mRightTrack->Get((samplePtr)rightBuffer.get(), floatSample, index, idealBlockLen);
       auto limit = limitSampleBufferSize( idealBlockLen, mEnd - index );
       for (decltype(limit) i = 0; i < limit; ++i) {
          index++;
@@ -153,22 +148,17 @@ bool EffectStereoToMono::ProcessOne(int count)
          curMonoFrame = (curLeftFrame + curRightFrame) / 2.0;
          leftBuffer[i] = curMonoFrame;
       }
-      bResult &= mOutTrack->Append((samplePtr)leftBuffer, floatSample, limit);
+      outTrack->Append((samplePtr)leftBuffer.get(), floatSample, limit);
       if (TrackProgress(count, 2.*(index.as_double() / (mEnd - mStart).as_double())))
          return false;
    }
 
    double minStart = wxMin(mLeftTrack->GetStartTime(), mRightTrack->GetStartTime());
-   bResult &= mLeftTrack->Clear(mLeftTrack->GetStartTime(), mLeftTrack->GetEndTime());
-   bResult &= mOutTrack->Flush();
-   bResult &= mLeftTrack->Paste(minStart, mOutTrack.get());
-   mLeftTrack->SetLinked(false);
-   mRightTrack->SetLinked(false);
-   mLeftTrack->SetChannel(Track::MonoChannel);
+   mLeftTrack->Clear(mLeftTrack->GetStartTime(), mLeftTrack->GetEndTime());
+   outTrack->Flush();
+   mLeftTrack->Paste(minStart, outTrack.get());
+   mOutputTracks->GroupChannels( *mLeftTrack,  1 );
    mOutputTracks->Remove(mRightTrack);
-
-   delete [] leftBuffer;
-   delete [] rightBuffer;
 
    return bResult;
 }

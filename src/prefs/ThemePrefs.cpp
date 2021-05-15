@@ -29,13 +29,13 @@ Provides:
 *//********************************************************************/
 
 #include "../Audacity.h"
+#include "ThemePrefs.h"
 
 #include <wx/wxprec.h>
 #include "../Prefs.h"
 #include "../Theme.h"
 #include "../Project.h"
 #include "../ShuttleGui.h"
-#include "ThemePrefs.h"
 #include "../AColor.h"
 
 enum eThemePrefsIds {
@@ -56,14 +56,33 @@ BEGIN_EVENT_TABLE(ThemePrefs, PrefsPanel)
    EVT_BUTTON(idSaveThemeAsCode,     ThemePrefs::OnSaveThemeAsCode)
 END_EVENT_TABLE()
 
-ThemePrefs::ThemePrefs(wxWindow * parent)
-:  PrefsPanel(parent, _("Theme"))
+ThemePrefs::ThemePrefs(wxWindow * parent, wxWindowID winid)
+/* i18n-hint: A theme is a consistent visual style across an application's
+ graphical user interface, including choices of colors, and similarity of images
+ such as those on button controls.  Audacity can load and save alternative
+ themes. */
+:  PrefsPanel(parent, winid, _("Theme"))
 {
    Populate();
 }
 
 ThemePrefs::~ThemePrefs(void)
 {
+}
+
+ComponentInterfaceSymbol ThemePrefs::GetSymbol()
+{
+   return THEME_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString ThemePrefs::GetDescription()
+{
+   return _("Preferences for Theme");
+}
+
+wxString ThemePrefs::HelpPageName()
+{
+   return "Theme_Preferences";
 }
 
 /// Creates the dialog and its contents.
@@ -84,6 +103,7 @@ void ThemePrefs::Populate()
 void ThemePrefs::PopulateOrExchange(ShuttleGui & S)
 {
    S.SetBorder(2);
+   S.StartScroller();
 
    S.StartStatic(_("Info"));
    {
@@ -93,13 +113,10 @@ void ThemePrefs::PopulateOrExchange(ShuttleGui & S)
 
 #ifdef __WXDEBUG__
       S.AddFixedText(
-         _("You have compiled Audacity with an extra button, 'Output Sourcery'.  This will save a\nC version of the image cache that can be compiled in as a default.")
+         _("This is a debug version of Audacity, with an extra button, 'Output Sourcery'. This will save a\nC version of the image cache that can be compiled in as a default.")
          );
 #endif
 
-      S.AddFixedText(
-         _("If 'Load Theme Cache At Startup' is checked, then the Theme Cache will be loaded\nwhen the program starts up.")
-         );
       S.AddFixedText(
          _("Saving and loading individual theme files uses a separate file for each image, but is\notherwise the same idea.")
          );
@@ -125,14 +142,6 @@ void ThemePrefs::PopulateOrExchange(ShuttleGui & S)
          S.Id(idReadThemeInternal).AddButton(_("&Defaults"));
       }
       S.EndHorizontalLay();
-
-      S.StartHorizontalLay(wxALIGN_LEFT);
-      {
-         S.TieCheckBox(_("Load Theme Cache At Startup"),
-                       wxT("/Theme/LoadAtStart"),
-                       false);
-      }
-      S.EndHorizontalLay();
    }
    S.EndStatic();
 
@@ -153,6 +162,8 @@ void ThemePrefs::PopulateOrExchange(ShuttleGui & S)
       S.EndHorizontalLay();
    }
    S.EndStatic();
+   S.EndScroller();
+
 }
 
 /// Load Theme from multiple png files.
@@ -172,7 +183,6 @@ void ThemePrefs::OnSaveThemeComponents(wxCommandEvent & WXUNUSED(event))
 void ThemePrefs::OnLoadThemeCache(wxCommandEvent & WXUNUSED(event))
 {
    theTheme.ReadImageCache();
-   AColor::ReInit();
    theTheme.ApplyUpdatedImages();
 }
 
@@ -186,7 +196,7 @@ void ThemePrefs::OnSaveThemeCache(wxCommandEvent & WXUNUSED(event))
 /// Read Theme from internal storage.
 void ThemePrefs::OnReadThemeInternal(wxCommandEvent & WXUNUSED(event))
 {
-   theTheme.ReadThemeInternal();
+   theTheme.ReadImageCache( theTheme.GetFallbackThemeType() );
    theTheme.ApplyUpdatedImages();
 }
 
@@ -198,7 +208,7 @@ void ThemePrefs::OnSaveThemeAsCode(wxCommandEvent & WXUNUSED(event))
 }
 
 /// Update the preferences stored on disk.
-bool ThemePrefs::Apply()
+bool ThemePrefs::Commit()
 {
    ShuttleGui S(this, eIsSavingToPrefs);
    PopulateOrExchange(S);
@@ -206,8 +216,8 @@ bool ThemePrefs::Apply()
    return true;
 }
 
-PrefsPanel *ThemePrefsFactory::Create(wxWindow *parent)
+PrefsPanel *ThemePrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew ThemePrefs(parent);
+   return safenew ThemePrefs(parent, winid);
 }

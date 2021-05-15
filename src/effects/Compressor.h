@@ -11,22 +11,16 @@
 #ifndef __AUDACITY_EFFECT_COMPRESSOR__
 #define __AUDACITY_EFFECT_COMPRESSOR__
 
-#include <wx/bitmap.h>
-#include <wx/checkbox.h>
-#include <wx/event.h>
-#include <wx/gdicmn.h>
-#include <wx/slider.h>
-#include <wx/string.h>
-#include <wx/stattext.h>
-#include <wx/window.h>
-#include "../widgets/wxPanelWrapper.h"
-
 #include "TwoPassSimpleMono.h"
+#include "../SampleFormat.h"
 
+class wxCheckBox;
+class wxSlider;
+class wxStaticText;
 class EffectCompressorPanel;
 class ShuttleGui;
 
-#define COMPRESSOR_PLUGIN_SYMBOL XO("Compressor")
+#define COMPRESSOR_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Compressor") }
 
 class EffectCompressor final : public EffectTwoPassSimpleMono
 {
@@ -35,19 +29,21 @@ public:
    EffectCompressor();
    virtual ~EffectCompressor();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
    // EffectClientInterface implementation
 
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 
@@ -79,9 +75,9 @@ private:
 
 private:
    double    mRMSSum;
-   int       mCircleSize;
-   int       mCirclePos;
-   double   *mCircle;
+   size_t    mCircleSize;
+   size_t    mCirclePos;
+   Doubles   mCircle;
 
    double    mAttackTime;
    double    mThresholdDB;
@@ -100,8 +96,7 @@ private:
    int       mNoiseCounter;
    double    mGain;
    double    mLastLevel;
-   float	   *mFollow1;
-   float	   *mFollow2;
+   Floats mFollow1, mFollow2;
    size_t    mFollowLen;
 
    double    mMax;			//MJS
@@ -137,7 +132,7 @@ private:
 class EffectCompressorPanel final : public wxPanelWrapper
 {
 public:
-   EffectCompressorPanel(wxWindow *parent,
+   EffectCompressorPanel(wxWindow *parent, wxWindowID winid,
                          double & threshold,
                          double & noiseFloor,
                          double & ratio);

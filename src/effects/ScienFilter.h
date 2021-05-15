@@ -13,25 +13,21 @@ Vaughan Johnson (Preview)
 #ifndef __AUDACITY_EFFECT_SCIENFILTER__
 #define __AUDACITY_EFFECT_SCIENFILTER__
 
-#include <wx/arrstr.h>
-#include <wx/bitmap.h>
-#include <wx/choice.h>
-#include <wx/event.h>
-#include <wx/panel.h>
-#include <wx/slider.h>
-#include <wx/stattext.h>
-#include <wx/string.h>
-#include <wx/window.h>
+#include <wx/setup.h> // for wxUSE_* macros
 
-#include "../widgets/Ruler.h"
 #include "Biquad.h"
 
 #include "Effect.h"
 
+class wxBitmap;
+class wxChoice;
+class wxSlider;
+class wxStaticText;
 class wxTextCtrl;
+class RulerPanel;
 class ShuttleGui;
 
-#define CLASSICFILTERS_PLUGIN_SYMBOL XO("Classic Filters")
+#define CLASSICFILTERS_PLUGIN_SYMBOL ComponentInterfaceSymbol{ XO("Classic Filters") }
 
 class EffectScienFilterPanel;
 
@@ -41,12 +37,13 @@ public:
    EffectScienFilter();
    virtual ~EffectScienFilter();
 
-   // IdentInterface implementation
+   // ComponentInterface implementation
 
-   wxString GetSymbol() override;
+   ComponentInterfaceSymbol GetSymbol() override;
    wxString GetDescription() override;
+   wxString ManualPage() override;
 
-   // EffectIdentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
 
@@ -56,8 +53,9 @@ public:
    unsigned GetAudioOutCount() override;
    bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
-   bool GetAutomationParameters(EffectAutomationParameters & parms) override;
-   bool SetAutomationParameters(EffectAutomationParameters & parms) override;
+   bool DefineParams( ShuttleParams & S ) override;
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
    // Effect implementation
 
@@ -100,7 +98,7 @@ private:
    int mFilterSubtype;	// lowpass, highpass
    int mOrder;
    int mOrderIndex;
-   BiquadStruct *mpBiquad;
+   ArrayOf<Biquad> mpBiquad;
 
    double mdBMax;
    double mdBMin;
@@ -138,7 +136,9 @@ private:
 class EffectScienFilterPanel final : public wxPanelWrapper
 {
 public:
-   EffectScienFilterPanel(EffectScienFilter *effect, wxWindow *parent);
+   EffectScienFilterPanel(
+      wxWindow *parent, wxWindowID winid,
+      EffectScienFilter *effect, double lo, double hi);
    virtual ~EffectScienFilterPanel();
 
    // We don't need or want to accept focus.
@@ -172,13 +172,5 @@ private:
 
    DECLARE_EVENT_TABLE()
 };
-
-#if wxUSE_ACCESSIBILITY
-
-// ScienceFilter and Equalisation effects both need SliderAx class.
-// For now it is declared and defined in Equalisation effect.
-// TODO: Move it to its own file.
-
-#endif // wxUSE_ACCESSIBILITY
 
 #endif

@@ -13,30 +13,23 @@
 
 #include "MemoryX.h"
 #include <vector>
-#include <wx/brush.h>
-#include <wx/dcmemory.h>
-#include <wx/frame.h>
-#include <wx/panel.h>
-#include <wx/checkbox.h>
-#include <wx/dialog.h>
-#include <wx/gdicmn.h>
-#include <wx/pen.h>
-#include <wx/font.h>
-#include <wx/scrolbar.h>
-#include <wx/sizer.h>
-#include <wx/slider.h>
-#include <wx/stattext.h>
-#include <wx/statusbr.h>
-#include <wx/textctrl.h>
-#include <wx/utils.h>
-#include "widgets/Ruler.h"
+#include <wx/font.h> // member variable
+#include <wx/statusbr.h> // to inherit
+#include "SampleFormat.h"
+#include "widgets/wxPanelWrapper.h" // to inherit
 
-class wxStatusBar;
+class wxMemoryDC;
+class wxScrollBar;
+class wxSlider;
+class wxTextCtrl;
 class wxButton;
+class wxCheckBox;
 class wxChoice;
 
+class AudacityProject;
 class FreqWindow;
 class FreqGauge;
+class RulerPanel;
 
 DECLARE_EXPORTED_EVENT_TYPE(AUDACITY_DLL_API, EVT_FREQWINDOW_RECALC, -1);
 
@@ -85,7 +78,7 @@ private:
 class FreqGauge final : public wxStatusBar
 {
 public:
-   FreqGauge(wxWindow * parent);
+   FreqGauge(wxWindow * parent, wxWindowID winid);
 
    void SetRange(int range, int bar = 12, int gap = 3);
    void SetValue(int value);
@@ -105,7 +98,7 @@ private:
 class FreqPlot final : public wxWindow
 {
 public:
-   FreqPlot(wxWindow *parent);
+   FreqPlot(wxWindow *parent, wxWindowID winid);
 
    // We don't need or want to accept focus.
    bool AcceptsFocus() const;
@@ -138,6 +131,7 @@ private:
 
    void OnCloseWindow(wxCloseEvent & event);
    void OnCloseButton(wxCommandEvent & event);
+   void OnGetURL(wxCommandEvent & event);
    void OnSize(wxSizeEvent & event);
    void OnPanScroller(wxScrollEvent & event);
    void OnZoomSlider(wxCommandEvent & event);
@@ -198,7 +192,7 @@ private:
 
    double mRate;
    size_t mDataLen;
-   float *mData;
+   Floats mData;
    size_t mWindowSize;
 
    bool mLogAxis;

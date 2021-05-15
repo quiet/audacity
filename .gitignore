@@ -67,6 +67,7 @@ lib-src/libsoxr/*.cmake
 CMakeFiles/
 CTestTestfile.cmake
 cmake_install.cmake
+build/*
 
 # Waf build output
 lib-src/lv2/.buildvars
@@ -90,6 +91,9 @@ mac/po/
 mac/src/
 mac/tests/
 
+# Doxygen output
+dox/
+
 # Compiled Object files
 *.slo
 *.lo
@@ -110,6 +114,8 @@ mac/tests/
 *.ipch
 *.opensdf
 *.vcxproj.user
+*.sbr
+*.bsc
 
 # Precompiled Headers
 *.gch
@@ -177,9 +183,15 @@ win/Debug
 win/Release
 win/Projects/*/Debug
 win/Projects/*/Release
+win/.vs/
+win/packages
+win/.nuget
+win-alt-build
 
 # All those help files
 help/manual*
+win/help/manual*
+help/temp*
 
 # Misc
 src/RevisionIdent.h
@@ -187,3 +199,7 @@ win/resetPrefs.txt
 
 # Emacs backup files
 *~
+win/xaudacity.ico
+*.sublime-project
+*.sublime-workspace
+/tests/results/*.png

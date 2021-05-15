@@ -41,8 +41,10 @@ enum {
    numTools,
 
    firstTool = selectTool,
-   lastTool = multiTool
+   lastTool = multiTool,
 };
+
+const int FirstToolID = 11200;
 
 class ToolsToolBar final : public ToolBar {
 
@@ -51,20 +53,18 @@ class ToolsToolBar final : public ToolBar {
    ToolsToolBar();
    virtual ~ToolsToolBar();
 
-   void UpdatePrefs();
+   void UpdatePrefs() override;
 
    void OnTool(wxCommandEvent & evt);
 
-   void SetCurrentTool(int tool, bool show);
+   void SetCurrentTool(int tool);
 
    //These interrogate the state of the buttons or controls.
-   int GetCurrentTool();
-   bool IsDown(int tool);
+   int GetCurrentTool() const;
+   bool IsDown(int tool) const;
    int GetDownTool();
 
-   const wxChar * GetMessageForTool( int ToolNumber );
-
-   void Populate();
+   void Populate() override;
    void Repaint(wxDC * WXUNUSED(dc)) override {};
    void EnableDisableButtons() override {};
 
@@ -72,13 +72,12 @@ class ToolsToolBar final : public ToolBar {
 
    void RegenerateTooltips() override;
    wxImage *MakeToolImage(wxImage *tool, wxImage *mask, int style);
-   AButton *MakeTool(teBmps eTool, int id, const wxChar *label);
+   static AButton *MakeTool(
+      ToolsToolBar *pBar, teBmps eTool, int id, const wxChar *label);
 
    AButton *mTool[numTools];
    wxGridSizer *mToolSizer;
    int mCurrentTool;
-
-   const wxChar *mMessageOfTool[numTools];
 
  public:
 

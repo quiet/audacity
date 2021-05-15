@@ -17,11 +17,11 @@
 
 #include <vector>
 #include <wx/defs.h>
-#include <wx/sizer.h>
 
 #include "../Theme.h"
-#include "../widgets/wxPanelWrapper.h"
+#include "../widgets/wxPanelWrapper.h" // to inherit
 
+class wxBoxSizer;
 class wxDC;
 class wxEraseEvent;
 class wxMouseEvent;
@@ -75,6 +75,7 @@ enum
    ScrubbingBarID,
    DeviceBarID,
    SelectionBarID,
+   TimeBarID,
 #ifdef EXPERIMENTAL_SPECTRAL_EDITING
    SpectralSelectionBarID,
 #endif
@@ -96,6 +97,7 @@ class ToolBar /* not final */ : public wxPanelWrapper
 
    bool AcceptsFocus() const override { return false; };
 
+   void SetToDefaultSize();
    //NEW virtuals:
    virtual void Create(wxWindow *parent);
    virtual void EnableDisableButtons() = 0;
@@ -109,10 +111,8 @@ class ToolBar /* not final */ : public wxPanelWrapper
    wxString GetSection();
    ToolDock *GetDock();
 
-   void SetLabel(const wxString & label);
-   void SetDock( ToolDock *dock);
-
-   void SetDocked(ToolDock *dock, bool pushed);
+   void SetLabel(const wxString & label) override;
+   virtual void SetDocked(ToolDock *dock, bool pushed);
 
    // NEW virtual:
    virtual bool Expose(bool show = true);
@@ -124,7 +124,7 @@ class ToolBar /* not final */ : public wxPanelWrapper
    void SetVisible( bool bVisible );
    void SetPositioned(){ mPositioned = true;};
 
-   /// Resizable toolbars should implement this.
+   /// Resizable toolbars should implement these.
    // NEW virtuals:
    virtual int GetInitialWidth() { return -1; }
    virtual int GetMinToolbarWidth() { return GetInitialWidth(); }
@@ -136,6 +136,7 @@ class ToolBar /* not final */ : public wxPanelWrapper
                        teBmps eUp,
                        teBmps eDown,
                        teBmps eHilite,
+                       teBmps eDownHi,
                        teBmps eStandardUp,
                        teBmps eStandardDown,
                        teBmps eDisabled,
@@ -149,6 +150,7 @@ class ToolBar /* not final */ : public wxPanelWrapper
                             teBmps eUp,
                             teBmps eDown,
                             teBmps eHilite,
+                            teBmps eDownHi,
                             teBmps eStandardUp,
                             teBmps eStandardDown,
                             teBmps eDisabled,
@@ -157,13 +159,9 @@ class ToolBar /* not final */ : public wxPanelWrapper
    static
    void SetButtonToolTip
       (AButton &button,
-       // An array, alternating user-visible strings, and
-       // non-user-visible command names.  If a shortcut key is defined
-       // for the command, then it is appended, parenthesized, after the
-       // user-visible string.
-       const std::vector<wxString> &commands,
-       // If more than one pair of strings is given, then use this separator.
-       const wxString &separator = wxT(" / "));
+       // If a shortcut key is defined for the command, then it is appended,
+       // parenthesized, after the translated name.
+       const TranslatedInternalString commands[], size_t nCommands);
 
  protected:
    void SetButton(bool down, AButton *button);
@@ -226,7 +224,6 @@ class ToolBar /* not final */ : public wxPanelWrapper
    ToolBarResizer *mResizer;
 
    wxBoxSizer *mHSizer;
-   wxSizerItem *mSpacer;
 
    bool mVisible;
    bool mResizable;

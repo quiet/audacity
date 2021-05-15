@@ -16,6 +16,7 @@
 *//*******************************************************************/
 
 #include "../Audacity.h"
+#include "DirectoriesPrefs.h"
 
 #include <math.h>
 
@@ -29,14 +30,13 @@
 #include <wx/event.h>
 #include <wx/filefn.h>
 #include <wx/filename.h>
-#include <wx/msgdlg.h>
 #include <wx/utils.h>
 
 #include "../Prefs.h"
 #include "../AudacityApp.h"
 #include "../Internat.h"
 #include "../ShuttleGui.h"
-#include "DirectoriesPrefs.h"
+#include "../widgets/ErrorDialog.h"
 
 enum {
    TempDirID = 1000,
@@ -48,8 +48,9 @@ BEGIN_EVENT_TABLE(DirectoriesPrefs, PrefsPanel)
    EVT_BUTTON(ChooseButtonID, DirectoriesPrefs::OnChooseTempDir)
 END_EVENT_TABLE()
 
-DirectoriesPrefs::DirectoriesPrefs(wxWindow * parent)
-:  PrefsPanel(parent, _("Directories")),
+DirectoriesPrefs::DirectoriesPrefs(wxWindow * parent, wxWindowID winid)
+/* i18n-hint:  Directories, also called folders, in computer file systems */
+:  PrefsPanel(parent, winid, _("Directories")),
    mFreeSpace(NULL),
    mTempDir(NULL)
 {
@@ -58,6 +59,22 @@ DirectoriesPrefs::DirectoriesPrefs(wxWindow * parent)
 
 DirectoriesPrefs::~DirectoriesPrefs()
 {
+}
+
+
+ComponentInterfaceSymbol DirectoriesPrefs::GetSymbol()
+{
+   return DIRECTORIES_PREFS_PLUGIN_SYMBOL;
+}
+
+wxString DirectoriesPrefs::GetDescription()
+{
+   return _("Preferences for Directories");
+}
+
+wxString DirectoriesPrefs::HelpPageName()
+{
+   return "Directories_Preferences";
 }
 
 /// Creates the dialog and its contents.
@@ -78,10 +95,11 @@ void DirectoriesPrefs::Populate()
 void DirectoriesPrefs::PopulateOrExchange(ShuttleGui & S)
 {
    S.SetBorder(2);
+   S.StartScroller();
 
    S.StartStatic(_("Temporary files directory"));
    {
-      S.StartMultiColumn(3, wxEXPAND);
+      S.StartMultiColumn(2, wxEXPAND);
       {
          S.SetStretchyCol(1);
 
@@ -90,13 +108,16 @@ void DirectoriesPrefs::PopulateOrExchange(ShuttleGui & S)
                                  wxT("/Directories/TempDir"),
                                  wxT(""),
                                  30);
-         S.Id(ChooseButtonID);
-         S.AddButton(_("C&hoose..."));
-
-         S.AddFixedText(_("Free Space:"));
-         mFreeSpace = S.AddVariableText(wxT(""));
       }
       S.EndMultiColumn();
+      S.StartHorizontalLay(wxEXPAND);
+      {
+         S.Prop(0).AddFixedText(_("Free Space:"));
+         mFreeSpace = S.Prop(0).AddVariableText( {} );
+         S.Prop(10).AddSpace( 10 );
+         S.Id(ChooseButtonID).Prop(0).AddButton(_("C&hoose..."));
+      }
+
    }
    S.EndStatic();
 
@@ -121,6 +142,8 @@ void DirectoriesPrefs::PopulateOrExchange(ShuttleGui & S)
    }
    S.EndStatic();
 #endif // DEPRECATED_AUDIO_CACHE
+   S.EndScroller();
+
 }
 
 void DirectoriesPrefs::OnChooseTempDir(wxCommandEvent & e)
@@ -134,11 +157,11 @@ void DirectoriesPrefs::OnChooseTempDir(wxCommandEvent & e)
    if( !AudacityApp::IsTempDirectoryNameOK( oldTempDir ) )
       oldTempDir = wxGetApp().defaultTempDir;
 
-   wxDirDialog dlog(this,
+   wxDirDialogWrapper dlog(this,
                     _("Choose a location to place the temporary directory"),
                     oldTempDir );
    int retval = dlog.ShowModal();
-   if (retval != wxID_CANCEL && dlog.GetPath() != wxT("")) {
+   if (retval != wxID_CANCEL && !dlog.GetPath().empty()) {
       wxFileName tmpDirPath;
       tmpDirPath.AssignDir(dlog.GetPath());
 
@@ -155,15 +178,15 @@ void DirectoriesPrefs::OnChooseTempDir(wxCommandEvent & e)
 #else
       newDirName = wxT(".audacity_temp");
 #endif
-      wxArrayString dirsInPath = tmpDirPath.GetDirs();
+      auto dirsInPath = tmpDirPath.GetDirs();
 
       // If the default temp dir or user's pref dir don't end in '/' they cause
       // wxFileName's == operator to construct a wxFileName representing a file
       // (that doesn't exist) -- hence the constructor calls
       if (tmpDirPath != wxFileName(wxGetApp().defaultTempDir, wxT("")) &&
             tmpDirPath != wxFileName(mTempDir->GetValue(), wxT("")) &&
-            (dirsInPath.GetCount() == 0 ||
-             dirsInPath[dirsInPath.GetCount()-1] != newDirName))
+            (dirsInPath.size() == 0 ||
+             dirsInPath[dirsInPath.size()-1] != newDirName))
       {
          tmpDirPath.AppendDir(newDirName);
       }
@@ -204,17 +227,17 @@ bool DirectoriesPrefs::Validate()
 
    wxString path{tempDir.GetPath()};
    if( !AudacityApp::IsTempDirectoryNameOK( path ) ) {
-      wxMessageBox(
+      AudacityMessageBox(
          wxString::Format(_("Directory %s is not suitable (at risk of being cleaned out)"),
-                           path.c_str()),
+                           path),
          _("Error"),
          wxOK | wxICON_ERROR);
       return false;
    }
    if (!tempDir.DirExists()) {
-      int ans = wxMessageBox(
+      int ans = AudacityMessageBox(
          wxString::Format(_("Directory %s does not exist. Create it?"),
-                          path.c_str()),
+                          path),
          _("New Temporary Directory"),
          wxYES_NO | wxCENTRE | wxICON_EXCLAMATION);
 
@@ -233,9 +256,9 @@ bool DirectoriesPrefs::Validate()
       tempDir.AppendDir(wxT("canicreate"));
       path =  tempDir.GetPath();
       if (!tempDir.Mkdir(0755)) {
-         wxMessageBox(
+         AudacityMessageBox(
             wxString::Format(_("Directory %s is not writable"),
-                             path.c_str()),
+                             path),
             _("Error"),
             wxOK | wxICON_ERROR);
          return false;
@@ -247,7 +270,7 @@ bool DirectoriesPrefs::Validate()
    wxFileName oldDir;
    oldDir.SetPath(gPrefs->Read(wxT("/Directories/TempDir")));
    if (tempDir != oldDir) {
-      wxMessageBox(
+      AudacityMessageBox(
          _("Changes to temporary directory will not take effect until Audacity is restarted"),
          _("Temp Directory Update"),
          wxOK | wxCENTRE | wxICON_INFORMATION);
@@ -256,7 +279,7 @@ bool DirectoriesPrefs::Validate()
    return true;
 }
 
-bool DirectoriesPrefs::Apply()
+bool DirectoriesPrefs::Commit()
 {
    ShuttleGui S(this, eIsSavingToPrefs);
    PopulateOrExchange(S);
@@ -264,8 +287,8 @@ bool DirectoriesPrefs::Apply()
    return true;
 }
 
-PrefsPanel *DirectoriesPrefsFactory::Create(wxWindow *parent)
+PrefsPanel *DirectoriesPrefsFactory::operator () (wxWindow *parent, wxWindowID winid)
 {
    wxASSERT(parent); // to justify safenew
-   return safenew DirectoriesPrefs(parent);
+   return safenew DirectoriesPrefs(parent, winid);
 }

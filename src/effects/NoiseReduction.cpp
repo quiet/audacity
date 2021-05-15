@@ -29,7 +29,7 @@
   but if it were, there would be a significant delay.
 
   The gain controls are applied to the complex FFT of the signal,
-  and then the inverse FFT is applied.  A Hanning window may be
+  and then the inverse FFT is applied.  A Hann window may be
   applied (depending on the advanced window types setting), and then
   the output signal is then pieced together using overlap/add.
 
@@ -37,14 +37,20 @@
 */
 
 #include "../Audacity.h"
-#include "../Experimental.h"
 #include "NoiseReduction.h"
+
+#include "../Experimental.h"
+
 #include "EffectManager.h"
 
 #include "../ShuttleGui.h"
+#include "../widgets/HelpSystem.h"
 #include "../Prefs.h"
+#include "../RealFFTf.h"
 
 #include "../WaveTrack.h"
+#include "../widgets/ErrorDialog.h"
+#include "../widgets/valnum.h"
 
 #include <algorithm>
 #include <vector>
@@ -97,9 +103,10 @@ enum DiscriminationMethod {
 const struct DiscriminationMethodInfo {
    const wxChar *name;
 } discriminationMethodInfo[DM_N_METHODS] = {
-      { _("Median") },
-      { _("Second greatest") },
-      { _("Old") },
+   // Experimental only, don't need translations
+      { wxT("Median") },
+      { wxT("Second greatest") },
+      { wxT("Old") },
 };
 
 // magic number used only in the old statistics
@@ -130,13 +137,14 @@ const struct WindowTypesInfo {
    // is the product of the windows' two constant terms,
    // plus one half the product of the first cosine coefficients.
 
-   { _("none, Hann (2.0.6 behavior)"),    2, { 1, 0, 0 },            { 0.5, -0.5, 0 }, 0.5 },
-   { _("Hann, none"),                     2, { 0.5, -0.5, 0 },       { 1, 0, 0 },      0.5 },
-   { _("Hann, Hann (default)"),           4, { 0.5, -0.5, 0 },       { 0.5, -0.5, 0 }, 0.375 },
-   { _("Blackman, Hann"),                 4, { 0.42, -0.5, 0.08 },   { 0.5, -0.5, 0 }, 0.335 },
-   { _("Hamming, none"),                  2, { 0.54, -0.46, 0.0 },   { 1, 0, 0 },      0.54 },
-   { _("Hamming, Hann"),                  4, { 0.54, -0.46, 0.0 },   { 0.5, -0.5, 0 }, 0.385 },
-   { _("Hamming, Reciprocal Hamming"),    2, { 0.54, -0.46, 0.0 },   { 1, 0, 0 }, 1.0 }, // output window is special
+   // Experimental only, don't need translations
+   { wxT("none, Hann (2.0.6 behavior)"),    2, { 1, 0, 0 },            { 0.5, -0.5, 0 }, 0.5 },
+   { wxT("Hann, none"),                     2, { 0.5, -0.5, 0 },       { 1, 0, 0 },      0.5 },
+   { wxT("Hann, Hann (default)"),           4, { 0.5, -0.5, 0 },       { 0.5, -0.5, 0 }, 0.375 },
+   { wxT("Blackman, Hann"),                 4, { 0.42, -0.5, 0.08 },   { 0.5, -0.5, 0 }, 0.335 },
+   { wxT("Hamming, none"),                  2, { 0.54, -0.46, 0.0 },   { 1, 0, 0 },      0.54 },
+   { wxT("Hamming, Hann"),                  4, { 0.54, -0.46, 0.0 },   { 0.5, -0.5, 0 }, 0.385 },
+   { wxT("Hamming, Reciprocal Hamming"),    2, { 0.54, -0.46, 0.0 },   { 1, 0, 0 }, 1.0 }, // output window is special
 };
 
 enum {
@@ -204,7 +212,7 @@ public:
    bool PromptUser(EffectNoiseReduction *effect,
       wxWindow *parent, bool bHasProfile, bool bAllowTwiddleSettings);
    bool PrefsIO(bool read);
-   bool Validate() const;
+   bool Validate(EffectNoiseReduction *effect) const;
 
    size_t WindowSize() const { return 1u << (3 + mWindowSizeChoice); }
    unsigned StepsPerWindow() const { return 1u << (1 + mStepsPerWindowChoice); }
@@ -259,7 +267,7 @@ public:
 
    bool Process(EffectNoiseReduction &effect,
                 Statistics &statistics, TrackFactory &factory,
-                SelectedTrackListOfKindIterator &iter, double mT0, double mT1);
+                TrackList &tracks, double mT0, double mT1);
 
 private:
    bool ProcessOne(EffectNoiseReduction &effect,
@@ -338,7 +346,7 @@ private:
       FloatVector mRealFFTs;
       FloatVector mImagFFTs;
    };
-   std::vector<movable_ptr<Record>> mQueue;
+   std::vector<std::unique_ptr<Record>> mQueue;
 };
 
 /****************************************************************//**
@@ -362,9 +370,9 @@ public:
        wxWindow *parent, bool bHasProfile,
        bool bAllowTwiddleSettings);
 
-   void PopulateOrExchange(ShuttleGui & S);
-   bool TransferDataToWindow();
-   bool TransferDataFromWindow();
+   void PopulateOrExchange(ShuttleGui & S) override;
+   bool TransferDataToWindow() override;
+   bool TransferDataFromWindow() override;
 
    const Settings &GetTempSettings() const
    { return mTempSettings; }
@@ -382,9 +390,10 @@ private:
 #ifdef ADVANCED_SETTINGS
    void OnMethodChoice(wxCommandEvent &);
 #endif
-   void OnPreview(wxCommandEvent &event);
+   void OnPreview(wxCommandEvent &event) override;
    void OnReduceNoise( wxCommandEvent &event );
    void OnCancel( wxCommandEvent &event );
+   void OnHelp( wxCommandEvent &event );
 
    void OnText(wxCommandEvent &event);
    void OnSlider(wxCommandEvent &event);
@@ -421,19 +430,19 @@ EffectNoiseReduction::~EffectNoiseReduction()
 {
 }
 
-// IdentInterface implementation
+// ComponentInterface implementation
 
-wxString EffectNoiseReduction::GetSymbol()
+ComponentInterfaceSymbol EffectNoiseReduction::GetSymbol()
 {
    return NOISEREDUCTION_PLUGIN_SYMBOL;
 }
 
 wxString EffectNoiseReduction::GetDescription()
 {
-   return XO("Removes background noise such as fans, tape noise, or hums");
+   return _("Removes background noise such as fans, tape noise, or hums");
 }
 
-// EffectIdentInterface implementation
+// EffectDefinitionInterface implementation
 
 EffectType EffectNoiseReduction::GetType()
 {
@@ -574,20 +583,20 @@ bool EffectNoiseReduction::Settings::PrefsIO(bool read)
    }
 }
 
-bool EffectNoiseReduction::Settings::Validate() const
+bool EffectNoiseReduction::Settings::Validate(EffectNoiseReduction *effect) const
 {
    if (StepsPerWindow() < windowTypesInfo[mWindowTypes].minSteps) {
-      ::wxMessageBox(_("Steps per block are too few for the window types."));
+      effect->Effect::MessageBox(_("Steps per block are too few for the window types."));
       return false;
    }
 
    if (StepsPerWindow() > WindowSize()) {
-      ::wxMessageBox(_("Steps per block cannot exceed the window size."));
+      effect->Effect::MessageBox(_("Steps per block cannot exceed the window size."));
       return false;
    }
 
    if (mMethod == DM_MEDIAN && StepsPerWindow() > 4) {
-      ::wxMessageBox(_("Median method is not implemented for more than four steps per window."));
+      effect->Effect::MessageBox(_("Median method is not implemented for more than four steps per window."));
       return false;
    }
 
@@ -600,8 +609,7 @@ bool EffectNoiseReduction::Process()
 
    this->CopyInputTracks(); // Set up mOutputTracks.
 
-   SelectedTrackListOfKindIterator iter(Track::Wave, mOutputTracks.get());
-   WaveTrack *track = (WaveTrack *) iter.First();
+   auto track = * (mOutputTracks->Selected< const WaveTrack >()).begin();
    if (!track)
       return false;
 
@@ -614,12 +622,12 @@ bool EffectNoiseReduction::Process()
    }
    else if (mStatistics->mWindowSize != mSettings->WindowSize()) {
       // possible only with advanced settings
-      ::wxMessageBox(_("You must specify the same window size for steps 1 and 2."));
+      ::Effect::MessageBox(_("You must specify the same window size for steps 1 and 2."));
       return false;
    }
    else if (mStatistics->mWindowTypes != mSettings->mWindowTypes) {
       // A warning only
-      ::wxMessageBox(_("Warning: window types are not the same as for profiling."));
+      ::Effect::MessageBox(_("Warning: window types are not the same as for profiling."));
    }
 
    Worker worker(*mSettings, mStatistics->mRate
@@ -627,7 +635,8 @@ bool EffectNoiseReduction::Process()
                  , mF0, mF1
 #endif
       );
-   bool bGoodResult = worker.Process(*this, *mStatistics, *mFactory, iter, mT0, mT1);
+   bool bGoodResult = worker.Process
+      (*this, *mStatistics, *mFactory, *mOutputTracks, mT0, mT1);
    if (mSettings->mDoProfile) {
       if (bGoodResult)
          mSettings->mDoProfile = false; // So that "repeat last effect" will reduce noise
@@ -640,28 +649,26 @@ bool EffectNoiseReduction::Process()
 
 EffectNoiseReduction::Worker::~Worker()
 {
-   EndFFT(hFFT);
 }
 
 bool EffectNoiseReduction::Worker::Process
 (EffectNoiseReduction &effect, Statistics &statistics, TrackFactory &factory,
- SelectedTrackListOfKindIterator &iter, double mT0, double mT1)
+ TrackList &tracks, double inT0, double inT1)
 {
    int count = 0;
-   WaveTrack *track = (WaveTrack *) iter.First();
-   while (track) {
+   for ( auto track : tracks.Selected< WaveTrack >() ) {
       if (track->GetRate() != mSampleRate) {
          if (mDoProfile)
-            ::wxMessageBox(_("All noise profile data must have the same sample rate."));
+            effect.Effect::MessageBox(_("All noise profile data must have the same sample rate."));
          else
-            ::wxMessageBox(_("The sample rate of the noise profile must match that of the sound to be processed."));
+            effect.Effect::MessageBox(_("The sample rate of the noise profile must match that of the sound to be processed."));
          return false;
       }
 
       double trackStart = track->GetStartTime();
       double trackEnd = track->GetEndTime();
-      double t0 = std::max(trackStart, mT0);
-      double t1 = std::min(trackEnd, mT1);
+      double t0 = std::max(trackStart, inT0);
+      double t1 = std::min(trackEnd, inT1);
 
       if (t1 > t0) {
          auto start = track->TimeToLongSamples(t0);
@@ -672,13 +679,12 @@ bool EffectNoiseReduction::Worker::Process
                          count, track, start, len))
             return false;
       }
-      track = (WaveTrack *) iter.Next();
       ++count;
    }
 
    if (mDoProfile) {
       if (statistics.mTotalWindows == 0) {
-         ::wxMessageBox(_("Selected noise profile is too short."));
+         effect.Effect::MessageBox(_("Selected noise profile is too short."));
          return false;
       }
    }
@@ -700,10 +706,11 @@ void EffectNoiseReduction::Worker::ApplyFreqSmoothing(FloatVector &gains)
       std::fill(pScratch, pScratch + mSpectrumSize, 0.0f);
    }
 
-   for (int ii = 0; ii < mSpectrumSize; ++ii)
+   for (size_t ii = 0; ii < mSpectrumSize; ++ii)
       gains[ii] = log(gains[ii]);
 
-   for (int ii = 0; ii < mSpectrumSize; ++ii) {
+   // ii must be signed
+   for (int ii = 0; ii < (int)mSpectrumSize; ++ii) {
       const int j0 = std::max(0, ii - (int)mFreqSmoothingBins);
       const int j1 = std::min(mSpectrumSize - 1, ii + mFreqSmoothingBins);
       for(int jj = j0; jj <= j1; ++jj) {
@@ -712,7 +719,7 @@ void EffectNoiseReduction::Worker::ApplyFreqSmoothing(FloatVector &gains)
       mFreqSmoothingScratch[ii] /= (j1 - j0 + 1);
    }
 
-   for (int ii = 0; ii < mSpectrumSize; ++ii)
+   for (size_t ii = 0; ii < mSpectrumSize; ++ii)
       gains[ii] = exp(mFreqSmoothingScratch[ii]);
 }
 
@@ -727,7 +734,7 @@ EffectNoiseReduction::Worker::Worker
 , mSampleRate(sampleRate)
 
 , mWindowSize(settings.WindowSize())
-, hFFT(InitializeFFT(mWindowSize))
+, hFFT(GetFFT(mWindowSize))
 , mFFTBuffer(mWindowSize)
 , mInWaveBuffer(mWindowSize)
 , mOutOverlapBuffer(mWindowSize)
@@ -795,7 +802,7 @@ EffectNoiseReduction::Worker::Worker
 
    mQueue.resize(mHistoryLen);
    for (unsigned ii = 0; ii < mHistoryLen; ++ii)
-      mQueue[ii] = make_movable<Record>(mSpectrumSize);
+      mQueue[ii] = std::make_unique<Record>(mSpectrumSize);
 
    // Create windows
 
@@ -920,7 +927,7 @@ void EffectNoiseReduction::Worker::ProcessSamples
       len -= avail;
       mInWavePos += avail;
 
-      if (mInWavePos == mWindowSize) {
+      if (mInWavePos == (int)mWindowSize) {
          FillFirstHistoryWindow();
          if (mDoProfile)
             GatherStatistics(statistics);
@@ -945,7 +952,7 @@ void EffectNoiseReduction::Worker::FillFirstHistoryWindow()
          mFFTBuffer[ii] = mInWaveBuffer[ii] * mInWindow[ii];
    else
       memmove(&mFFTBuffer[0], &mInWaveBuffer[0], mWindowSize * sizeof(float));
-   RealFFTf(&mFFTBuffer[0], hFFT);
+   RealFFTf(&mFFTBuffer[0], hFFT.get());
 
    Record &record = *mQueue[0];
 
@@ -957,7 +964,7 @@ void EffectNoiseReduction::Worker::FillFirstHistoryWindow()
       float *pPower = &record.mSpectrums[1];
       int *pBitReversed = &hFFT->BitReversed[1];
       const auto last = mSpectrumSize - 1;
-      for (int ii = 1; ii < last; ++ii) {
+      for (unsigned int ii = 1; ii < last; ++ii) {
          const int kk = *pBitReversed++;
          const float realPart = *pReal++ = mFFTBuffer[kk];
          const float imagPart = *pImag++ = mFFTBuffer[kk + 1];
@@ -1033,7 +1040,7 @@ void EffectNoiseReduction::Worker::GatherStatistics(Statistics &statistics)
       // NEW statistics
       const float *pPower = &mQueue[0]->mSpectrums[0];
       float *pSum = &statistics.mSums[0];
-      for (int jj = 0; jj < mSpectrumSize; ++jj) {
+      for (size_t jj = 0; jj < mSpectrumSize; ++jj) {
          *pSum++ += *pPower++;
       }
    }
@@ -1170,7 +1177,7 @@ void EffectNoiseReduction::Worker::ReduceNoise
 
       // First, the attack, which goes backward in time, which is,
       // toward higher indices in the queue.
-      for (int jj = 0; jj < mSpectrumSize; ++jj) {
+      for (size_t jj = 0; jj < mSpectrumSize; ++jj) {
          for (unsigned ii = mCenter + 1; ii < mHistoryLen; ++ii) {
             const float minimum =
                std::max(mNoiseAttenFactor,
@@ -1243,14 +1250,14 @@ void EffectNoiseReduction::Worker::ReduceNoise
       }
 
       // Invert the FFT into the output buffer
-      InverseRealFFTf(&mFFTBuffer[0], hFFT);
+      InverseRealFFTf(&mFFTBuffer[0], hFFT.get());
 
       // Overlap-add
       if (mOutWindow.size() > 0) {
          float *pOut = &mOutOverlapBuffer[0];
          float *pWindow = &mOutWindow[0];
          int *pBitReversed = &hFFT->BitReversed[0];
-         for (int jj = 0; jj < last; ++jj) {
+         for (unsigned int jj = 0; jj < last; ++jj) {
             int kk = *pBitReversed++;
             *pOut++ += mFFTBuffer[kk] * (*pWindow++);
             *pOut++ += mFFTBuffer[kk + 1] * (*pWindow++);
@@ -1259,7 +1266,7 @@ void EffectNoiseReduction::Worker::ReduceNoise
       else {
          float *pOut = &mOutOverlapBuffer[0];
          int *pBitReversed = &hFFT->BitReversed[0];
-         for (int jj = 0; jj < last; ++jj) {
+         for (unsigned int jj = 0; jj < last; ++jj) {
             int kk = *pBitReversed++;
             *pOut++ += mFFTBuffer[kk];
             *pOut++ += mFFTBuffer[kk + 1];
@@ -1334,9 +1341,7 @@ bool EffectNoiseReduction::Worker::ProcessOne
       double tLen = outputTrack->LongSamplesToTime(len);
       // Filtering effects always end up with more data than they started with.  Delete this 'tail'.
       outputTrack->HandleClear(tLen, outputTrack->GetEndTime(), false, false);
-      bool bResult = track->ClearAndPaste(t0, t0 + tLen, &*outputTrack, true, false);
-      wxASSERT(bResult); // TO DO: Actually handle this.
-      wxUnusedVar(bResult);
+      track->ClearAndPaste(t0, t0 + tLen, &*outputTrack, true, false);
    }
 
    return bLoopSuccess;
@@ -1420,15 +1425,19 @@ struct ControlInfo {
          return wxString::Format(format, value);
    }
 
-   void CreateControls(int id, wxTextValidator &vld, ShuttleGui &S) const
+   void CreateControls(int id, ShuttleGui &S) const
    {
+      FloatingPointValidator<double> vld2(2);// precision.
+      if (formatAsInt)
+         vld2.SetPrecision( 0 );
+      vld2.SetRange( valueMin, valueMax );
       wxTextCtrl *const text =
          S.Id(id + 1).AddTextBox(textBoxCaption(), wxT(""), 0);
       S.SetStyle(wxSL_HORIZONTAL);
-      text->SetValidator(vld);
+      text->SetValidator(vld2);
 
       wxSlider *const slider =
-         S.Id(id).AddSlider(wxT(""), 0, sliderMax);
+         S.Id(id).AddSlider( {}, 0, sliderMax);
       slider->SetName(sliderName());
       slider->SetRange(0, sliderMax);
       slider->SetSizeHints(150, -1);
@@ -1491,6 +1500,7 @@ BEGIN_EVENT_TABLE(EffectNoiseReduction::Dialog, wxDialogWrapper)
    EVT_BUTTON(wxID_CANCEL, EffectNoiseReduction::Dialog::OnCancel)
    EVT_BUTTON(ID_EFFECT_PREVIEW, EffectNoiseReduction::Dialog::OnPreview)
    EVT_BUTTON(ID_BUTTON_GETPROFILE, EffectNoiseReduction::Dialog::OnGetProfile)
+   EVT_BUTTON(wxID_HELP, EffectNoiseReduction::Dialog::OnHelp)
 
    EVT_RADIOBUTTON(ID_RADIOBUTTON_KEEPSIGNAL, EffectNoiseReduction::Dialog::OnNoiseReductionChoice)
 #ifdef ISOLATE_CHOICE
@@ -1532,7 +1542,7 @@ EffectNoiseReduction::Dialog::Dialog
 (EffectNoiseReduction *effect,
  EffectNoiseReduction::Settings *settings,
  wxWindow *parent, bool bHasProfile, bool bAllowTwiddleSettings)
-   : EffectDialog( parent, _("Noise Reduction"), EffectTypeProcess)
+   : EffectDialog( parent, _("Noise Reduction"), EffectTypeProcess,wxDEFAULT_DIALOG_STYLE, eHelpButton )
    , m_pEffect(effect)
    , m_pSettings(settings) // point to
    , mTempSettings(*settings)  // copy
@@ -1657,14 +1667,11 @@ void EffectNoiseReduction::Dialog::OnPreview(wxCommandEvent & WXUNUSED(event))
       return;
 
    // Save & restore parameters around Preview, because we didn't do OK.
-   EffectNoiseReduction::Settings oldSettings(*m_pSettings);
-
+   auto cleanup = valueRestorer( *m_pSettings );
    *m_pSettings = mTempSettings;
    m_pSettings->mDoProfile = false;
 
    m_pEffect->Preview();
-
-   *m_pSettings = oldSettings;
 }
 
 void EffectNoiseReduction::Dialog::OnReduceNoise( wxCommandEvent & WXUNUSED(event))
@@ -1678,6 +1685,11 @@ void EffectNoiseReduction::Dialog::OnReduceNoise( wxCommandEvent & WXUNUSED(even
 void EffectNoiseReduction::Dialog::OnCancel(wxCommandEvent & WXUNUSED(event))
 {
    EndModal(0);
+}
+
+void EffectNoiseReduction::Dialog::OnHelp(wxCommandEvent & WXUNUSED(event))
+{
+   HelpSystem::ShowHelp(this, "Noise_Reduction", true);
 }
 
 void EffectNoiseReduction::Dialog::PopulateOrExchange(ShuttleGui & S)
@@ -1699,10 +1711,9 @@ void EffectNoiseReduction::Dialog::PopulateOrExchange(ShuttleGui & S)
       S.StartMultiColumn(3, wxEXPAND);
       S.SetStretchyCol(2);
       {
-         wxTextValidator vld(wxFILTER_NUMERIC);
          for (int id = FIRST_SLIDER; id < END_OF_BASIC_SLIDERS; id += 2) {
             const ControlInfo &info = controlInfo()[(id - FIRST_SLIDER) / 2];
-            info.CreateControls(id, vld, S);
+            info.CreateControls(id, S);
          }
       }
       S.EndMultiColumn();
@@ -1741,58 +1752,60 @@ void EffectNoiseReduction::Dialog::PopulateOrExchange(ShuttleGui & S)
       S.StartMultiColumn(2);
       {
          {
-            wxArrayString windowTypeChoices;
+            wxArrayStringEx windowTypeChoices;
             for (int ii = 0; ii < WT_N_WINDOW_TYPES; ++ii)
-               windowTypeChoices.Add(windowTypesInfo[ii].name);
+               windowTypeChoices.push_back(windowTypesInfo[ii].name);
             S.TieChoice(_("&Window types") + wxString(wxT(":")),
                mTempSettings.mWindowTypes,
-               &windowTypeChoices);
+               windowTypeChoices);
          }
 
          {
-            wxArrayString windowSizeChoices;
-            windowSizeChoices.Add(_("8"));
-            windowSizeChoices.Add(_("16"));
-            windowSizeChoices.Add(_("32"));
-            windowSizeChoices.Add(_("64"));
-            windowSizeChoices.Add(_("128"));
-            windowSizeChoices.Add(_("256"));
-            windowSizeChoices.Add(_("512"));
-            windowSizeChoices.Add(_("1024"));
-            windowSizeChoices.Add(_("2048 (default)"));
-            windowSizeChoices.Add(_("4096"));
-            windowSizeChoices.Add(_("8192"));
-            windowSizeChoices.Add(_("16384"));
             S.TieChoice(_("Window si&ze") + wxString(wxT(":")),
                mTempSettings.mWindowSizeChoice,
-               &windowSizeChoices);
+               {
+                  _("8") ,
+                  _("16") ,
+                  _("32") ,
+                  _("64") ,
+                  _("128") ,
+                  _("256") ,
+                  _("512") ,
+                  _("1024") ,
+                  _("2048 (default)") ,
+                  _("4096") ,
+                  _("8192") ,
+                  _("16384") ,
+               }
+            );
          }
 
          {
-            wxArrayString stepsPerWindowChoices;
-            stepsPerWindowChoices.Add(_("2"));
-            stepsPerWindowChoices.Add(_("4 (default)"));
-            stepsPerWindowChoices.Add(_("8"));
-            stepsPerWindowChoices.Add(_("16"));
-            stepsPerWindowChoices.Add(_("32"));
-            stepsPerWindowChoices.Add(_("64"));
             S.TieChoice(_("S&teps per window") + wxString(wxT(":")),
                mTempSettings.mStepsPerWindowChoice,
-               &stepsPerWindowChoices);
+               {
+                  _("2") ,
+                  _("4 (default)") ,
+                  _("8") ,
+                  _("16") ,
+                  _("32") ,
+                  _("64") ,
+               }
+            );
          }
 
          S.Id(ID_CHOICE_METHOD);
          {
-            wxArrayString methodChoices;
+            wxArrayStringEx methodChoices;
             int nn = DM_N_METHODS;
 #ifndef OLD_METHOD_AVAILABLE
             --nn;
 #endif
             for (int ii = 0; ii < nn; ++ii)
-               methodChoices.Add(discriminationMethodInfo[ii].name);
+               methodChoices.push_back(discriminationMethodInfo[ii].name);
             S.TieChoice(_("Discrimination &method") + wxString(wxT(":")),
                mTempSettings.mMethod,
-               &methodChoices);
+               methodChoices);
          }
       }
       S.EndMultiColumn();
@@ -1800,10 +1813,9 @@ void EffectNoiseReduction::Dialog::PopulateOrExchange(ShuttleGui & S)
       S.StartMultiColumn(3, wxEXPAND);
       S.SetStretchyCol(2);
       {
-         wxTextValidator vld(wxFILTER_NUMERIC);
          for (int id = END_OF_BASIC_SLIDERS; id < END_OF_ADVANCED_SLIDERS; id += 2) {
-            const ControlInfo &info = controlInfo[(id - FIRST_SLIDER) / 2];
-            info.CreateControls(id, vld, S);
+            const ControlInfo &info = controlInfo()[(id - FIRST_SLIDER) / 2];
+            info.CreateControls(id, S);
          }
       }
       S.EndMultiColumn();
@@ -1848,6 +1860,8 @@ bool EffectNoiseReduction::Dialog::TransferDataToWindow()
 
 bool EffectNoiseReduction::Dialog::TransferDataFromWindow()
 {
+   if( !wxWindow::Validate() )
+      return false;
    // Do the choice controls:
    if (!EffectDialog::TransferDataFromWindow())
       return false;
@@ -1855,7 +1869,7 @@ bool EffectNoiseReduction::Dialog::TransferDataFromWindow()
    wxCommandEvent dummy;
    OnNoiseReductionChoice(dummy);
 
-   return mTempSettings.Validate();
+   return mTempSettings.Validate(m_pEffect);
 }
 
 void EffectNoiseReduction::Dialog::OnText(wxCommandEvent &event)

@@ -11,9 +11,6 @@
 #ifndef __AUDACITY_SIMPLE_BLOCKFILE__
 #define __AUDACITY_SIMPLE_BLOCKFILE__
 
-#include <wx/string.h>
-#include <wx/filename.h>
-
 #include "../BlockFile.h"
 #include "../DirManager.h"
 #include "../xml/XMLWriter.h"
@@ -22,8 +19,9 @@ struct SimpleBlockFileCache {
    bool active;
    bool needWrite;
    sampleFormat format;
-   samplePtr sampleData;
-   void* summaryData;
+   ArrayOf<char> sampleData, summaryData;
+
+   SimpleBlockFileCache() {}
 };
 
 // The AU formats we care about
@@ -62,10 +60,10 @@ class PROFILE_DLL_API SimpleBlockFile /* not final */ : public BlockFile {
    // Reading
 
    /// Read the summary section of the disk file
-   bool ReadSummary(void *data) override;
+   bool ReadSummary(ArrayOf<char> &data) override;
    /// Read the data section of the disk file
    size_t ReadData(samplePtr data, sampleFormat format,
-                        size_t start, size_t len) const override;
+                        size_t start, size_t len, bool mayThrow) const override;
 
    /// Create a NEW block file identical to this one
    BlockFilePtr Copy(wxFileNameWrapper &&newFileName) override;
@@ -81,7 +79,8 @@ class PROFILE_DLL_API SimpleBlockFile /* not final */ : public BlockFile {
    void WriteCacheToDisk() override;
 
    bool GetNeedFillCache() override { return !mCache.active; }
-   void FillCache() override;
+
+   void FillCache() /* noexcept */ override;
 
  protected:
 
